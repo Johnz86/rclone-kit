@@ -14,9 +14,8 @@ from collections.abc import Callable
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-import platformdirs
-
 from rclone_kit.runtime.archive_extract import extract_single_member
+from rclone_kit.runtime.cache_dir import user_cache_dir
 from rclone_kit.runtime.downloader import fetch_verified_archive
 from rclone_kit.runtime.exceptions import (
     CacheVerificationError,
@@ -61,8 +60,9 @@ def resolve_rclone_executable(
     2. The executable bundled with the installed wheel under
        `packaged_assets_root/<wheel_platform_tag>/<executable_name>`,
        verified against its sibling `.sha256` manifest and materialized into
-       the `cache_root` application cache (obtained through `platformdirs`
-       when `cache_root` is not given).
+       the `cache_root` application cache (obtained through
+       `rclone_kit.runtime.cache_dir.user_cache_dir` when `cache_root` is
+       not given).
     3. A `PATH` lookup via `shutil.which`, only when `allow_path_lookup` is
        `True`.
     4. A verified download fallback, only when `allow_verified_download` is
@@ -106,7 +106,7 @@ def default_cache_root() -> Path:
     executables, versioned by `RCLONE_VERSION` so an upgrade cannot collide
     with a previously cached executable.
     """
-    return Path(platformdirs.user_cache_dir(_CACHE_APPLICATION_NAME)) / "rclone" / RCLONE_VERSION
+    return user_cache_dir(_CACHE_APPLICATION_NAME) / "rclone" / RCLONE_VERSION
 
 
 def default_packaged_assets_root() -> Path:
