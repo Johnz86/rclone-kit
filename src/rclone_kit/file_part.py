@@ -9,11 +9,15 @@ from rclone_kit.types import get_chunk_tmpdir
 
 logger = logging.getLogger(__name__)
 
-_CLEANUP_LIST: list[Path] = []
+_CLEANUP_LIST: set[Path] = set()
 
 
 def _add_for_cleanup(path: Path) -> None:
-    _CLEANUP_LIST.append(path)
+    _CLEANUP_LIST.add(path)
+
+
+def _remove_from_cleanup(path: Path) -> None:
+    _CLEANUP_LIST.discard(path)
 
 
 def _on_exit_cleanup() -> None:
@@ -35,6 +39,7 @@ class FilePart:
 
         self.extra = extra
         self._lock = Lock()
+        self._disposed = False
         self.payload: Path | Exception
         if isinstance(payload, Exception):
             self.payload = payload
@@ -80,8 +85,11 @@ class FilePart:
         return isinstance(self.payload, Exception)
 
     def dispose(self) -> None:
-        logger.debug("Disposing file part")
         with self._lock:
+            if self._disposed:
+                return
+            self._disposed = True
+            logger.debug("Disposing file part")
             if isinstance(self.payload, Exception):
                 warnings.warn(
                     f"Cannot close file part because the payload represents an error: {self.payload}",
@@ -99,6 +107,7 @@ class FilePart:
                     f"Cannot close file part because it does not exist: {self.payload}",
                     stacklevel=2,
                 )
+            _remove_from_cleanup(self.payload)
 
     def __del__(self):
         self.dispose()
