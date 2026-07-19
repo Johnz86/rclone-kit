@@ -379,10 +379,16 @@ delivered as focused correctness, security, dependency, logging, cleanup, and
 test changes; the broad architectural phases were not completed. Improve
 them incrementally:
 
+The error model phase is done: `rclone_kit.exceptions` now holds a typed
+`RcloneKitError` hierarchy (`FilesystemError`, `ConfigParseError`,
+`RcloneCommandError`, `HttpFetchError`, `MergeStateError`, `S3MergeError`,
+`S3UploadError`), every internal call site that used to return `Exception`
+as data now raises, and the transitional `_raise_if_exception` bridge has
+been removed along with its last call site.
+
 | Area | Current constraint | Preferred next step | Required evidence |
 |---|---|---|---|
 | Public facade | `Rclone` and `RcloneImpl` remain large and duplicate the operation surface. | Extract pure command builders and cohesive listing, transfer, configuration, serve, mount, and S3 services while keeping `Rclone` stable. | Characterization tests and an API compatibility snapshot. |
-| Error model | Many legacy APIs return `Exception` as data. | Introduce a small typed exception hierarchy, migrate internals to raise, and use compatibility wrappers for public changes. | Success types contain no exception union; failure-path tests preserve causes. |
 | Resource ownership | Some cleanup still depends on `atexit`, `__del__`, weak references, or global executors. | Give each process, executor, producer, mount, and temporary resource one explicit owner with idempotent close/shutdown behavior. | Tests leave no live subprocesses, threads, temporary files, or blocked producers. |
 | S3 multipart | Several strategies coordinate futures, persisted state, retries, and cleanup separately. | Define and test explicit states and transitions before consolidating orchestration. | Fake-S3 tests cover resume, retry exhaustion, corruption, worker failure, completion failure, and cleanup. |
 | Paths and filesystems | Local paths, rclone paths, and strings still overlap. | Introduce immutable local/rclone path values and one documented `FS.ls` contract. | Identical remote-path behavior on Windows and Linux. |
