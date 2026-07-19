@@ -6,7 +6,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from rclone_kit.completed_process import CompletedProcess
-from rclone_kit.convert import convert_to_str
+from rclone_kit.convert import convert_to_filestr_list, convert_to_str
 from rclone_kit.dir import Dir
 from rclone_kit.exceptions import RcloneCommandError
 from rclone_kit.file import File
@@ -299,3 +299,78 @@ def copy_files_partitioned(
                 else:
                     warnings.warn(f"Error deleting files: {cp.stderr}", stacklevel=2)
     return out
+
+
+def delete_files_partitioned(
+    self: RcloneImpl,
+    files: str | File | list[str] | list[File],
+    check: bool | None = None,
+    rmdirs=False,
+    verbose: bool | None = None,
+    max_partition_workers: int | None = None,
+    other_args: list[str] | None = None,
+) -> CompletedProcess:
+    """Delete a directory"""
+    check = get_check(check)
+    verbose = get_verbose(verbose)
+    payload: list[str] = convert_to_filestr_list(files)
+    if len(payload) == 0:
+        if verbose:
+            logger.info("No files to delete")
+        cp = subprocess.CompletedProcess(
+            args=["rclone", "delete", FLAG_FILES_FROM, "[]"],
+            returncode=0,
+            stdout="",
+            stderr="",
+        )
+        return CompletedProcess.from_subprocess(cp)
+
+    datalists: dict[str, list[str]] = group_files(payload)
+    completed_processes: list[subprocess.CompletedProcess] = []
+
+    futures: list[Future] = []
+
+    with ThreadPoolExecutor(max_workers=max_partition_workers) as executor:
+        for remote, remote_files in datalists.items():
+
+            def _task(
+                files=remote_files, check=check, remote=remote
+            ) -> subprocess.CompletedProcess:
+                with TemporaryDirectory() as tmpdir:
+                    include_files_txt = Path(tmpdir) / "include_files.txt"
+                    include_files_txt.write_text("\n".join(files), encoding="utf-8")
+
+                    cmd_list: list[str] = [
+                        "delete",
+                        remote,
+                        FLAG_FILES_FROM,
+                        str(include_files_txt),
+                        FLAG_CHECKERS,
+                        "1000",
+                        FLAG_TRANSFERS,
+                        "1000",
+                    ]
+                    if verbose:
+                        cmd_list.append("-vvvv")
+                    if rmdirs:
+                        cmd_list.append("--rmdirs")
+                    if other_args:
+                        cmd_list += other_args
+                    out = self._run(cmd_list, check=check)
+                if out.returncode != 0:
+                    if check:
+                        completed_processes.append(out)
+                        raise ValueError(f"Error deleting files: {out}")
+                    else:
+                        warnings.warn(f"Error deleting files: {out}", stacklevel=2)
+                return out
+
+            fut: Future = executor.submit(_task)
+            futures.append(fut)
+
+        for fut in futures:
+            out = fut.result()
+            assert out is not None
+            completed_processes.append(out)
+
+    return CompletedProcess(completed_processes)

@@ -17,8 +17,10 @@ from rclone_kit.detail.transfer_ops import (
     copy_file_to,
     copy_files_partitioned,
     copy_tree,
+    delete_files_partitioned,
     purge_dir,
 )
+from rclone_kit.group_files import group_files
 from rclone_kit.rclone_impl import (
     FLAG_CHECKERS,
     FLAG_FILES_FROM,
@@ -234,3 +236,68 @@ def test_copy_files_partitioned_fast_list_warns() -> None:
         copy_files_partitioned(
             rclone, "src:bucket", "dst:bucket", ["a.txt"], other_args=["--fast-list"]
         )
+
+
+def test_delete_files_partitioned_empty_input_does_not_execute_rclone() -> None:
+    rclone = _bare_rclone_impl()
+    rclone._run = lambda *_args, **_kwargs: pytest.fail("rclone must not run")
+
+    result = delete_files_partitioned(rclone, [])
+
+    assert result.ok
+    assert result.completed[0].args == ["rclone", "delete", FLAG_FILES_FROM, "[]"]
+
+
+def test_delete_files_partitioned_builds_expected_command_vector() -> None:
+    rclone = _bare_rclone_impl()
+    commands: list[list[str]] = []
+    rclone._run = _recording_run(commands)
+    files = ["remote:bucket/a.txt", "remote:bucket/b.txt"]
+    expected_groups = group_files(list(files))
+    assert len(expected_groups) == 1
+    expected_remote = next(iter(expected_groups))
+
+    result = delete_files_partitioned(rclone, files, max_partition_workers=1)
+
+    assert result.ok
+    assert len(commands) == 1
+    cmd = commands[0]
+    assert cmd[0] == "delete"
+    assert cmd[1] == expected_remote
+    assert cmd[2] == FLAG_FILES_FROM
+    assert cmd[4:8] == [FLAG_CHECKERS, "1000", FLAG_TRANSFERS, "1000"]
+
+
+def test_delete_files_partitioned_partitions_across_multiple_workers() -> None:
+    rclone = _bare_rclone_impl()
+    commands: list[list[str]] = []
+    files = ["remoteA:bucketA/a.txt", "remoteB:bucketB/b.txt"]
+    expected_groups = group_files(list(files))
+    assert len(expected_groups) == 2
+    rclone._run = _recording_run(commands)
+
+    result = delete_files_partitioned(rclone, files, max_partition_workers=2)
+
+    assert result.ok
+    assert len(commands) == 2
+    remotes = {cmd[1] for cmd in commands}
+    assert remotes == set(expected_groups.keys())
+
+
+def test_delete_files_partitioned_failure_raises_after_running_all_partitions() -> None:
+    rclone = _bare_rclone_impl()
+    commands: list[list[str]] = []
+    files = ["remoteA:bucketA/a.txt", "remoteB:bucketB/b.txt"]
+
+    def run(cmd: list[str], check: bool = False, capture=None):
+        del check, capture
+        commands.append(cmd)
+        returncode = 1 if cmd[1] == "remoteA:bucketA" else 0
+        return subprocess.CompletedProcess(cmd, returncode, stdout="", stderr="boom")
+
+    rclone._run = run
+
+    with pytest.raises(ValueError, match="boom"):
+        delete_files_partitioned(rclone, files, max_partition_workers=2)
+
+    assert len(commands) == 2

@@ -8,7 +8,6 @@ import subprocess
 import time
 import warnings
 from collections.abc import Generator
-from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -17,7 +16,6 @@ from typing import TYPE_CHECKING
 from rclone_kit import Dir
 from rclone_kit.completed_process import CompletedProcess
 from rclone_kit.config import Config
-from rclone_kit.convert import convert_to_filestr_list
 from rclone_kit.detail.walk import walk
 from rclone_kit.diff import DiffItem, DiffOption
 from rclone_kit.dir_listing import DirListing
@@ -26,7 +24,6 @@ from rclone_kit.exec import RcloneExec
 from rclone_kit.file import File
 from rclone_kit.file_stream import FilesStream
 from rclone_kit.fs.filesystem import FSPath, RemoteFS
-from rclone_kit.group_files import group_files
 from rclone_kit.http_server import HttpServer
 from rclone_kit.mount import Mount
 from rclone_kit.optional_dependency import MissingOptionalDependencyError
@@ -42,7 +39,6 @@ from rclone_kit.types import (
     SizeSuffix,
 )
 from rclone_kit.util import (
-    get_check,
     get_rclone_exe,
     get_verbose,
     to_path,
@@ -506,69 +502,17 @@ class RcloneImpl:
         other_args: list[str] | None = None,
     ) -> CompletedProcess:
         """Delete a directory"""
-        check = get_check(check)
-        verbose = get_verbose(verbose)
-        payload: list[str] = convert_to_filestr_list(files)
-        if len(payload) == 0:
-            if verbose:
-                logger.info("No files to delete")
-            cp = subprocess.CompletedProcess(
-                args=["rclone", "delete", FLAG_FILES_FROM, "[]"],
-                returncode=0,
-                stdout="",
-                stderr="",
-            )
-            return CompletedProcess.from_subprocess(cp)
+        from rclone_kit.detail.transfer_ops import delete_files_partitioned
 
-        datalists: dict[str, list[str]] = group_files(payload)
-        completed_processes: list[subprocess.CompletedProcess] = []
-
-        futures: list[Future] = []
-
-        with ThreadPoolExecutor(max_workers=max_partition_workers) as executor:
-            for remote, remote_files in datalists.items():
-
-                def _task(
-                    files=remote_files, check=check, remote=remote
-                ) -> subprocess.CompletedProcess:
-                    with TemporaryDirectory() as tmpdir:
-                        include_files_txt = Path(tmpdir) / "include_files.txt"
-                        include_files_txt.write_text("\n".join(files), encoding="utf-8")
-
-                        cmd_list: list[str] = [
-                            "delete",
-                            remote,
-                            FLAG_FILES_FROM,
-                            str(include_files_txt),
-                            FLAG_CHECKERS,
-                            "1000",
-                            FLAG_TRANSFERS,
-                            "1000",
-                        ]
-                        if verbose:
-                            cmd_list.append("-vvvv")
-                        if rmdirs:
-                            cmd_list.append("--rmdirs")
-                        if other_args:
-                            cmd_list += other_args
-                        out = self._run(cmd_list, check=check)
-                    if out.returncode != 0:
-                        if check:
-                            completed_processes.append(out)
-                            raise ValueError(f"Error deleting files: {out}")
-                        else:
-                            warnings.warn(f"Error deleting files: {out}", stacklevel=2)
-                    return out
-
-                fut: Future = executor.submit(_task)
-                futures.append(fut)
-
-            for fut in futures:
-                out = fut.result()
-                assert out is not None
-                completed_processes.append(out)
-
-        return CompletedProcess(completed_processes)
+        return delete_files_partitioned(
+            self,
+            files,
+            check=check,
+            rmdirs=rmdirs,
+            verbose=verbose,
+            max_partition_workers=max_partition_workers,
+            other_args=other_args,
+        )
 
     def exists(self, src: Dir | Remote | str | File) -> bool:
         """Check if a file or directory exists."""
