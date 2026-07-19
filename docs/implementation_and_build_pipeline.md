@@ -471,9 +471,39 @@ both slices were pure relocations rather than redesigns. `RcloneImpl`
 shrank from 1230 to 903 lines; every extraction added direct unit coverage
 the logic previously lacked.
 
+The paths-and-filesystems phase is done. The "local paths, rclone paths,
+and strings still overlap" complaint turned out to be a real, reproducible
+bug, not just an architectural smell: `group_files._get_prefix`,
+`Dir.relative_to`/`Dir.__truediv__`, `File.relative_to`,
+`FileItem.from_json`, `RemoteFS._to_remote_path`, and `FSPath`'s
+path-math methods all parsed `remote:bucket/path`-style rclone paths with
+`pathlib.Path`. `Path` resolves to `WindowsPath` on Windows, which treats
+a literal `\` inside a path segment - a valid character in many remote
+object keys - as a directory separator, silently splitting one filename
+into two path components; `Path` is `PosixPath` on Linux, so the same code
+never showed the bug there. Verified live on a Windows dev machine:
+`group_under_one_prefix("src:", ["Bucket/subdir/weird\\name.txt"])`
+returned the file split into `"weird"` (folded into the prefix) and
+`"name.txt"` before the fix, and the correct single `"weird\\name.txt"`
+entry after. Every affected call site now uses `PurePosixPath` -
+`pathlib`'s existing immutable, platform-independent posix-style path
+type - instead of `Path`, which is the "local vs rclone path" distinction
+the roadmap asked for without inventing a new bespoke type;
+`runtime/archive_extract.py` already established this exact pattern for
+archive member names. `FSPath` (shared by `RealFS`, which legitimately
+wants native `Path`/`WindowsPath` local-filesystem semantics, and
+`RemoteFS`, which does not) now branches on its `FS` type via a
+`_pure_path()` helper. `FS.ls`'s abstract method gained a full contract
+docstring: `RealFS.ls` returns full path strings while `RemoteFS.ls`
+returns bare names (directories keep a trailing `/` marker); this
+asymmetry is load-bearing, since `FSPath.__truediv__`/`fs_walk`'s
+`current / name` join only works uniformly across both because
+`pathlib`'s `/` operator discards the left side when the right side is
+itself an absolute path - previously undocumented and one accidental
+"normalize `RealFS.ls` to bare names" cleanup away from breaking `walk`.
+
 | Area | Current constraint | Preferred next step | Required evidence |
 |---|---|---|---|
-| Paths and filesystems | Local paths, rclone paths, and strings still overlap. | Introduce immutable local/rclone path values and one documented `FS.ls` contract. | Identical remote-path behavior on Windows and Linux. |
 | Typing and linting | Legacy rule families remain globally ignored and Pyright is not strict. | Make new modules strict, then remove one narrow ignore family per behavior-preserving change. | Quality gates pass with a smaller ignore surface and no broad `Any` escape hatches in changed code. |
 | Test isolation | Cloud tests retain legacy `unittest` setup and disabled scenarios. | Move shared setup to pytest fixtures and replace disabled tests with deterministic fakes where possible. | Unit tests run offline and in arbitrary order; external suites are explicitly opt-in. |
 | Release publication | CI assembles verified wheels but does not publish or attest them. | Configure PyPI trusted publishing, an approval-protected environment, a tag-driven publish job, and artifact attestations. | Only a verified `release-dist` artifact can reach the publish job. |
