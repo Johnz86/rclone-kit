@@ -148,12 +148,6 @@ select = [
 #                                 manual review regardless of that mitigation,
 #                                 so it stays a permanent, reviewed acceptance
 #                                 rather than a deferred item.
-#   S324                       - The single remaining finding is an `md5`
-#                                 content-fingerprint hash in
-#                                 `s3/multipart/info_json.py`'s resumable-
-#                                 upload state, unrelated to the
-#                                 subprocess/filesystem-boundary audit; left
-#                                 for whichever change owns that feature.
 #   PTH                        - A full `os.path`-to-`pathlib` migration
 #                                 across all of `src` is a broad, separate
 #                                 cleanup; the subprocess/filesystem-
@@ -198,7 +192,6 @@ ignore = [
     "PLR0915",
     "PLR2004",
     "S101",
-    "S324",
     "S603",
     "PTH",
     "T201",

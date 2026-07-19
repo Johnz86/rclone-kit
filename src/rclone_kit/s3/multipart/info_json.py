@@ -71,7 +71,7 @@ def _save_info_json(self: RcloneImpl, src: str, data: dict) -> None:
     data = data.copy()
     data["new"] = False
 
-    h = hashlib.md5()
+    h = hashlib.md5(usedforsecurity=False)
     tmp = [
         data.get("src"),
         data.get("src_modtime"),
