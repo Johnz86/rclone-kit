@@ -43,10 +43,11 @@ _FAKE_WINDOWS_ARTIFACT = RcloneArtifact(
     wheel_platform_tag="win_amd64",
 )
 
-_WINDOWS_WHEEL_NAME = "rclone_kit-1.0.0-cp313-cp313-win_amd64.whl"
-_LINUX_WHEEL_NAME = "rclone_kit-1.0.0-cp313-cp313-manylinux2014_x86_64.whl"
+_WINDOWS_WHEEL_NAME = "rclone_kit-1.0.0-py3-none-win_amd64.whl"
+_LINUX_WHEEL_NAME = "rclone_kit-1.0.0-py3-none-manylinux2014_x86_64.whl"
 _UNIVERSAL_WHEEL_NAME = "rclone_kit-1.0.0-py3-none-any.whl"
-_UNMAPPABLE_WHEEL_NAME = "rclone_kit-1.0.0-cp313-cp313-linux_aarch64.whl"
+_UNMAPPABLE_WHEEL_NAME = "rclone_kit-1.0.0-py3-none-linux_aarch64.whl"
+_CPYTHON_ABI_WINDOWS_WHEEL_NAME = "rclone_kit-1.0.0-cp313-cp313-win_amd64.whl"
 
 
 def _write_zip(path: Path, members: dict[str, bytes]) -> Path:
@@ -198,6 +199,23 @@ def test_check_platform_independent_tag_flags_universal_wheel() -> None:
 
 def test_check_platform_independent_tag_passes_platform_specific_wheel() -> None:
     assert verify_distribution.check_platform_independent_tag(Path(_WINDOWS_WHEEL_NAME)) == []
+
+
+@pytest.mark.usefixtures("fake_windows_artifact")
+def test_check_exact_wheel_tag_passes_for_abi_independent_wheel() -> None:
+    assert verify_distribution.check_exact_wheel_tag(Path(_WINDOWS_WHEEL_NAME)) == []
+
+
+@pytest.mark.usefixtures("fake_windows_artifact")
+def test_check_exact_wheel_tag_flags_concrete_cpython_abi_tag() -> None:
+    violations = verify_distribution.check_exact_wheel_tag(Path(_CPYTHON_ABI_WINDOWS_WHEEL_NAME))
+
+    assert len(violations) == 1
+    assert "wheel tag" in violations[0]
+
+
+def test_check_exact_wheel_tag_skips_unmappable_platform() -> None:
+    assert verify_distribution.check_exact_wheel_tag(Path(_UNMAPPABLE_WHEEL_NAME)) == []
 
 
 def test_check_requires_python_floor_passes_for_313_floor(tmp_path: Path) -> None:
@@ -488,3 +506,57 @@ def test_main_returns_nonzero_when_dist_dir_has_no_distribution_files(tmp_path: 
 def test_main_returns_nonzero_for_not_a_directory(tmp_path: Path) -> None:
     missing_dir = tmp_path / "does-not-exist"
     assert verify_distribution.main([str(missing_dir)]) == 1
+
+
+def test_check_release_set_passes_with_one_wheel_per_certified_target(tmp_path: Path) -> None:
+    (tmp_path / _WINDOWS_WHEEL_NAME).write_bytes(b"")
+    (tmp_path / _LINUX_WHEEL_NAME).write_bytes(b"")
+
+    assert verify_distribution.check_release_set(tmp_path) == []
+
+
+def test_check_release_set_flags_missing_target(tmp_path: Path) -> None:
+    (tmp_path / _WINDOWS_WHEEL_NAME).write_bytes(b"")
+
+    violations = verify_distribution.check_release_set(tmp_path)
+
+    assert any(
+        "Missing a wheel" in violation and "manylinux2014_x86_64" in violation
+        for violation in violations
+    )
+
+
+def test_check_release_set_flags_duplicate_target(tmp_path: Path) -> None:
+    (tmp_path / _WINDOWS_WHEEL_NAME).write_bytes(b"")
+    (tmp_path / "rclone_kit-1.0.1-py3-none-win_amd64.whl").write_bytes(b"")
+    (tmp_path / _LINUX_WHEEL_NAME).write_bytes(b"")
+
+    violations = verify_distribution.check_release_set(tmp_path)
+
+    assert any(
+        "Multiple wheels found" in violation and "win_amd64" in violation
+        for violation in violations
+    )
+
+
+def test_check_release_set_flags_unrecognized_wheel(tmp_path: Path) -> None:
+    (tmp_path / _WINDOWS_WHEEL_NAME).write_bytes(b"")
+    (tmp_path / _LINUX_WHEEL_NAME).write_bytes(b"")
+    (tmp_path / _UNMAPPABLE_WHEEL_NAME).write_bytes(b"")
+
+    violations = verify_distribution.check_release_set(tmp_path)
+
+    assert any("not a recognized certified-target wheel" in violation for violation in violations)
+
+
+def test_main_require_complete_release_set_fails_when_incomplete(tmp_path: Path) -> None:
+    members = {
+        **_windows_wheel_members(),
+        "rclone_kit-1.0.0.dist-info/entry_points.txt": (
+            b"[console_scripts]\nfake-cmd = fake_pkg:main\n"
+        ),
+        "fake_pkg/__init__.py": b"def main() -> int:\n    return 0\n",
+    }
+    _write_zip(tmp_path / _WINDOWS_WHEEL_NAME, members)
+
+    assert verify_distribution.main([str(tmp_path), "--require-complete-release-set"]) == 1

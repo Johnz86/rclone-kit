@@ -15,6 +15,14 @@ build directory such as `build/rclone-artifacts`. `scripts/build_distribution.py
 is the canonical caller: it stages through this module's functions directly
 and copies the result into a temporary wheel-build source tree.
 
+The downloaded archive itself (not the extracted executable) is cached
+under a per-user, per-`RCLONE_VERSION`, per-platform directory, keyed
+implicitly by `RcloneArtifact.sha256_digest`: a cached archive is only
+reused after `fetch_verified_archive` recomputes and confirms its digest,
+so a corrupted or stale cache entry is transparently redownloaded rather
+than trusted. This avoids repeating a multi-megabyte download across
+repeated local builds or CI runs for the same certified rclone release.
+
 Usage:
     uv run python scripts/prepare_rclone_artifact.py windows amd64 --out-dir build/rclone-artifacts
     uv run python scripts/prepare_rclone_artifact.py linux amd64 --out-dir build/rclone-artifacts
@@ -24,14 +32,15 @@ import argparse
 import shutil
 import sys
 from pathlib import Path
-from tempfile import TemporaryDirectory
 
 from rclone_kit.runtime.archive_extract import extract_single_member
+from rclone_kit.runtime.cache_dir import user_cache_dir
 from rclone_kit.runtime.downloader import fetch_verified_archive
 from rclone_kit.runtime.exceptions import RcloneRuntimeError, StagedExecutableDigestMismatchError
 from rclone_kit.runtime.hashing import sha256_of_file
 from rclone_kit.runtime.permissions import apply_executable_permission
 from rclone_kit.runtime.platform import (
+    RCLONE_VERSION,
     MachineArchitecture,
     OperatingSystem,
     RcloneArtifact,
@@ -43,6 +52,15 @@ _RCLONE_LICENSE_SOURCE = _REPO_ROOT / "licenses" / "rclone" / "COPYING"
 _STAGED_LICENSE_FILENAME = "RCLONE_LICENSE"
 _STAGED_MANIFEST_SUFFIX = ".sha256"
 _STAGING_SUBDIRECTORY = "rclone"
+_CACHE_APPLICATION_NAME = "rclone-kit"
+_ARCHIVE_CACHE_SUBDIRECTORY = "archives"
+
+
+def default_archive_cache_root() -> Path:
+    """Return the default per-user directory that cached, verified rclone
+    release archives are stored under.
+    """
+    return user_cache_dir(_CACHE_APPLICATION_NAME) / _ARCHIVE_CACHE_SUBDIRECTORY
 
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:
@@ -63,6 +81,15 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         type=Path,
         help="Generated build directory to stage the artifact into.",
     )
+    parser.add_argument(
+        "--archive-cache-dir",
+        type=Path,
+        default=None,
+        help=(
+            "Directory to cache the verified downloaded archive in, reused "
+            "across runs. Defaults to a per-user cache directory."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -73,23 +100,44 @@ def staging_directory(out_dir: Path, artifact: RcloneArtifact) -> Path:
     return out_dir / _STAGING_SUBDIRECTORY / artifact.wheel_platform_tag
 
 
-def stage_executable(artifact: RcloneArtifact, staging_dir: Path) -> Path:
-    """Download, verify, and extract `artifact`'s executable into
-    `staging_dir`, alongside its `.sha256` manifest.
+def stage_executable(
+    artifact: RcloneArtifact, staging_dir: Path, *, archive_cache_dir: Path | None = None
+) -> Path:
+    """Download (or reuse a cached, verified download of) `artifact`'s
+    archive, then extract its executable into `staging_dir`, alongside a
+    `.sha256` manifest.
 
     Raises `StagedExecutableDigestMismatchError` when the freshly extracted
     executable's digest disagrees with `artifact.executable_sha256_digest`;
     a mismatched executable is never left behind in `staging_dir`.
     """
     executable_path = staging_dir / artifact.executable_name
-    with TemporaryDirectory() as raw_temp_dir:
-        archive_path = Path(raw_temp_dir) / artifact.archive_filename
-        fetch_verified_archive(artifact, archive_path)
-        extract_single_member(archive_path, artifact.executable_member_name, executable_path)
+    cache_root = (
+        archive_cache_dir if archive_cache_dir is not None else default_archive_cache_root()
+    )
+    archive_path = _cached_verified_archive(artifact, cache_root)
+    extract_single_member(archive_path, artifact.executable_member_name, executable_path)
     apply_executable_permission(executable_path, artifact)
     _verify_staged_digest(artifact, executable_path)
     _write_manifest(executable_path)
     return executable_path
+
+
+def _cached_verified_archive(artifact: RcloneArtifact, cache_root: Path) -> Path:
+    """Return a local path to `artifact`'s archive, downloading it only when
+    no valid cache entry already exists.
+
+    A cache hit still recomputes the cached file's digest before reuse — see
+    `fetch_verified_archive`'s early-return path, keyed to the caching
+    convention below — so a corrupted or stale cache entry is
+    transparently redownloaded rather than trusted blindly.
+    """
+    cache_path = (
+        cache_root / RCLONE_VERSION / artifact.wheel_platform_tag / artifact.archive_filename
+    )
+    if cache_path.is_file() and sha256_of_file(cache_path) == artifact.sha256_digest:
+        return cache_path
+    return fetch_verified_archive(artifact, cache_path)
 
 
 def _verify_staged_digest(artifact: RcloneArtifact, executable_path: Path) -> None:
@@ -125,7 +173,9 @@ def main(argv: list[str] | None = None) -> int:
         artifact = resolve_rclone_artifact(system=args.target_os, machine=args.target_arch)
         target_staging_directory = staging_directory(args.out_dir, artifact)
         target_staging_directory.mkdir(parents=True, exist_ok=True)
-        executable_path = stage_executable(artifact, target_staging_directory)
+        executable_path = stage_executable(
+            artifact, target_staging_directory, archive_cache_dir=args.archive_cache_dir
+        )
         license_path = stage_license(target_staging_directory)
     except RcloneRuntimeError as error:
         print(f"Failed to prepare rclone artifact: {error}", file=sys.stderr)

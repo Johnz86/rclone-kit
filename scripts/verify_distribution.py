@@ -30,6 +30,7 @@ from tempfile import TemporaryDirectory
 
 from packaging.requirements import Requirement
 from packaging.specifiers import SpecifierSet
+from packaging.tags import Tag
 from packaging.utils import parse_wheel_filename
 
 from rclone_kit.runtime.exceptions import ArchiveMemberUnsafeError, UnsupportedPlatformError
@@ -39,6 +40,8 @@ _WHEEL_GLOB_PATTERN = "*.whl"
 _SDIST_GLOB_PATTERN = "*.tar.gz"
 
 _PURE_PYTHON_PLATFORM_TAG = "any"
+_EXPECTED_WHEEL_PYTHON_TAG = "py3"
+_EXPECTED_WHEEL_ABI_TAG = "none"
 
 _PACKAGED_PACKAGE_NAME = "rclone_kit"
 _PACKAGED_ASSETS_RELATIVE_DIR = "assets/rclone"
@@ -199,9 +202,13 @@ _WHEEL_TAG_ARCH_SUFFIX_TO_MACHINE: dict[str, str] = {
 }
 
 
-def _wheel_platform_tags(wheel_path: Path) -> tuple[str, ...]:
+def _wheel_tags(wheel_path: Path) -> tuple[Tag, ...]:
     _name, _version, _build, tags = parse_wheel_filename(wheel_path.name)
-    return tuple(tag.platform for tag in tags)
+    return tuple(tags)
+
+
+def _wheel_platform_tags(wheel_path: Path) -> tuple[str, ...]:
+    return tuple(tag.platform for tag in _wheel_tags(wheel_path))
 
 
 def _expected_artifact_for_wheel(wheel_path: Path) -> RcloneArtifact | None:
@@ -267,6 +274,32 @@ def check_platform_independent_tag(wheel_path: Path) -> list[str]:
         for tag in _wheel_platform_tags(wheel_path)
         if tag.lower() == _PURE_PYTHON_PLATFORM_TAG
     ]
+
+
+def check_exact_wheel_tag(wheel_path: Path) -> list[str]:
+    """Fail unless `wheel_path`'s full tag is exactly `(py3, none,
+    <artifact.wheel_platform_tag>)` for the certified target its platform
+    component implies.
+
+    `_build_backend.py` forces a platform-specific wheel with no CPython ABI
+    dependency; a concrete interpreter/ABI tag such as `cp313-cp313` means
+    its `bdist_wheel.get_tag` override did not take effect.
+    """
+    artifact = _expected_artifact_for_wheel(wheel_path)
+    if artifact is None:
+        return []
+    tags = _wheel_tags(wheel_path)
+    if len(tags) != 1:
+        return []
+    tag = tags[0]
+    actual = (tag.interpreter, tag.abi, tag.platform.lower())
+    expected = (_EXPECTED_WHEEL_PYTHON_TAG, _EXPECTED_WHEEL_ABI_TAG, artifact.wheel_platform_tag)
+    if actual != expected:
+        return [
+            f"{wheel_path.name}: wheel tag {actual!r} does not match the expected "
+            f"ABI-independent tag {expected!r}."
+        ]
+    return []
 
 
 def check_bundled_executable_present(wheel_path: Path, members: tuple[str, ...]) -> list[str]:
@@ -410,8 +443,8 @@ def check_entry_points_resolve(wheel_path: Path, members: tuple[str, ...]) -> li
     Extracts the wheel to a temporary directory and imports each target in a
     fresh subprocess with that directory prepended to `sys.path`, rather than
     installing the wheel into a throwaway environment. A subprocess avoids
-    both a slow, network-dependent venv-and-install cycle per wheel (the
-    package job in `.github/workflows/ci.yml` already performs a full
+    both a slow, network-dependent venv-and-install cycle per wheel
+    (`scripts/build_distribution.py` already performs a full
     install-and-smoke-test pass separately) and a `sys.modules` collision
     with the `rclone_kit` package this script itself imports for platform
     resolution; it still exercises the exact bytes shipped in the wheel and
@@ -581,6 +614,7 @@ def verify_wheel(wheel_path: Path) -> DistributionVerificationResult:
     members = _list_zip_members(wheel_path)
     violations: list[str] = [
         *check_platform_independent_tag(wheel_path),
+        *check_exact_wheel_tag(wheel_path),
         *check_bundled_executable_present(wheel_path, members),
         *check_no_foreign_platform_executable(wheel_path, members),
         *check_bundled_executable_hash(wheel_path, members),
@@ -603,6 +637,36 @@ def verify_sdist(sdist_path: Path) -> DistributionVerificationResult:
     return DistributionVerificationResult(sdist_path.name, tuple(violations))
 
 
+def check_release_set(dist_dir: Path) -> list[str]:
+    """Fail unless `dist_dir` contains exactly one wheel per certified
+    `SUPPORTED_ARTIFACTS` target, with no duplicate or unrecognized wheel.
+
+    Used only by CI's `release-assembly` job after every per-platform wheel
+    job's artifact has been downloaded into one directory; a single-wheel
+    build (one `wheel-*` CI job, or a local `build_distribution.py` run) has
+    no use for this check.
+    """
+    wheels_by_tag: dict[str, list[Path]] = {
+        artifact.wheel_platform_tag: [] for artifact in SUPPORTED_ARTIFACTS
+    }
+    violations: list[str] = []
+    for wheel_path in discover_wheels(dist_dir):
+        artifact = _expected_artifact_for_wheel(wheel_path)
+        if artifact is None:
+            violations.append(f"{wheel_path.name}: not a recognized certified-target wheel.")
+            continue
+        wheels_by_tag[artifact.wheel_platform_tag].append(wheel_path)
+    for wheel_platform_tag, matching_paths in wheels_by_tag.items():
+        if not matching_paths:
+            violations.append(f"Missing a wheel for certified target {wheel_platform_tag!r}.")
+        elif len(matching_paths) > 1:
+            names = ", ".join(path.name for path in matching_paths)
+            violations.append(
+                f"Multiple wheels found for certified target {wheel_platform_tag!r}: {names}."
+            )
+    return violations
+
+
 def _report(results: list[DistributionVerificationResult]) -> int:
     failed = [result for result in results if not result.passed]
     for result in results:
@@ -621,15 +685,27 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         type=Path,
         help="Directory containing built .whl and .tar.gz files (e.g. 'dist').",
     )
+    parser.add_argument(
+        "--require-complete-release-set",
+        action="store_true",
+        help=(
+            "Additionally require dist_dir to contain exactly one wheel per "
+            "certified SUPPORTED_ARTIFACTS target, with no duplicates. Only "
+            "meaningful once every per-platform wheel has been collected "
+            "into one directory (see CI's release-assembly job)."
+        ),
+    )
     return parser.parse_args(sys.argv[1:] if argv is None else argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     """Verify every wheel and sdist in the given directory.
 
-    Returns 0 when every distribution file passes every applicable check.
-    Returns 1 and prints a violation summary when any check fails, or when
-    the directory contains no wheel or sdist files at all.
+    Returns 0 when every distribution file passes every applicable check
+    (and, with `--require-complete-release-set`, the directory holds exactly
+    one wheel per certified target). Returns 1 and prints a violation
+    summary when any check fails, or when the directory contains no wheel
+    or sdist files at all.
     """
     args = _parse_args(argv)
     dist_dir: Path = args.dist_dir
@@ -645,7 +721,19 @@ def main(argv: list[str] | None = None) -> int:
 
     results = [verify_wheel(wheel_path) for wheel_path in wheels]
     results += [verify_sdist(sdist_path) for sdist_path in sdists]
-    return _report(results)
+    exit_code = _report(results)
+
+    if args.require_complete_release_set:
+        release_set_violations = check_release_set(dist_dir)
+        if release_set_violations:
+            print("\n[FAIL] release set")
+            for violation in release_set_violations:
+                print(f"    - {violation}")
+            exit_code = 1
+        else:
+            print("\n[PASS] release set is complete with no duplicates")
+
+    return exit_code
 
 
 if __name__ == "__main__":

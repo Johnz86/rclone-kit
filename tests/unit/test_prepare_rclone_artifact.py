@@ -9,6 +9,7 @@ that writes controlled bytes, so these tests exercise the digest-mismatch
 guard without a real network download.
 """
 
+import dataclasses
 import hashlib
 from collections.abc import Callable
 from pathlib import Path
@@ -70,7 +71,9 @@ def test_stage_executable_writes_verified_executable_and_manifest(
     staging_dir = tmp_path / "staged"
     staging_dir.mkdir()
 
-    executable_path = prepare_rclone_artifact.stage_executable(_TEST_ARTIFACT, staging_dir)
+    executable_path = prepare_rclone_artifact.stage_executable(
+        _TEST_ARTIFACT, staging_dir, archive_cache_dir=tmp_path / "archive-cache"
+    )
 
     assert executable_path.read_bytes() == _VALID_EXECUTABLE_CONTENT
     manifest_path = executable_path.with_name(executable_path.name + ".sha256")
@@ -90,7 +93,9 @@ def test_stage_executable_raises_on_digest_mismatch(
     staging_dir.mkdir()
 
     with pytest.raises(StagedExecutableDigestMismatchError):
-        prepare_rclone_artifact.stage_executable(_TEST_ARTIFACT, staging_dir)
+        prepare_rclone_artifact.stage_executable(
+            _TEST_ARTIFACT, staging_dir, archive_cache_dir=tmp_path / "archive-cache"
+        )
 
 
 @pytest.mark.usefixtures("_patched_download")
@@ -106,9 +111,65 @@ def test_stage_executable_does_not_leave_corrupted_file_behind(
     staging_dir.mkdir()
 
     with pytest.raises(StagedExecutableDigestMismatchError):
-        prepare_rclone_artifact.stage_executable(_TEST_ARTIFACT, staging_dir)
+        prepare_rclone_artifact.stage_executable(
+            _TEST_ARTIFACT, staging_dir, archive_cache_dir=tmp_path / "archive-cache"
+        )
 
     assert list(staging_dir.iterdir()) == []
+
+
+def test_cached_verified_archive_reuses_valid_cache_entry_without_redownloading(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cached_bytes = b"already-cached-and-verified-archive-bytes"
+    artifact = dataclasses.replace(
+        _TEST_ARTIFACT, sha256_digest=hashlib.sha256(cached_bytes).hexdigest()
+    )
+    cache_root = tmp_path / "archive-cache"
+    cache_path = (
+        cache_root
+        / prepare_rclone_artifact.RCLONE_VERSION
+        / artifact.wheel_platform_tag
+        / artifact.archive_filename
+    )
+    cache_path.parent.mkdir(parents=True)
+    cache_path.write_bytes(cached_bytes)
+
+    def fail_if_called(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("fetch_verified_archive must not run on a cache hit")
+
+    monkeypatch.setattr(prepare_rclone_artifact, "fetch_verified_archive", fail_if_called)
+
+    result = prepare_rclone_artifact._cached_verified_archive(artifact, cache_root)
+
+    assert result == cache_path
+
+
+def test_cached_verified_archive_redownloads_when_cache_entry_is_corrupted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cache_root = tmp_path / "archive-cache"
+    cache_path = (
+        cache_root
+        / prepare_rclone_artifact.RCLONE_VERSION
+        / _TEST_ARTIFACT.wheel_platform_tag
+        / _TEST_ARTIFACT.archive_filename
+    )
+    cache_path.parent.mkdir(parents=True)
+    cache_path.write_bytes(b"corrupted-cache-entry-does-not-match-digest")
+    calls: list[Path] = []
+
+    def fake_fetch(_artifact: RcloneArtifact, destination: Path) -> Path:
+        calls.append(destination)
+        destination.write_bytes(b"freshly-downloaded-bytes")
+        return destination
+
+    monkeypatch.setattr(prepare_rclone_artifact, "fetch_verified_archive", fake_fetch)
+
+    result = prepare_rclone_artifact._cached_verified_archive(_TEST_ARTIFACT, cache_root)
+
+    assert calls == [cache_path]
+    assert result.read_bytes() == b"freshly-downloaded-bytes"
 
 
 def test_stage_license_copies_vendored_license_text(tmp_path: Path) -> None:

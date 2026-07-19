@@ -43,14 +43,27 @@ Two details matter when actually executing it:
   publishes platform wheels only, until sdist-to-wheel builds are made
   complete and tested.
 
-- **One `build_distribution.py` run produces one platform's wheel.** The
-  in-tree build backend (`_build_backend.py`) forces a platform-tagged wheel
-  matching the *building* machine; it does not cross-compile, and the
-  script fails fast if `--target` does not match the host it is running on.
-  A full release needs this command run once per certified platform — in
-  practice, once per leg of `.github/workflows/ci.yml`'s `package` matrix —
-  with every resulting wheel collected into one `dist/` directory before the
-  final `uv publish` call.
+- **One `build_distribution.py` run produces one platform's wheel with no
+  CPython ABI tag.** The in-tree build backend (`_build_backend.py`) forces
+  a platform-tagged wheel (`win_amd64`, `manylinux2014_x86_64`) matching the
+  *building* machine, with `py3`/`none` interpreter and ABI components — it
+  does not cross-compile, and the script fails fast if `--target` does not
+  match the host it is running on. A full release needs this command run
+  once per certified platform — in practice, once per `wheel-windows` /
+  `wheel-linux` job in `.github/workflows/ci.yml` — with every resulting
+  wheel collected into one `dist/` directory before the final `uv publish`
+  call. Once both are collected, run `uv run python
+  scripts/verify_distribution.py dist --require-complete-release-set` to
+  confirm the set is complete with no duplicates before publishing — this is
+  exactly what CI's `release-assembly` job does after downloading both
+  `wheel-windows-amd64` and `wheel-linux-amd64` artifacts.
+
+- **The exact Python patch version is pinned in `.python-version`,** not
+  just the `>=3.13` floor in `pyproject.toml`'s `requires-python`. `uv python
+  install` with no argument (used throughout `.github/workflows/ci.yml`) and
+  `build_distribution.py`'s smoke-test venv both resolve that same pinned
+  patch version, so a release build never silently picks up a newer patch
+  release mid-cycle.
 
 ## Release record
 
