@@ -11,6 +11,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import TypedDict
 
+from rclone_kit.exceptions import MergeStateError
 from rclone_kit.rclone_impl import RcloneImpl
 from rclone_kit.s3.multipart.finished_piece import FinishedPiece, FinishedPieceJson
 
@@ -29,28 +30,19 @@ class Part:
         return {"part_number": self.part_number, "s3_key": self.s3_key}
 
     @staticmethod
-    def from_json(json_dict: Mapping[str, object]) -> "Part | Exception":
+    def from_json(json_dict: Mapping[str, object]) -> "Part":
+        """Raises `MergeStateError` when `part_number`/`s3_key` are missing."""
         part_number = json_dict.get("part_number")
         s3_key = json_dict.get("s3_key")
         if part_number is None or s3_key is None:
-            return Exception(f"Invalid JSON: {json_dict}")
+            raise MergeStateError(f"{json_dict}")
         assert isinstance(part_number, int)
         assert isinstance(s3_key, str)
         return Part(part_number=part_number, s3_key=s3_key)
 
     @staticmethod
-    def from_json_array(json_array: Sequence[Mapping[str, object]]) -> list["Part"] | Exception:
-        try:
-            out: list[Part] = []
-            for j in json_array:
-                ok_or_err = Part.from_json(j)
-                if isinstance(ok_or_err, Exception):
-                    return ok_or_err
-                else:
-                    out.append(ok_or_err)
-            return out
-        except Exception as e:
-            return e
+    def from_json_array(json_array: Sequence[Mapping[str, object]]) -> list["Part"]:
+        return [Part.from_json(j) for j in json_array]
 
 
 class MergeStateJson(TypedDict):
@@ -91,29 +83,19 @@ class MergeState:
         return remaining
 
     @staticmethod
-    def from_json(rclone_impl: RcloneImpl, data: MergeStateJson) -> "MergeState | Exception":
-        try:
-            merge_path = data["merge_path"]
-            bucket = data["bucket"]
-            dst_key = data["dst_key"]
-            finished: list[FinishedPiece] = FinishedPiece.from_json_array(data["finished"])
-            all_parts: list[Part | Exception] = [Part.from_json(j) for j in data["all"]]
-            all_parts_no_err: list[Part] = [p for p in all_parts if not isinstance(p, Exception)]
-            upload_id: str = data["upload_id"]
-            errs: list[Exception] = [p for p in all_parts if isinstance(p, Exception)]
-            if errs:
-                return Exception(f"Errors in parts: {errs}")
-            return MergeState(
-                rclone_impl=rclone_impl,
-                merge_path=merge_path,
-                upload_id=upload_id,
-                bucket=bucket,
-                dst_key=dst_key,
-                finished=finished,
-                all_parts=all_parts_no_err,
-            )
-        except Exception as e:
-            return e
+    def from_json(rclone_impl: RcloneImpl, data: MergeStateJson) -> "MergeState":
+        """Raises `MergeStateError` when any part entry in `data["all"]` is malformed."""
+        finished: list[FinishedPiece] = FinishedPiece.from_json_array(data["finished"])
+        all_parts: list[Part] = Part.from_json_array(data["all"])
+        return MergeState(
+            rclone_impl=rclone_impl,
+            merge_path=data["merge_path"],
+            upload_id=data["upload_id"],
+            bucket=data["bucket"],
+            dst_key=data["dst_key"],
+            finished=finished,
+            all_parts=all_parts,
+        )
 
     def to_json(self) -> MergeStateJson:
         finished = self.finished.copy()
@@ -145,7 +127,4 @@ class MergeState:
     def read(self, rclone_impl: RcloneImpl, src: str) -> None:
         json_str = rclone_impl.read_text(src)
         json_dict = json.loads(json_str)
-        ok_or_err = FinishedPiece.from_json_array(json_dict["finished"])
-        if isinstance(ok_or_err, Exception):
-            raise ok_or_err
-        self.finished = ok_or_err
+        self.finished = FinishedPiece.from_json_array(json_dict["finished"])

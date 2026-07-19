@@ -17,6 +17,7 @@ from queue import Queue
 from threading import Semaphore, Thread
 from typing import Any, cast
 
+from rclone_kit.exceptions import MergeStateError
 from rclone_kit.rclone_impl import RcloneImpl
 from rclone_kit.s3.create import (
     BaseClient,
@@ -353,13 +354,13 @@ def _begin_or_resume_merge(
 
         if merge_json_text is not None:
             merge_data = cast(MergeStateJson, json.loads(merge_json_text))
-            merge_state = MergeState.from_json(rclone_impl=rclone, data=merge_data)
-            if isinstance(merge_state, MergeState):
+            try:
+                merge_state = MergeState.from_json(rclone_impl=rclone, data=merge_data)
+            except (KeyError, MergeStateError) as error:
+                warnings.warn(f"Failed to resume merge: {error}, starting new merge", stacklevel=2)
+            else:
                 merger._begin_resume_merge(merge_state=merge_state)
                 return merger
-            warnings.warn(
-                f"Failed to resume merge: {merge_state}, starting new merge", stacklevel=2
-            )
 
         parts_dir = info.parts_dir
         source_keys = info.fetch_all_finished()

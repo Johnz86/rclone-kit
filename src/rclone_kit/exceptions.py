@@ -62,3 +62,15 @@ class HttpFetchError(RcloneKitError):
         self.path = path
         self.cause = cause
         super().__init__(f"HTTP fetch failed for {path!r}: {cause}")
+
+
+class MergeStateError(RcloneKitError):
+    """Raised when S3 multipart merge-state JSON is malformed: a part
+    entry missing `part_number`/`s3_key`, or a required top-level key.
+
+    Carries the offending JSON fragment as `detail`.
+    """
+
+    def __init__(self, detail: str) -> None:
+        self.detail = detail
+        super().__init__(f"Invalid merge-state JSON: {detail}")
