@@ -24,15 +24,10 @@ def upload_file(
     bucket_name: str,
     file_path: Path,
     object_name: str,
-) -> Exception | None:
+) -> None:
     """Upload a file to the bucket."""
-    try:
-        s3_client.upload_file(str(file_path), bucket_name, object_name)
-        logger.info("Uploaded %s to %s/%s", file_path, bucket_name, object_name)
-    except Exception as e:
-        logger.error("Error uploading file: %s", e)
-        return e
-    return None
+    s3_client.upload_file(str(file_path), bucket_name, object_name)
+    logger.info("Uploaded %s to %s/%s", file_path, bucket_name, object_name)
 
 
 def download_file(

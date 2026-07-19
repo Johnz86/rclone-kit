@@ -33,11 +33,11 @@ class S3Client:
     def list_bucket_contents(self, bucket_name: str) -> None:
         list_bucket_contents(self.client, bucket_name)
 
-    def upload_file(self, target: S3UploadTarget) -> Exception | None:
+    def upload_file(self, target: S3UploadTarget) -> None:
         bucket_name = target.bucket_name
         file_path = target.src_file
         object_name = target.s3_key
-        return upload_file(
+        upload_file(
             s3_client=self.client,
             bucket_name=bucket_name,
             file_path=file_path,
@@ -73,9 +73,7 @@ class S3Client:
                     f"File size {filesize} is less than the minimum threshold for chunking ({_MIN_THRESHOLD_FOR_CHUNKING}), switching to single threaded upload.",
                     stacklevel=2,
                 )
-                err = self.upload_file(upload_target)
-                if err:
-                    raise err
+                self.upload_file(upload_target)
                 return MultiUploadResult.UPLOADED_FRESH
 
             out = upload_file_multipart(

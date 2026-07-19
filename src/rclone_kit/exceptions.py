@@ -82,3 +82,15 @@ class S3MergeError(RcloneKitError):
     object's state is invalid (no parts loaded, a finished-parts count
     mismatch, or a failed cleanup purge).
     """
+
+
+class S3UploadError(RcloneKitError):
+    """Raised when a resumable S3 multipart upload fails to upload one or
+    more chunks after retries are exhausted.
+
+    Carries the individual per-part failures as `errors`.
+    """
+
+    def __init__(self, errors: list[Exception]) -> None:
+        self.errors = errors
+        super().__init__(f"Failed to upload {len(errors)} part(s): {errors}")

@@ -33,10 +33,11 @@ def upload_task(
     part_number: int,
     retries: int,
 ) -> FinishedPiece:
-    file_or_err: Path | Exception = chunk.get_file()
-    if isinstance(file_or_err, Exception):
-        raise file_or_err
-    file: Path = file_or_err
+    """Upload a chunk as one multipart part, retrying transient failures.
+
+    Raises the last encountered error once retries are exhausted.
+    """
+    file: Path = chunk.get_file()
     size = os.path.getsize(file)
     retries = retries + 1
     for retry in range(retries):
@@ -61,10 +62,8 @@ def upload_task(
                 locked_print(f"Error uploading part {part_number}: {e}")
                 chunk.dispose()
                 raise
-            else:
-                locked_print(f"Error uploading part {part_number}: {e}, retrying")
-                continue
-    raise Exception("Should not reach here")
+            locked_print(f"Error uploading part {part_number}: {e}, retrying")
+    raise AssertionError("Unreachable: the loop above always returns or raises")
 
 
 def handle_upload(

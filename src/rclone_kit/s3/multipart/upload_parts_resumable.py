@@ -9,6 +9,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
+from rclone_kit.exceptions import S3UploadError
 from rclone_kit.http_server import HttpServer
 from rclone_kit.rclone_impl import RcloneImpl
 from rclone_kit.s3.multipart.info_json import InfoJson
@@ -172,16 +173,17 @@ def collapse_runs(numbers: list[int]) -> list[str]:
 _MIN_PART_UPLOAD_SIZE = SizeSuffix("5MB")
 
 
-def _check_part_size(parts: list[PartInfo]) -> Exception | None:
+def _check_part_size(parts: list[PartInfo]) -> None:
+    """Raises `ValueError` if `parts` is empty or its parts are too small
+    to upload via server-side merge."""
     if len(parts) == 0:
-        return Exception("No parts to upload")
+        raise ValueError("No parts to upload")
     part = parts[0]
     chunk = part.range.end - part.range.start
     if chunk < _MIN_PART_UPLOAD_SIZE:
-        return Exception(
+        raise ValueError(
             f"Part size {chunk} is too small to upload. Minimum size for server side merge is {_MIN_PART_UPLOAD_SIZE}"
         )
-    return None
 
 
 def upload_parts_resumable(
@@ -191,8 +193,12 @@ def upload_parts_resumable(
     part_infos: list[PartInfo] | None = None,
     threads: int = 1,
     verbose: bool | None = None,
-) -> Exception | None:
-    """Copy parts of a file from source to destination."""
+) -> None:
+    """Copy parts of a file from source to destination.
+
+    Raises `ValueError` if `part_infos` is empty or its parts are too
+    small, or `S3UploadError` if any part fails to upload.
+    """
     from rclone_kit.util import random_str
 
     def verbose_print(msg: str) -> None:
@@ -208,17 +214,12 @@ def upload_parts_resumable(
     src_name = os.path.basename(src)
     http_server: HttpServer
 
-    full_part_infos: list[PartInfo] | Exception = PartInfo.split_parts(src_size, SizeSuffix("96MB"))
-    if isinstance(full_part_infos, Exception):
-        return full_part_infos
-    assert isinstance(full_part_infos, list)
+    full_part_infos: list[PartInfo] = PartInfo.split_parts(src_size, SizeSuffix("96MB"))
 
     if part_infos is None:
         part_infos = full_part_infos.copy()
 
-    err = _check_part_size(part_infos)
-    if err:
-        return err
+    _check_part_size(part_infos)
 
     all_part_numbers: list[int] = [p.part_number for p in part_infos]
     src_info_json = f"{dst_dir}/info.json"
@@ -246,7 +247,7 @@ def upload_parts_resumable(
     verbose_print(f"num_remaining_to_upload: {num_remaining_to_upload} / {len(full_part_infos)}")
 
     if num_remaining_to_upload == 0:
-        return None
+        return
     chunk_size = SizeSuffix(part_infos[0].range.end - part_infos[0].range.start)
 
     info_json.chunksize = chunk_size
@@ -324,7 +325,7 @@ def upload_parts_resumable(
     if len(exceptions) > 0:
         msg = f"Failed to copy parts: {exceptions}"
         _log(msg)
-        return Exception(msg, exceptions)
+        raise S3UploadError(exceptions)
 
     finished_parts: list[int] = info_json.fetch_all_finished_part_numbers()
     logger.info("finished_names: %s", finished_parts)
@@ -341,5 +342,3 @@ def upload_parts_resumable(
         msg = f"Upload failed for {full_path} ({len(finished_parts)}/{len(all_part_numbers)})"
     _log(msg)
     _log_completed_item(msg)
-
-    return None

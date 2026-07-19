@@ -75,10 +75,9 @@ def _raise_if_exception[T](result: T | Exception) -> T:
     """Convert an Exception-as-return-value into a raised exception.
 
     A transitional bridge for call sites already migrated to raise that
-    still call into callees (such as `S3Client.upload_file` or
-    `copy_file_parts_resumable`) not yet migrated off the `T | Exception`
-    return convention. Delete each call site once its callee raises
-    directly instead.
+    still call into `copy_file_parts_resumable`, not yet migrated off the
+    `T | Exception` return convention. Delete this and its one remaining
+    call site once that callee raises directly instead.
     """
     if isinstance(result, Exception):
         raise result
@@ -840,7 +839,7 @@ class RcloneImpl:
             bucket_name=path_info.bucket,
             s3_key=path_info.key,
         )
-        _raise_if_exception(s3_client.upload_file(target=target))
+        s3_client.upload_file(target=target)
 
     def is_s3(self, dst: str) -> bool:
         """Check if a remote is an S3 remote."""

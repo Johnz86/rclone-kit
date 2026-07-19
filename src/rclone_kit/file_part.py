@@ -49,7 +49,14 @@ class FilePart:
             self.payload = payload
             _add_for_cleanup(self.payload)
 
-    def get_file(self) -> Path | Exception:
+    def get_file(self) -> Path:
+        """Return the successfully-fetched chunk file.
+
+        Raises the original fetch/read failure if this part represents an
+        error rather than a successful payload.
+        """
+        if isinstance(self.payload, Exception):
+            raise self.payload
         return self.payload
 
     @property
