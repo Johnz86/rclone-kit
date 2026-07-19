@@ -21,8 +21,13 @@ class FSWalker:
         return self
 
     def __exit__(self, exc_type, exc_value, traceback):
-        self.walker.stop_event.set()
-        self.walker.join()
+        self.close()
+
+    def close(self) -> None:
+        """Stop the background walk. A no-op if never entered via `with`."""
+        walker = getattr(self, "walker", None)
+        if walker is not None:
+            walker.close()
 
     def __iter__(self):
         return self.walk()
