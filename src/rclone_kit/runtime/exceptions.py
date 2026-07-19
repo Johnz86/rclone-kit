@@ -102,6 +102,25 @@ class CacheReplacementError(RcloneRuntimeError):
         super().__init__(f"Failed to atomically replace cache entry at {destination}")
 
 
+class StagedExecutableDigestMismatchError(RcloneRuntimeError):
+    """Raised when a freshly extracted, build-time-staged rclone executable's
+    SHA-256 digest disagrees with `RcloneArtifact.executable_sha256_digest`.
+
+    Raised by `scripts/prepare_rclone_artifact.py` immediately after
+    extraction, before the executable is written into any staging or wheel
+    build directory, so a corrupted extraction can never be packaged.
+    """
+
+    def __init__(self, path: Path, expected_digest: str, actual_digest: str) -> None:
+        self.path = path
+        self.expected_digest = expected_digest
+        self.actual_digest = actual_digest
+        super().__init__(
+            f"Staged executable SHA-256 mismatch at {path}: "
+            f"expected {expected_digest}, got {actual_digest}"
+        )
+
+
 class CacheVerificationError(RcloneRuntimeError):
     """Raised when a materialized cache copy does not match its expected
     SHA-256 digest.

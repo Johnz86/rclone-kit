@@ -5,12 +5,15 @@ target-arch)` pair, verifies its SHA-256 against the repository-controlled
 digest declared in `rclone_kit.runtime.platform` (the same digest the
 runtime resolver's download fallback verifies against), and extracts only
 the expected executable into a generated output directory alongside its
-SHA-256 manifest and the vendored rclone MIT license text.
+SHA-256 manifest and the vendored rclone MIT license text. The extracted
+executable's digest is verified against
+`RcloneArtifact.executable_sha256_digest` immediately, before it is written
+into the staging directory, so a corrupted extraction is never staged.
 
 This script never writes into a tracked source folder; `--out-dir` must be a
-build directory such as `build/rclone-artifacts`. A later packaging step
-copies the staged `<out-dir>/rclone/<wheel-platform-tag>/` directory into
-`src/rclone_kit/assets/rclone/<wheel-platform-tag>/` before `uv build` runs.
+build directory such as `build/rclone-artifacts`. `scripts/build_distribution.py`
+is the canonical caller: it stages through this module's functions directly
+and copies the result into a temporary wheel-build source tree.
 
 Usage:
     uv run python scripts/prepare_rclone_artifact.py windows amd64 --out-dir build/rclone-artifacts
@@ -25,7 +28,7 @@ from tempfile import TemporaryDirectory
 
 from rclone_kit.runtime.archive_extract import extract_single_member
 from rclone_kit.runtime.downloader import fetch_verified_archive
-from rclone_kit.runtime.exceptions import RcloneRuntimeError
+from rclone_kit.runtime.exceptions import RcloneRuntimeError, StagedExecutableDigestMismatchError
 from rclone_kit.runtime.hashing import sha256_of_file
 from rclone_kit.runtime.permissions import apply_executable_permission
 from rclone_kit.runtime.platform import (
@@ -63,19 +66,39 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def _staging_directory(out_dir: Path, artifact: RcloneArtifact) -> Path:
+def staging_directory(out_dir: Path, artifact: RcloneArtifact) -> Path:
+    """Return the `<out-dir>/rclone/<wheel-platform-tag>/` directory that
+    `stage_executable` and `stage_license` populate for `artifact`.
+    """
     return out_dir / _STAGING_SUBDIRECTORY / artifact.wheel_platform_tag
 
 
-def _stage_executable(artifact: RcloneArtifact, staging_directory: Path) -> Path:
-    executable_path = staging_directory / artifact.executable_name
+def stage_executable(artifact: RcloneArtifact, staging_dir: Path) -> Path:
+    """Download, verify, and extract `artifact`'s executable into
+    `staging_dir`, alongside its `.sha256` manifest.
+
+    Raises `StagedExecutableDigestMismatchError` when the freshly extracted
+    executable's digest disagrees with `artifact.executable_sha256_digest`;
+    a mismatched executable is never left behind in `staging_dir`.
+    """
+    executable_path = staging_dir / artifact.executable_name
     with TemporaryDirectory() as raw_temp_dir:
         archive_path = Path(raw_temp_dir) / artifact.archive_filename
         fetch_verified_archive(artifact, archive_path)
         extract_single_member(archive_path, artifact.executable_member_name, executable_path)
     apply_executable_permission(executable_path, artifact)
+    _verify_staged_digest(artifact, executable_path)
     _write_manifest(executable_path)
     return executable_path
+
+
+def _verify_staged_digest(artifact: RcloneArtifact, executable_path: Path) -> None:
+    actual_digest = sha256_of_file(executable_path)
+    if actual_digest != artifact.executable_sha256_digest:
+        executable_path.unlink()
+        raise StagedExecutableDigestMismatchError(
+            executable_path, artifact.executable_sha256_digest, actual_digest
+        )
 
 
 def _write_manifest(executable_path: Path) -> None:
@@ -84,8 +107,9 @@ def _write_manifest(executable_path: Path) -> None:
     manifest_path.write_text(digest, encoding="utf-8")
 
 
-def _stage_license(staging_directory: Path) -> Path:
-    license_path = staging_directory / _STAGED_LICENSE_FILENAME
+def stage_license(staging_dir: Path) -> Path:
+    """Copy the vendored rclone MIT license text into `staging_dir`."""
+    license_path = staging_dir / _STAGED_LICENSE_FILENAME
     shutil.copyfile(_RCLONE_LICENSE_SOURCE, license_path)
     return license_path
 
@@ -99,10 +123,10 @@ def main(argv: list[str] | None = None) -> int:
     args = _parse_args(sys.argv[1:] if argv is None else argv)
     try:
         artifact = resolve_rclone_artifact(system=args.target_os, machine=args.target_arch)
-        staging_directory = _staging_directory(args.out_dir, artifact)
-        staging_directory.mkdir(parents=True, exist_ok=True)
-        executable_path = _stage_executable(artifact, staging_directory)
-        license_path = _stage_license(staging_directory)
+        target_staging_directory = staging_directory(args.out_dir, artifact)
+        target_staging_directory.mkdir(parents=True, exist_ok=True)
+        executable_path = stage_executable(artifact, target_staging_directory)
+        license_path = stage_license(target_staging_directory)
     except RcloneRuntimeError as error:
         print(f"Failed to prepare rclone artifact: {error}", file=sys.stderr)
         return 1

@@ -17,49 +17,40 @@ uv run ruff check .
 uv run pyright src tests scripts
 uv run pytest tests/unit
 uv run pytest tests/integration
-uv build
-uv run python scripts/verify_distribution.py dist
+uv run python scripts/build_distribution.py --target <windows|linux>-amd64 --out-dir dist
 uv publish --check-url https://pypi.org/simple
 ```
 
 Two details matter when actually executing it:
 
-- **`uv build` needs a staged rclone artifact first.** Nothing under
-  `src/rclone_kit/assets/rclone/` is committed (see `.gitignore`), so before
-  `uv build` runs, stage the certified artifact for the platform you are
-  building on:
+- **One canonical command replaces the manual staging/build/verify/smoke-test
+  sequence.** `scripts/build_distribution.py` (see
+  `docs/build_pipeline_improvements.md`) stages the certified rclone
+  artifact into an isolated temporary copy of the source tree, verifies the
+  extracted executable's digest, builds exactly one wheel, runs every
+  `scripts/verify_distribution.py` check, installs the wheel into a clean
+  environment, and runs the bundled-executable and console-script smoke
+  tests — all as one atomic step. Nothing under
+  `src/rclone_kit/assets/rclone/` is ever written into this checkout; the
+  tracked tree is byte-identical before and after the command, whether it
+  succeeds or fails. `--out-dir` must be empty or nonexistent; omit it to
+  let the script create a fresh temporary directory itself.
 
-  ```powershell
-  uv run python scripts/prepare_rclone_artifact.py <windows|linux> amd64 --out-dir build/rclone-artifacts
-  Copy-Item -Path build/rclone-artifacts/rclone/* -Destination src/rclone_kit/assets/rclone -Recurse -Force
-  ```
+- **No source distribution is built or published.** Per
+  `docs/build_pipeline_improvements.md`'s recommended short-term sdist
+  policy, a normal `pip wheel` build from an sdist has no staging step and
+  would silently produce a wheel without rclone. `rclone-kit` therefore
+  publishes platform wheels only, until sdist-to-wheel builds are made
+  complete and tested.
 
-  This mirrors exactly what `.github/workflows/ci.yml`'s `package` job does
-  on each matrix runner.
-
-- **Build the sdist before staging, the wheel after.** A single `uv build`
-  invocation shares its file-inclusion logic between the sdist and the
-  wheel closely enough that excluding `assets/rclone/` from just the sdist
-  via `MANIFEST.in` also strips it from the wheel. The reliable split is:
-
-  ```powershell
-  uv build --sdist    # before staging: sdist stays platform-independent
-  # ... stage the rclone artifact as shown above ...
-  uv build --wheel     # after staging: wheel bundles the executable
-  ```
-
-  `scripts/verify_distribution.py` enforces the sdist side of this
-  invariant (`check_sdist_has_no_staged_platform_executables`) so a release
-  fails closed if the ordering above is skipped.
-
-- **One `uv build` run produces one platform's wheel.** The in-tree build
-  backend (`_build_backend.py`) forces a platform-tagged wheel matching the
-  *building* machine; it does not cross-compile. A full release needs this
-  sequence run once per certified platform — in practice, once per leg of
-  `.github/workflows/ci.yml`'s `package` matrix — with every resulting
-  wheel collected into one `dist/` directory (alongside the single,
-  platform-independent sdist) before the final `uv run python
-  scripts/verify_distribution.py dist` and `uv publish` calls.
+- **One `build_distribution.py` run produces one platform's wheel.** The
+  in-tree build backend (`_build_backend.py`) forces a platform-tagged wheel
+  matching the *building* machine; it does not cross-compile, and the
+  script fails fast if `--target` does not match the host it is running on.
+  A full release needs this command run once per certified platform — in
+  practice, once per leg of `.github/workflows/ci.yml`'s `package` matrix —
+  with every resulting wheel collected into one `dist/` directory before the
+  final `uv publish` call.
 
 ## Release record
 
