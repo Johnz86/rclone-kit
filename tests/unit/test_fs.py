@@ -19,7 +19,13 @@ class RcloneFSTester(unittest.TestCase):
     """Test DB functionality."""
 
     def test_os_walk(self) -> None:
-        """Test table section functionality."""
+        """Walking a real directory tree finds every file and directory.
+
+        Asserts set membership, not order: `RealFS.ls()` lists entries via
+        `Path.iterdir()`, whose order is filesystem-dependent (e.g. ext4
+        does not return entries in creation or alphabetical order the way
+        NTFS commonly does), so no ordering guarantee exists to assert on.
+        """
         with TemporaryDirectory() as temp_dir:
             path = Path(temp_dir)
 
@@ -48,11 +54,14 @@ class RcloneFSTester(unittest.TestCase):
                         full_path = current_dir / file_path
                         all_files.append(full_path)
 
-            self.assertEqual(all_dirs[0].relative_to(cwd).path, "sub1")
-            self.assertEqual(all_dirs[1].relative_to(cwd).path, "sub2")
-            self.assertEqual(all_files[0].relative_to(cwd).path, "file1.txt")
-            self.assertEqual(all_files[1].relative_to(cwd).path, "file2.txt")
-            self.assertEqual(all_files[2].relative_to(cwd).path, "sub1/subfile1.txt")
+            self.assertCountEqual(
+                [fs_path.relative_to(cwd).path for fs_path in all_dirs],
+                ["sub1", "sub2"],
+            )
+            self.assertCountEqual(
+                [fs_path.relative_to(cwd).path for fs_path in all_files],
+                ["file1.txt", "file2.txt", "sub1/subfile1.txt"],
+            )
 
     def test_with_suffix(self) -> None:
         """Test with_suffix functionality."""
