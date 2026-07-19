@@ -404,10 +404,40 @@ rather than an undocumented oversight. `WriteMergeStateThread` and
 explicit `close()`/`stop()` and confirmed ownership; that is deferred to the
 S3 multipart phase since it touches the same state machine.
 
+The S3 multipart phase is done for its ownership and evidence goals; the
+underlying upload algorithms were intentionally not rewritten. Rather than
+force a single state machine across three structurally different
+strategies, the ownership gap was closed and the implicit states each
+strategy already had were named and tested: `WriteMergeStateThread` gained
+an idempotent `close()` that always sends its end-of-stream sentinel before
+joining (fixing a real bug where `_do_upload_task`'s
+`executor.shutdown(..., cancel_futures=True)` on a retry-exhausted part
+copy could cancel the not-yet-started sentinel task, orphaning the writer
+thread on `queue.get()` forever); `S3MultiPartMerger` gained a matching
+`close()`/context manager, and `merge()` now closes the write thread in a
+`finally` around the upload so it happens on both success and failure;
+`close()` raises `S3MergeError` on a join timeout rather than warning,
+since a merge whose state never reached `merge.json` is a correctness
+signal, not a best-effort cleanup miss. Two dead `is`/`is not EndOfStream`
+identity checks (comparing an instance to the class) were fixed to
+`isinstance`. New fake-S3 regression tests cover every required-evidence
+scenario: resume (`_begin_or_resume_merge` from a valid prior state),
+corruption (the same function falling back to a fresh merge on a malformed
+one), retry exhaustion and worker failure (a real retry-exhausted part
+copy through the actual `ThreadPoolExecutor` path), completion failure
+(every part succeeding but `complete_multipart_upload` itself failing), and
+cleanup (the write thread closed on every one of those paths). The
+resumable strategy's "finished part" tracking (a directory listing, not a
+persisted state object like `MergeState`) was deliberately left as-is: it
+already defers to `rclone`'s own listing as the source of truth, and
+introducing a parallel persisted-state mechanism there without a
+demonstrated need would just duplicate `MergeState`'s design. A
+`PartMergeState` naming/documentation pass was considered speculative and
+skipped.
+
 | Area | Current constraint | Preferred next step | Required evidence |
 |---|---|---|---|
 | Public facade | `Rclone` and `RcloneImpl` remain large and duplicate the operation surface. | Extract pure command builders and cohesive listing, transfer, configuration, serve, mount, and S3 services while keeping `Rclone` stable. | Characterization tests and an API compatibility snapshot. |
-| S3 multipart | Several strategies coordinate futures, persisted state, retries, and cleanup separately; `WriteMergeStateThread` has no explicit close/stop path. | Define and test explicit states and transitions before consolidating orchestration; give `WriteMergeStateThread`/`S3MultiPartMerger` explicit, idempotent ownership of the write thread. | Fake-S3 tests cover resume, retry exhaustion, corruption, worker failure, completion failure, and cleanup. |
 | Paths and filesystems | Local paths, rclone paths, and strings still overlap. | Introduce immutable local/rclone path values and one documented `FS.ls` contract. | Identical remote-path behavior on Windows and Linux. |
 | Typing and linting | Legacy rule families remain globally ignored and Pyright is not strict. | Make new modules strict, then remove one narrow ignore family per behavior-preserving change. | Quality gates pass with a smaller ignore surface and no broad `Any` escape hatches in changed code. |
 | Test isolation | Cloud tests retain legacy `unittest` setup and disabled scenarios. | Move shared setup to pytest fixtures and replace disabled tests with deterministic fakes where possible. | Unit tests run offline and in arbitrary order; external suites are explicitly opt-in. |
