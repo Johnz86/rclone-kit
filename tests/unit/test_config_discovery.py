@@ -13,9 +13,9 @@ import pytest
 
 from rclone_kit import config as config_module
 from rclone_kit.config import ConfigDiscoveryError, find_conf_file
+from rclone_kit.detail.config_ops import _parse_paths as parse_all_config_paths
 from rclone_kit.exceptions import RcloneCommandError
 from rclone_kit.rclone_impl import RcloneImpl
-from rclone_kit.rclone_impl import _parse_paths as parse_all_config_paths
 
 
 def _make_bare_rclone_impl(config_paths_result: Any) -> RcloneImpl:

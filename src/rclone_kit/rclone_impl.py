@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING
 
 from rclone_kit import Dir
 from rclone_kit.completed_process import CompletedProcess
-from rclone_kit.config import Config, Parsed, Section
+from rclone_kit.config import Config
 from rclone_kit.convert import convert_to_filestr_list, convert_to_str
 from rclone_kit.detail.walk import walk
 from rclone_kit.diff import DiffItem, DiffOption, diff_stream_from_running_process
@@ -35,10 +35,6 @@ from rclone_kit.optional_dependency import MissingOptionalDependencyError
 from rclone_kit.process import Process
 from rclone_kit.remote import Remote
 from rclone_kit.rpath import RPath
-from rclone_kit.s3.types import (
-    S3Credentials,
-    S3Provider,
-)
 from rclone_kit.types import (
     ListingOption,
     ModTimeStrategy,
@@ -57,6 +53,7 @@ from rclone_kit.util import (
 
 if TYPE_CHECKING:
     from rclone_kit.s3.api import S3Client
+    from rclone_kit.s3.types import S3Credentials
 
 logger = logging.getLogger(__name__)
 
@@ -85,17 +82,6 @@ def _to_rclone_conf(config: Config | Path | None) -> Config:
         return Config(content)
     else:
         return config
-
-
-def _parse_paths(src: str) -> list[Path]:
-    """Parse the `Label: value` lines printed by `rclone config paths`."""
-    paths: list[Path] = []
-    for line in src.splitlines():
-        _label, separator, value = line.partition(":")
-        if not separator:
-            continue
-        paths.append(Path(value.strip()))
-    return paths
 
 
 class RcloneImpl:
@@ -188,9 +174,9 @@ class RcloneImpl:
 
     def obscure(self, password: str) -> str:
         """Obscure a password for use in rclone config files."""
-        cmd_list: list[str] = ["obscure", password]
-        cp = self._run(cmd_list)
-        return cp.stdout.strip()
+        from rclone_kit.detail.config_ops import obscure_password
+
+        return obscure_password(self, password)
 
     def ls_stream(
         self,
@@ -830,23 +816,9 @@ class RcloneImpl:
 
     def is_s3(self, dst: str) -> bool:
         """Check if a remote is an S3 remote."""
-        from rclone_kit.util import S3PathInfo
+        from rclone_kit.detail.config_ops import check_is_s3
 
-        try:
-            path_info: S3PathInfo = S3PathInfo.from_str(dst)
-            remote = path_info.remote
-            parsed: Parsed = self.config.parse()
-            sections: dict[str, Section] = parsed.sections
-            if remote not in sections:
-                return False
-            section: Section = sections[remote]
-            t = section.type()
-            return t in ["s3", "b2"]
-        except KeyboardInterrupt:
-            raise
-        except Exception as e:
-            logging.exception(f"Error checking if remote is S3: {e}")
-            return False
+        return check_is_s3(self, dst)
 
     def copy_file_s3_resumable(
         self,
@@ -944,57 +916,9 @@ class RcloneImpl:
         return SizeSuffix(dirlist.files[0].size)
 
     def get_s3_credentials(self, remote: str, verbose: bool | None = None) -> S3Credentials:
-        from rclone_kit.util import S3PathInfo
+        from rclone_kit.detail.config_ops import fetch_s3_credentials
 
-        verbose = get_verbose(verbose)
-        path_info: S3PathInfo = S3PathInfo.from_str(remote)
-
-        remote = path_info.remote
-        bucket_name = path_info.bucket
-
-        remote = path_info.remote
-        parsed: Parsed = self.config.parse()
-        sections: dict[str, Section] = parsed.sections
-        if remote not in sections:
-            raise ValueError(
-                f"Remote {remote} not found in rclone config, remotes are: {sections.keys()}"
-            )
-
-        section: Section = sections[remote]
-        dst_type = section.type()
-        if dst_type not in {"s3", "b2"}:
-            raise ValueError(f"Remote {remote} is not an S3 remote, it is of type {dst_type}")
-
-        def get_provider_str(section=section) -> str | None:
-            type: str = section.type()
-            provider: str | None = section.provider()
-            if provider is not None:
-                return provider
-            if type == "b2":
-                return S3Provider.BACKBLAZE.value
-            if type != "s3":
-                raise ValueError(f"Remote {remote} is not an S3 remote")
-            return S3Provider.S3.value
-
-        provider: str
-        if provided_provider_str := get_provider_str():
-            if verbose:
-                logger.info("Using provided provider: %s", provided_provider_str)
-            provider = provided_provider_str
-        else:
-            if verbose:
-                logger.info("Using default provider: %s", S3Provider.S3.value)
-            provider = S3Provider.S3.value
-        provider_enum = S3Provider.from_str(provider)
-
-        s3_creds: S3Credentials = S3Credentials(
-            bucket_name=bucket_name,
-            provider=provider_enum,
-            access_key_id=section.access_key_id(),
-            secret_access_key=section.secret_access_key(),
-            endpoint_url=section.endpoint(),
-        )
-        return s3_creds
+        return fetch_s3_credentials(self, remote, verbose=verbose)
 
     def copy_bytes(
         self,
@@ -1276,17 +1200,9 @@ class RcloneImpl:
             RcloneCommandError: if the underlying `rclone config paths`
                 invocation fails.
         """
-        del remote, obscure, no_obscure
-        cmd_list: list[str] = ["config", "paths"]
+        from rclone_kit.detail.config_ops import fetch_config_paths
 
-        try:
-            cp = self._run(cmd_list, capture=True, check=True)
-        except subprocess.CalledProcessError as error:
-            raise RcloneCommandError("config paths", error.stderr or "", error) from error
-        stdout: str | bytes = cp.stdout
-        if isinstance(stdout, bytes):
-            stdout = stdout.decode("utf-8")
-        return _parse_paths(stdout)
+        return fetch_config_paths(self, remote=remote, obscure=obscure, no_obscure=no_obscure)
 
     def config_show(
         self, remote: str | None = None, obscure: bool = False, no_obscure: bool = False
@@ -1298,21 +1214,9 @@ class RcloneImpl:
             RcloneCommandError: if the underlying `rclone config show`
                 invocation fails.
         """
-        if obscure and no_obscure:
-            raise ValueError("obscure and no_obscure cannot both be enabled")
-        cmd_list = ["config", "show"]
-        if remote is not None:
-            cmd_list.append(remote)
-        if obscure:
-            cmd_list.append("--obscure")
-        if no_obscure:
-            cmd_list.append("--no-obscure")
-        try:
-            cp = self._run(cmd_list, capture=True, check=True)
-        except subprocess.CalledProcessError as error:
-            raise RcloneCommandError("config show", error.stderr or "", error) from error
-        stdout = cp.stdout
-        return stdout.decode("utf-8") if isinstance(stdout, bytes) else stdout
+        from rclone_kit.detail.config_ops import fetch_config_show
+
+        return fetch_config_show(self, remote=remote, obscure=obscure, no_obscure=no_obscure)
 
     def size_files(
         self,
