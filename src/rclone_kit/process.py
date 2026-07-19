@@ -1,8 +1,8 @@
 import atexit
 import logging
 import subprocess
-import threading
 import weakref
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Self, cast
@@ -17,6 +17,8 @@ from rclone_kit.util import (
 )
 
 logger = logging.getLogger(__name__)
+
+_LIVE_PROCESSES: weakref.WeakSet["Process"] = weakref.WeakSet()
 
 
 def _spawn_bytes_mode(cmd: list[str], kwargs: dict) -> subprocess.Popen[bytes]:
@@ -74,15 +76,7 @@ class Process:
             kwargs["stderr"] = subprocess.STDOUT
 
         self.process = _spawn_bytes_mode(self.cmd, kwargs)
-
-        self_ref = weakref.ref(self)
-
-        def exit_cleanup():
-            obj = self_ref()
-            if obj is not None:
-                obj._atexit_terminate()
-
-        atexit.register(exit_cleanup)
+        _LIVE_PROCESSES.add(self)
 
     def __enter__(self) -> Self:
         return self
@@ -94,6 +88,7 @@ class Process:
         self.terminate()
         self.wait()
         self.cleanup()
+        _LIVE_PROCESSES.discard(self)
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
         self.dispose()
@@ -112,18 +107,13 @@ class Process:
         terminate_process_tree(self.process.pid)
 
     def _atexit_terminate(self) -> None:
-        """
-        This method is registered via atexit and uses psutil to clean up the process tree.
-        It runs in a daemon thread so that termination happens without blocking interpreter shutdown.
+        """Kill this process's tree if it is still running.
+
+        Called from `_cleanup_live_processes` on interpreter exit for every
+        `Process` a caller never explicitly disposed.
         """
         if self.process.poll() is None:
-
-            def terminate_sequence():
-                self._kill_process_tree()
-
-            t = threading.Thread(target=terminate_sequence, daemon=True)
-            t.start()
-            t.join(timeout=3)
+            self._kill_process_tree()
 
     @property
     def pid(self) -> int:
@@ -171,3 +161,18 @@ class Process:
         else:
             state = "finished ok"
         return f"Process({self.cmd}, {state})"
+
+
+def _cleanup_live_processes() -> None:
+    """Terminate every `Process` still tracked in `_LIVE_PROCESSES`.
+
+    Registered once at import time rather than per instance, so creating
+    many `Process` objects over a long-lived interpreter session does not
+    grow `atexit`'s internal registration list without bound.
+    """
+    with ThreadPoolExecutor() as executor:
+        for process in list(_LIVE_PROCESSES):
+            executor.submit(process._atexit_terminate)
+
+
+atexit.register(_cleanup_live_processes)

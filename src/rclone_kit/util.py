@@ -61,6 +61,22 @@ def _clean_configs(signum: int | None = None, _frame: object | None = None) -> N
 
 atexit.register(_clean_configs)
 
+_LIVE_SUBPROCESSES: weakref.WeakSet[subprocess.Popen[str]] = weakref.WeakSet()
+
+
+def _terminate_live_subprocesses() -> None:
+    """Kill every subprocess `rclone_execute` started that is still tracked.
+
+    Registered once at import time rather than per call, so every
+    `rclone_execute` invocation does not grow `atexit`'s internal
+    registration list without bound.
+    """
+    for process in list(_LIVE_SUBPROCESSES):
+        terminate_process_tree(process.pid)
+
+
+atexit.register(_terminate_live_subprocesses)
+
 
 def register_signal_cleanup() -> None:
     """Register `SIGINT`/`SIGTERM` handlers that clean up temporary rclone
@@ -289,6 +305,7 @@ def rclone_execute(
         capture = capture if isinstance(capture, bool) else True
 
     file_handle = None
+    process: subprocess.Popen[str] | None = None
     try:
         if isinstance(rclone_conf, Config):
             tmpfile = make_temp_config_file()
@@ -315,16 +332,7 @@ def rclone_execute(
             proc_kwargs["stdout"] = subprocess.PIPE if capture else None
 
         process = subprocess.Popen(full_cmd, **proc_kwargs)
-
-        proc_ref = weakref.ref(process)
-
-        def cleanup() -> None:
-            proc = proc_ref()
-            if proc is None:
-                return
-            terminate_process_tree(proc.pid)
-
-        atexit.register(cleanup)
+        _LIVE_SUBPROCESSES.add(process)
 
         out, err = process.communicate()
 
@@ -348,6 +356,8 @@ def rclone_execute(
         if file_handle is not None:
             file_handle.close()
         clear_temp_config_file(tmpfile)
+        if process is not None:
+            _LIVE_SUBPROCESSES.discard(process)
 
 
 def split_s3_path(path: str) -> S3PathInfo:
