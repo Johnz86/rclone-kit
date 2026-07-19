@@ -1,16 +1,18 @@
 import random
 import subprocess
 import warnings
+from collections.abc import Generator
 from datetime import datetime
 from fnmatch import fnmatch
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from rclone_kit.convert import convert_to_str
+from rclone_kit.diff import DiffItem, DiffOption, diff_stream_from_running_process
 from rclone_kit.dir import Dir
 from rclone_kit.dir_listing import DirListing
 from rclone_kit.file import File
-from rclone_kit.rclone_impl import FLAG_FAST_LIST, FLAG_FILES_FROM, RcloneImpl
+from rclone_kit.rclone_impl import FLAG_CHECKERS, FLAG_FAST_LIST, FLAG_FILES_FROM, RcloneImpl
 from rclone_kit.remote import Remote
 from rclone_kit.rpath import RPath
 from rclone_kit.types import ListingOption, Order, SizeResult, SizeSuffix
@@ -220,3 +222,58 @@ def fetch_size_files(
         prefix=src, total_size=total_size, file_sizes=file_sizes_path_corrected
     )
     return out
+
+
+def stream_diff(
+    self: RcloneImpl,
+    src: str,
+    dst: str,
+    min_size: str | None = None,
+    max_size: str | None = None,
+    diff_option: DiffOption = DiffOption.COMBINED,
+    fast_list: bool = True,
+    size_only: bool | None = None,
+    checkers: int | None = None,
+    other_args: list[str] | None = None,
+) -> Generator[DiffItem]:
+    """Be extra careful with the src and dst values. If you are off by one
+    parent directory, you will get a huge amount of false diffs."""
+    other_args = other_args or []
+    if checkers is None or checkers < 1:
+        checkers = 1000
+    cmd = [
+        "check",
+        src,
+        dst,
+        FLAG_CHECKERS,
+        str(checkers),
+        "--log-level",
+        "INFO",
+        f"--{diff_option.value}",
+        "-",
+    ]
+    if size_only is None:
+        size_only = diff_option in [
+            DiffOption.MISSING_ON_DST,
+            DiffOption.MISSING_ON_SRC,
+        ]
+    if size_only:
+        cmd += ["--size-only"]
+    if fast_list:
+        cmd += [FLAG_FAST_LIST]
+    if min_size:
+        cmd += ["--min-size", min_size]
+    if max_size:
+        cmd += ["--max-size", max_size]
+    if diff_option == DiffOption.MISSING_ON_DST:
+        cmd += ["--one-way"]
+    if other_args:
+        cmd += other_args
+    proc = self._launch_process(cmd, capture=True)
+    item: DiffItem
+    for item in diff_stream_from_running_process(
+        running_process=proc, src_slug=src, dst_slug=dst, diff_option=diff_option
+    ):
+        if item is None:
+            break
+        yield item

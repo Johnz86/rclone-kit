@@ -19,7 +19,7 @@ from rclone_kit.completed_process import CompletedProcess
 from rclone_kit.config import Config
 from rclone_kit.convert import convert_to_filestr_list, convert_to_str
 from rclone_kit.detail.walk import walk
-from rclone_kit.diff import DiffItem, DiffOption, diff_stream_from_running_process
+from rclone_kit.diff import DiffItem, DiffOption
 from rclone_kit.dir_listing import DirListing
 from rclone_kit.exceptions import RcloneCommandError
 from rclone_kit.exec import RcloneExec
@@ -303,45 +303,20 @@ class RcloneImpl:
     ) -> Generator[DiffItem]:
         """Be extra careful with the src and dst values. If you are off by one
         parent directory, you will get a huge amount of false diffs."""
-        other_args = other_args or []
-        if checkers is None or checkers < 1:
-            checkers = 1000
-        cmd = [
-            "check",
+        from rclone_kit.detail.listing_ops import stream_diff
+
+        yield from stream_diff(
+            self,
             src,
             dst,
-            FLAG_CHECKERS,
-            str(checkers),
-            "--log-level",
-            "INFO",
-            f"--{diff_option.value}",
-            "-",
-        ]
-        if size_only is None:
-            size_only = diff_option in [
-                DiffOption.MISSING_ON_DST,
-                DiffOption.MISSING_ON_SRC,
-            ]
-        if size_only:
-            cmd += ["--size-only"]
-        if fast_list:
-            cmd += [FLAG_FAST_LIST]
-        if min_size:
-            cmd += ["--min-size", min_size]
-        if max_size:
-            cmd += ["--max-size", max_size]
-        if diff_option == DiffOption.MISSING_ON_DST:
-            cmd += ["--one-way"]
-        if other_args:
-            cmd += other_args
-        proc = self._launch_process(cmd, capture=True)
-        item: DiffItem
-        for item in diff_stream_from_running_process(
-            running_process=proc, src_slug=src, dst_slug=dst, diff_option=diff_option
-        ):
-            if item is None:
-                break
-            yield item
+            min_size=min_size,
+            max_size=max_size,
+            diff_option=diff_option,
+            fast_list=fast_list,
+            size_only=size_only,
+            checkers=checkers,
+            other_args=other_args,
+        )
 
     def walk(
         self,

@@ -7,6 +7,9 @@ itself still works.
 
 import json
 import subprocess
+from io import BytesIO
+from pathlib import Path
+from types import SimpleNamespace
 from typing import cast
 
 import pytest
@@ -22,10 +25,13 @@ from rclone_kit.detail.listing_ops import (
     fetch_size_files,
     fetch_stat,
     print_contents,
+    stream_diff,
 )
+from rclone_kit.diff import DiffOption, DiffType
 from rclone_kit.dir_listing import DirListing
 from rclone_kit.file import File
-from rclone_kit.rclone_impl import FLAG_FILES_FROM, RcloneImpl
+from rclone_kit.process import Process
+from rclone_kit.rclone_impl import FLAG_CHECKERS, FLAG_FAST_LIST, FLAG_FILES_FROM, RcloneImpl
 from rclone_kit.remote import Remote
 from rclone_kit.types import SizeResult, SizeSuffix
 
@@ -309,3 +315,56 @@ def test_print_contents_prints_read_text_result(capsys: pytest.CaptureFixture[st
     print_contents(rclone, "remote:bucket/a.txt")
 
     assert capsys.readouterr().out == "file contents\n"
+
+
+def test_stream_diff_builds_expected_command_vector_and_streams_items() -> None:
+    rclone = _bare_rclone_impl()
+    commands: list[list[str]] = []
+
+    def launch_process(
+        cmd: list[str], capture: bool | None = None, log: Path | None = None
+    ) -> Process:
+        del capture, log
+        commands.append(cmd)
+        stdout = BytesIO(b"= same.txt\n- missing_src.txt\n")
+        return cast(Process, SimpleNamespace(stdout=stdout))
+
+    rclone._launch_process = launch_process
+
+    items = list(stream_diff(rclone, "src:bucket", "dst:bucket", checkers=5))
+
+    assert commands == [
+        [
+            "check",
+            "src:bucket",
+            "dst:bucket",
+            FLAG_CHECKERS,
+            "5",
+            "--log-level",
+            "INFO",
+            "--combined",
+            "-",
+            FLAG_FAST_LIST,
+        ]
+    ]
+    assert [item.type for item in items] == [DiffType.EQUAL, DiffType.MISSING_ON_SRC]
+    assert [item.path for item in items] == ["same.txt", "missing_src.txt"]
+
+
+def test_stream_diff_missing_on_dst_adds_one_way_flag() -> None:
+    rclone = _bare_rclone_impl()
+    commands: list[list[str]] = []
+
+    def launch_process(
+        cmd: list[str], capture: bool | None = None, log: Path | None = None
+    ) -> Process:
+        del capture, log
+        commands.append(cmd)
+        return cast(Process, SimpleNamespace(stdout=BytesIO(b"")))
+
+    rclone._launch_process = launch_process
+
+    list(stream_diff(rclone, "src:bucket", "dst:bucket", diff_option=DiffOption.MISSING_ON_DST))
+
+    assert "--one-way" in commands[0]
+    assert "--size-only" in commands[0]
