@@ -435,129 +435,27 @@ class RcloneImpl:
         Args:
             payload: Dictionary of source and destination file paths
         """
-        check = get_check(check)
-        max_partition_workers = 1 if max_partition_workers is None else max_partition_workers
-        low_level_retries = 10 if low_level_retries is None else low_level_retries
-        retries = 3 if retries is None else retries
-        command_args = [*(other_args or ()), FLAG_S3_NO_CHECK_BUCKET]
-        checkers = 1000 if checkers is None else checkers
-        transfers = 32 if transfers is None else transfers
-        verbose = get_verbose(verbose)
-        payload: list[str] = (
-            files
-            if isinstance(files, list)
-            else [f.strip() for f in files.read_text().splitlines() if f.strip()]
+        from rclone_kit.detail.transfer_ops import copy_files_partitioned
+
+        return copy_files_partitioned(
+            self,
+            src,
+            dst,
+            files,
+            check=check,
+            max_backlog=max_backlog,
+            verbose=verbose,
+            checkers=checkers,
+            transfers=transfers,
+            low_level_retries=low_level_retries,
+            retries=retries,
+            retries_sleep=retries_sleep,
+            metadata=metadata,
+            timeout=timeout,
+            max_partition_workers=max_partition_workers,
+            multi_thread_streams=multi_thread_streams,
+            other_args=other_args,
         )
-        if len(payload) == 0:
-            return []
-
-        for p in payload:
-            if ":" in p:
-                raise ValueError(
-                    f"Invalid file path, contains a remote, which is not allowed for copy_files: {p}"
-                )
-
-        using_fast_list = FLAG_FAST_LIST in command_args
-        if using_fast_list:
-            warnings.warn(
-                "It's not recommended to use --fast-list with copy_files as this will perform poorly on large repositories since the entire repository has to be scanned.",
-                stacklevel=2,
-            )
-
-        if max_partition_workers > 1:
-            datalists: dict[str, list[str]] = group_files(payload, fully_qualified=False)
-        else:
-            datalists = {"": payload}
-
-        out: list[CompletedProcess] = []
-
-        futures: list[Future] = []
-
-        with ThreadPoolExecutor(max_workers=max_partition_workers) as executor:
-            for common_prefix, partition_files in datalists.items():
-
-                def _task(
-                    files: list[str] | Path = partition_files,
-                    common_prefix: str = common_prefix,
-                ) -> subprocess.CompletedProcess:
-                    with TemporaryDirectory() as tmpdir:
-                        filelist: list[str] = []
-                        filepath: Path
-                        if isinstance(files, list):
-                            include_files_txt = Path(tmpdir) / "include_files.txt"
-                            include_files_txt.write_text("\n".join(files), encoding="utf-8")
-                            filelist = list(files)
-                            filepath = Path(include_files_txt)
-                        elif isinstance(files, Path):
-                            filelist = [
-                                f.strip() for f in files.read_text().splitlines() if f.strip()
-                            ]
-                            filepath = files
-                        if common_prefix:
-                            src_path = f"{src}/{common_prefix}"
-                            dst_path = f"{dst}/{common_prefix}"
-                        else:
-                            src_path = src
-                            dst_path = dst
-
-                        if verbose:
-                            nfiles = len(filelist)
-                            files_fqdn = [f"  {src_path}/{f}" for f in filelist]
-                            logger.info("Copying %d files:", nfiles)
-                            chunk_size = 100
-                            for i in range(0, nfiles, chunk_size):
-                                chunk = files_fqdn[i : i + chunk_size]
-                                files_str = "\n".join(chunk)
-                                logger.info("%s", files_str)
-                        cmd_list: list[str] = [
-                            "copy",
-                            src_path,
-                            dst_path,
-                            FLAG_FILES_FROM,
-                            str(filepath),
-                            FLAG_CHECKERS,
-                            str(checkers),
-                            FLAG_TRANSFERS,
-                            str(transfers),
-                            FLAG_LOW_LEVEL_RETRIES,
-                            str(low_level_retries),
-                            "--retries",
-                            str(retries),
-                        ]
-                        if metadata:
-                            cmd_list.append("--metadata")
-                        if retries_sleep is not None:
-                            cmd_list += ["--retries-sleep", retries_sleep]
-                        if timeout is not None:
-                            cmd_list += ["--timeout", timeout]
-                        if max_backlog is not None:
-                            cmd_list += ["--max-backlog", str(max_backlog)]
-                        if multi_thread_streams is not None:
-                            cmd_list += [
-                                FLAG_MULTI_THREAD_STREAMS,
-                                str(multi_thread_streams),
-                            ]
-                        if verbose:
-                            if not any("-v" in x for x in command_args):
-                                cmd_list.append("-vvvv")
-                            if not any(FLAG_PROGRESS in x for x in command_args):
-                                cmd_list.append(FLAG_PROGRESS)
-                        cmd_list += command_args
-                        out = self._run(cmd_list, capture=not verbose)
-                        return out
-
-                fut: Future = executor.submit(_task)
-                futures.append(fut)
-            for fut in futures:
-                cp: subprocess.CompletedProcess = fut.result()
-                assert cp is not None
-                out.append(CompletedProcess.from_subprocess(cp))
-                if cp.returncode != 0:
-                    if check:
-                        raise ValueError(f"Error deleting files: {cp.stderr}")
-                    else:
-                        warnings.warn(f"Error deleting files: {cp.stderr}", stacklevel=2)
-        return out
 
     def copy(
         self,
