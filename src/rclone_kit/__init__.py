@@ -249,7 +249,7 @@ class Rclone:
 
     def config_show(
         self, remote: str | None = None, obscure: bool = False, no_obscure: bool = False
-    ) -> str | Exception:
+    ) -> str:
         """Show the current configuration.
 
         Args:
@@ -258,7 +258,11 @@ class Rclone:
             no_obscure: Show passwords in plain text
 
         Returns:
-            Configuration as text or an Exception if an error occurred
+            Configuration as text
+
+        Raises:
+            ValueError: If both obscure and no_obscure are set
+            RcloneCommandError: If the underlying rclone command fails
         """
         return self.impl.config_show(remote=remote, obscure=obscure, no_obscure=no_obscure)
 
@@ -463,7 +467,7 @@ class Rclone:
         src: Path,
         dst: str,
         verbose: bool | None = None,
-    ) -> Exception | None:
+    ) -> None:
         """
         Copy a file to S3.
 
@@ -472,8 +476,8 @@ class Rclone:
             dst: Destination path in S3
             verbose: Whether to show detailed progress
 
-        Returns:
-            None if successful, Exception if an error occurred
+        Raises:
+            ValueError: If dst is not an S3 remote
         """
         return self.impl.copy_file_s3(src=src, dst=dst, verbose=verbose)
 
@@ -496,7 +500,7 @@ class Rclone:
         part_infos: list[PartInfo] | None = None,
         upload_threads: int = 8,
         merge_threads: int = 4,
-    ) -> Exception | None:
+    ) -> None:
         """
         Copy a large file to S3 with resumable upload capability.
 
@@ -512,9 +516,6 @@ class Rclone:
             part_infos: Optional list of part information for resuming uploads
             upload_threads: Number of parallel upload threads
             merge_threads: Number of threads for merging uploaded parts
-
-        Returns:
-            None if successful, Exception if an error occurred
         """
         return self.impl.copy_file_s3_resumable(
             src=src,
@@ -732,27 +733,27 @@ class Rclone:
         """
         return self.impl.is_synced(src=src, dst=dst)
 
-    def modtime(self, src: str) -> str | Exception:
+    def modtime(self, src: str) -> str:
         """
         Get the modification time of a file or directory.
 
         Args:
             src: Path to the file or directory
 
-        Returns:
-            Modification time as a string, or Exception if an error occurred
+        Raises:
+            FileNotFoundError: If src does not exist
         """
         return self.impl.modtime(src=src)
 
-    def modtime_dt(self, src: str) -> datetime | Exception:
+    def modtime_dt(self, src: str) -> datetime:
         """
         Get the modification time of a file or directory as a datetime object.
 
         Args:
             src: Path to the file or directory
 
-        Returns:
-            Modification time as a datetime object, or Exception if an error occurred
+        Raises:
+            FileNotFoundError: If src does not exist
         """
         return self.impl.modtime_dt(src=src)
 
@@ -760,7 +761,7 @@ class Rclone:
         self,
         text: str,
         dst: str,
-    ) -> Exception | None:
+    ) -> None:
         """
         Write text to a file.
 
@@ -770,8 +771,8 @@ class Rclone:
             text: Text content to write
             dst: Destination file path
 
-        Returns:
-            None if successful, Exception if an error occurred
+        Raises:
+            RcloneCommandError: If the underlying rclone command fails
         """
         return self.impl.write_text(text=text, dst=dst)
 
@@ -779,7 +780,7 @@ class Rclone:
         self,
         data: bytes,
         dst: str,
-    ) -> Exception | None:
+    ) -> None:
         """
         Write bytes to a file.
 
@@ -789,32 +790,32 @@ class Rclone:
             data: Binary content to write
             dst: Destination file path
 
-        Returns:
-            None if successful, Exception if an error occurred
+        Raises:
+            RcloneCommandError: If the underlying rclone command fails
         """
         return self.impl.write_bytes(data=data, dst=dst)
 
-    def read_bytes(self, src: str) -> bytes | Exception:
+    def read_bytes(self, src: str) -> bytes:
         """
         Read bytes from a file.
 
         Args:
             src: Source file path
 
-        Returns:
-            File contents as bytes, or Exception if an error occurred
+        Raises:
+            RcloneCommandError: If the underlying rclone command fails
         """
         return self.impl.read_bytes(src=src)
 
-    def read_text(self, src: str) -> str | Exception:
+    def read_text(self, src: str) -> str:
         """
         Read text from a file.
 
         Args:
             src: Source file path
 
-        Returns:
-            File contents as a string, or Exception if an error occurred
+        Raises:
+            RcloneCommandError: If the underlying rclone command fails
         """
         return self.impl.read_text(src=src)
 
@@ -825,7 +826,7 @@ class Rclone:
         length: int | SizeSuffix,
         outfile: Path,
         other_args: list[str] | None = None,
-    ) -> Exception | None:
+    ) -> None:
         """
         Copy a slice of bytes from the src file to dst.
 
@@ -838,8 +839,8 @@ class Rclone:
             outfile: Local file path to write the bytes to
             other_args: Additional command-line arguments
 
-        Returns:
-            None if successful, Exception if an error occurred
+        Raises:
+            RcloneCommandError: If the underlying rclone command fails
         """
         return self.impl.copy_bytes(
             src=src,
@@ -969,7 +970,7 @@ class Rclone:
         other_args: list[str] | None = None,
         check: bool | None = False,
         verbose: bool | None = None,
-    ) -> SizeResult | Exception:
+    ) -> SizeResult:
         """
         Get the size of a list of files.
 
@@ -983,8 +984,8 @@ class Rclone:
             check: Whether to verify file integrity
             verbose: Whether to show detailed output
 
-        Returns:
-            SizeResult with size information, or Exception if an error occurred
+        Raises:
+            FileNotFoundError: If a single requested file does not exist
 
         Example:
             size_files("remote:bucket", ["path/to/file1", "path/to/file2"])
@@ -998,15 +999,16 @@ class Rclone:
             verbose=verbose,
         )
 
-    def size_file(self, src: str) -> SizeSuffix | Exception:
+    def size_file(self, src: str) -> SizeSuffix:
         """
         Get the size of a file.
 
         Args:
             src: Path to the file
 
-        Returns:
-            SizeSuffix object representing the file size, or Exception if an error occurred
+        Raises:
+            FileNotFoundError: If no file matches src
+            ValueError: If more than one file matches src
         """
         return self.impl.size_file(src=src)
 

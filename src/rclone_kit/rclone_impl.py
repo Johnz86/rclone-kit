@@ -23,6 +23,7 @@ from rclone_kit.convert import convert_to_filestr_list, convert_to_str
 from rclone_kit.detail.walk import walk
 from rclone_kit.diff import DiffItem, DiffOption, diff_stream_from_running_process
 from rclone_kit.dir_listing import DirListing
+from rclone_kit.exceptions import RcloneCommandError
 from rclone_kit.exec import RcloneExec
 from rclone_kit.file import File
 from rclone_kit.file_stream import FilesStream
@@ -70,6 +71,20 @@ FLAG_TRANSFERS = "--transfers"
 FLAG_VFS_CACHE_MODE = "--vfs-cache-mode"
 
 
+def _raise_if_exception[T](result: T | Exception) -> T:
+    """Convert an Exception-as-return-value into a raised exception.
+
+    A transitional bridge for call sites already migrated to raise that
+    still call into callees (such as `S3Client.upload_file` or
+    `copy_file_parts_resumable`) not yet migrated off the `T | Exception`
+    return convention. Delete each call site once its callee raises
+    directly instead.
+    """
+    if isinstance(result, Exception):
+        raise result
+    return result
+
+
 def rclone_verbose(verbose: bool | None) -> bool:
     if verbose is not None:
         os.environ["RCLONE_KIT_VERBOSE"] = "1" if verbose else "0"
@@ -86,19 +101,14 @@ def _to_rclone_conf(config: Config | Path | None) -> Config:
         return config
 
 
-def _parse_paths(src: str) -> list[Path] | Exception:
-
-    lines = src.splitlines()
+def _parse_paths(src: str) -> list[Path]:
+    """Parse the `Label: value` lines printed by `rclone config paths`."""
     paths: list[Path] = []
-    for line in lines:
-        try:
-            _label, separator, value = line.partition(":")
-            if not separator:
-                continue
-            path = Path(value.strip())
-            paths.append(path)
-        except Exception as e:
-            return e
+    for line in src.splitlines():
+        _label, separator, value = line.partition(":")
+        if not separator:
+            continue
+        paths.append(Path(value.strip()))
     return paths
 
 
@@ -312,44 +322,27 @@ class RcloneImpl:
             random.shuffle(paths)
         return DirListing(paths)
 
-    def print(self, src: str) -> Exception | None:
+    def print(self, src: str) -> None:
         """Print the contents of a file."""
-        try:
-            text_or_err = self.read_text(src)
-            if isinstance(text_or_err, Exception):
-                return text_or_err
-            print(text_or_err)
-        except Exception as e:
-            return e
-        return None
+        print(self.read_text(src))
 
-    def stat(self, src: str) -> File | Exception:
-        """Get the status of a file or directory."""
+    def stat(self, src: str) -> File:
+        """Get the status of a file or directory.
+
+        Raises FileNotFoundError if `src` does not exist.
+        """
         dirlist: DirListing = self.ls(src)
         if len(dirlist.files) == 0:
-            return FileNotFoundError(f"File not found: {src}")
-        try:
-            file: File = dirlist.files[0]
-            return file
-        except Exception as e:
-            return e
+            raise FileNotFoundError(f"File not found: {src}")
+        return dirlist.files[0]
 
-    def modtime(self, src: str) -> str | Exception:
+    def modtime(self, src: str) -> str:
         """Get the modification time of a file or directory."""
-        try:
-            file: File | Exception = self.stat(src)
-            if isinstance(file, Exception):
-                return file
-            return file.mod_time()
-        except Exception as e:
-            return e
+        return self.stat(src).mod_time()
 
-    def modtime_dt(self, src: str) -> datetime | Exception:
+    def modtime_dt(self, src: str) -> datetime:
         """Get the modification time of a file or directory."""
-        modtime: str | Exception = self.modtime(src)
-        if isinstance(modtime, Exception):
-            return modtime
-        return datetime.fromisoformat(modtime)
+        return self.stat(src).mod_time_dt()
 
     def listremotes(self) -> list[Remote]:
         cmd = ["listremotes"]
@@ -828,14 +821,16 @@ class RcloneImpl:
         src: Path,
         dst: str,
         verbose: bool | None = None,
-    ) -> Exception | None:
-        """Copy a file to S3."""
+    ) -> None:
+        """Copy a file to S3.
+
+        Raises ValueError if `dst` is not an S3 remote.
+        """
         from rclone_kit.s3.types import S3UploadTarget
         from rclone_kit.util import S3PathInfo
 
-        dst_is_s3 = self.is_s3(dst)
-        if not dst_is_s3:
-            return ValueError(f"Destination is not an S3 remote: {dst}")
+        if not self.is_s3(dst):
+            raise ValueError(f"Destination is not an S3 remote: {dst}")
         s3_client = self._s3_client(dst, verbose=verbose)
 
         path_info: S3PathInfo = S3PathInfo.from_str(dst)
@@ -845,8 +840,7 @@ class RcloneImpl:
             bucket_name=path_info.bucket,
             s3_key=path_info.key,
         )
-        out = s3_client.upload_file(target=target)
-        return out
+        _raise_if_exception(s3_client.upload_file(target=target))
 
     def is_s3(self, dst: str) -> bool:
         """Check if a remote is an S3 remote."""
@@ -875,7 +869,7 @@ class RcloneImpl:
         part_infos: list[PartInfo] | None = None,
         upload_threads: int = 8,
         merge_threads: int = 4,
-    ) -> Exception | None:
+    ) -> None:
         """Copy parts of a file from source to destination."""
         from rclone_kit.detail.copy_file_parts_resumable import (
             copy_file_parts_resumable,
@@ -885,87 +879,85 @@ class RcloneImpl:
             dst = dst[:-1]
         dst_dir = f"{dst}-parts"
 
-        out = copy_file_parts_resumable(
-            self=self,
-            src=src,
-            dst_dir=dst_dir,
-            part_infos=part_infos,
-            upload_threads=upload_threads,
-            merge_threads=merge_threads,
+        _raise_if_exception(
+            copy_file_parts_resumable(
+                self=self,
+                src=src,
+                dst_dir=dst_dir,
+                part_infos=part_infos,
+                upload_threads=upload_threads,
+                merge_threads=merge_threads,
+            )
         )
-        return out
 
     def write_text(
         self,
         dst: str,
         text: str,
-    ) -> Exception | None:
+    ) -> None:
         """Write text to a file."""
-        data = text.encode("utf-8")
-        return self.write_bytes(dst=dst, data=data)
+        self.write_bytes(dst=dst, data=text.encode("utf-8"))
 
     def write_bytes(
         self,
         dst: str,
         data: bytes | Path,
         verbose: bool | None = None,
-    ) -> Exception | None:
-        """Write bytes to a file."""
+    ) -> None:
+        """Write bytes to a file.
 
-        try:
-            if isinstance(data, Path):
-                data = data.read_bytes()
+        Raises RcloneCommandError if the underlying rclone command fails.
+        """
+        if isinstance(data, Path):
+            data = data.read_bytes()
 
-            with TemporaryDirectory() as tmpdir:
-                tmpfile = Path(tmpdir) / "file.bin"
-                tmpfile.write_bytes(data)
-                dst_is_s3 = self.is_s3(dst)
-                if dst_is_s3:
-                    return self.copy_file_s3(tmpfile, dst, verbose=verbose)
-
-                completed_proc = self.copy_to(str(tmpfile), dst, check=True)
-                if completed_proc.returncode != 0:
-                    return Exception(f"Failed to write bytes to {dst}", completed_proc)
-        except Exception as e:
-            logging.exception(f"Failed to write bytes to {dst}")
-            return e
-        return None
-
-    def read_bytes(self, src: str) -> bytes | Exception:
-        """Read bytes from a file."""
         with TemporaryDirectory() as tmpdir:
             tmpfile = Path(tmpdir) / "file.bin"
-            completed_proc = self.copy_to(src, str(tmpfile), check=True)
-            if completed_proc.returncode != 0:
-                return Exception(f"Failed to read bytes from {src}", completed_proc)
+            tmpfile.write_bytes(data)
+            if self.is_s3(dst):
+                self.copy_file_s3(tmpfile, dst, verbose=verbose)
+                return
+
+            try:
+                self.copy_to(str(tmpfile), dst, check=True)
+            except subprocess.CalledProcessError as error:
+                raise RcloneCommandError("copyto", error.stderr or "", error) from error
+
+    def read_bytes(self, src: str) -> bytes:
+        """Read bytes from a file.
+
+        Raises RcloneCommandError if the underlying rclone command fails
+        or if rclone reports success without producing an output file.
+        """
+        with TemporaryDirectory() as tmpdir:
+            tmpfile = Path(tmpdir) / "file.bin"
+            try:
+                self.copy_to(src, str(tmpfile), check=True)
+            except subprocess.CalledProcessError as error:
+                raise RcloneCommandError("copyto", error.stderr or "", error) from error
 
             if not tmpfile.exists():
-                return Exception(f"Failed to read bytes from {src}, file not found")
-            try:
-                return tmpfile.read_bytes()
-            except Exception as e:
-                return Exception(f"Failed to read bytes from {src}", e)
+                raise RcloneCommandError(
+                    "copyto", "", FileNotFoundError(f"{src} produced no output file")
+                )
+            return tmpfile.read_bytes()
 
-    def read_text(self, src: str) -> str | Exception:
+    def read_text(self, src: str) -> str:
         """Read text from a file."""
-        data = self.read_bytes(src)
-        if isinstance(data, Exception):
-            return data
-        try:
-            return data.decode("utf-8")
-        except UnicodeDecodeError as e:
-            return Exception(f"Failed to decode text from {src}", e)
+        return self.read_bytes(src).decode("utf-8")
 
-    def size_file(self, src: str) -> SizeSuffix | Exception:
-        """Get the size of a file or directory."""
+    def size_file(self, src: str) -> SizeSuffix:
+        """Get the size of a file or directory.
 
+        Raises FileNotFoundError if no file matches `src`, or ValueError
+        if more than one file matches.
+        """
         dirlist: DirListing = self.ls(src, listing_option=ListingOption.FILES_ONLY, max_depth=0)
         if len(dirlist.files) == 0:
-            return FileNotFoundError(f"File not found: {src}")
+            raise FileNotFoundError(f"File not found: {src}")
         if len(dirlist.files) > 1:
-            return Exception(f"More than one file found: {src}")
-        file: File = dirlist.files[0]
-        return SizeSuffix(file.size)
+            raise ValueError(f"More than one file found: {src}")
+        return SizeSuffix(dirlist.files[0].size)
 
     def get_s3_credentials(self, remote: str, verbose: bool | None = None) -> S3Credentials:
         from rclone_kit.util import S3PathInfo
@@ -1027,8 +1019,11 @@ class RcloneImpl:
         length: int | SizeSuffix,
         outfile: Path,
         other_args: list[str] | None = None,
-    ) -> Exception | None:
-        """Copy a slice of bytes from the src file to dst."""
+    ) -> None:
+        """Copy a slice of bytes from the src file to outfile.
+
+        Raises RcloneCommandError if the underlying rclone command fails.
+        """
         offset = SizeSuffix(offset).as_int()
         length = SizeSuffix(length).as_int()
         cmd_list: list[str] = [
@@ -1042,12 +1037,9 @@ class RcloneImpl:
         if other_args:
             cmd_list.extend(other_args)
         try:
-            cp = self._run(cmd_list, capture=outfile)
-            if cp.returncode == 0:
-                return None
-            return Exception(cp.stderr)
-        except subprocess.CalledProcessError as e:
-            return e
+            self._run(cmd_list, check=True, capture=outfile)
+        except subprocess.CalledProcessError as error:
+            raise RcloneCommandError("cat", error.stderr or "", error) from error
 
     def copy_dir(
         self, src: str | Dir, dst: str | Dir, args: list[str] | None = None
@@ -1287,7 +1279,7 @@ class RcloneImpl:
 
     def config_paths(
         self, remote: str | None = None, obscure: bool = False, no_obscure: bool = False
-    ) -> list[Path] | Exception:
+    ) -> list[Path]:
         """Return the filesystem paths reported by `rclone config paths`:
         the config file, cache directory, and temp directory, in that fixed
         order.
@@ -1296,27 +1288,32 @@ class RcloneImpl:
         compatibility with this method's public signature. `config paths`
         takes no such arguments upstream, so they are ignored.
 
-        Returns:
-            The three reported paths in rclone's fixed order, or the
-            `subprocess.CalledProcessError` raised by rclone on failure.
+        Raises:
+            RcloneCommandError: if the underlying `rclone config paths`
+                invocation fails.
         """
         del remote, obscure, no_obscure
         cmd_list: list[str] = ["config", "paths"]
 
         try:
             cp = self._run(cmd_list, capture=True, check=True)
-            stdout: str | bytes = cp.stdout
-            if isinstance(stdout, bytes):
-                stdout = stdout.decode("utf-8")
-            out = _parse_paths(stdout)
-            return out
-        except subprocess.CalledProcessError as e:
-            return e
+        except subprocess.CalledProcessError as error:
+            raise RcloneCommandError("config paths", error.stderr or "", error) from error
+        stdout: str | bytes = cp.stdout
+        if isinstance(stdout, bytes):
+            stdout = stdout.decode("utf-8")
+        return _parse_paths(stdout)
 
     def config_show(
         self, remote: str | None = None, obscure: bool = False, no_obscure: bool = False
-    ) -> str | Exception:
-        """Return the configuration text reported by `rclone config show`."""
+    ) -> str:
+        """Return the configuration text reported by `rclone config show`.
+
+        Raises:
+            ValueError: if both `obscure` and `no_obscure` are set.
+            RcloneCommandError: if the underlying `rclone config show`
+                invocation fails.
+        """
         if obscure and no_obscure:
             raise ValueError("obscure and no_obscure cannot both be enabled")
         cmd_list = ["config", "show"]
@@ -1329,7 +1326,7 @@ class RcloneImpl:
         try:
             cp = self._run(cmd_list, capture=True, check=True)
         except subprocess.CalledProcessError as error:
-            return error
+            raise RcloneCommandError("config show", error.stderr or "", error) from error
         stdout = cp.stdout
         return stdout.decode("utf-8") if isinstance(stdout, bytes) else stdout
 
@@ -1341,7 +1338,7 @@ class RcloneImpl:
         other_args: list[str] | None = None,
         check: bool | None = False,
         verbose: bool | None = None,
-    ) -> SizeResult | Exception:
+    ) -> SizeResult:
         """Get the size of a list of files. Example of files items: "remote:bucket/to/file"."""
         verbose = get_verbose(verbose)
         check = get_check(check)
@@ -1350,9 +1347,6 @@ class RcloneImpl:
         if len(files) < 2:
             full_path = f"{src}/{files[0]}"
             tmp = self.size_file(full_path)
-            if isinstance(tmp, Exception):
-                return tmp
-            assert isinstance(tmp, SizeSuffix)
             return SizeResult(
                 prefix=src, total_size=tmp.as_int(), file_sizes={files[0]: tmp.as_int()}
             )

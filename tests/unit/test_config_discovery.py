@@ -13,11 +13,15 @@ import pytest
 
 from rclone_kit import config as config_module
 from rclone_kit.config import ConfigDiscoveryError, find_conf_file
+from rclone_kit.exceptions import RcloneCommandError
 from rclone_kit.rclone_impl import RcloneImpl
 from rclone_kit.rclone_impl import _parse_paths as parse_all_config_paths
 
 
 def _make_bare_rclone_impl(config_paths_result: Any) -> RcloneImpl:
+    """Build a bare `RcloneImpl` whose `config_paths()` returns
+    `config_paths_result`, or raises it if it's an exception instance.
+    """
     instance = object.__new__(RcloneImpl)
 
     def config_paths(
@@ -26,6 +30,8 @@ def _make_bare_rclone_impl(config_paths_result: Any) -> RcloneImpl:
         no_obscure: bool = False,
     ) -> Any:
         del remote, obscure, no_obscure
+        if isinstance(config_paths_result, Exception):
+            raise config_paths_result
         return config_paths_result
 
     instance.config_paths = config_paths
@@ -74,7 +80,9 @@ def test_raises_config_discovery_error_when_config_paths_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("RCLONE_CONFIG", raising=False)
-    rclone_impl = _make_bare_rclone_impl(RuntimeError("boom"))
+    rclone_impl = _make_bare_rclone_impl(
+        RcloneCommandError("config paths", "boom", RuntimeError("boom"))
+    )
 
     with pytest.raises(ConfigDiscoveryError):
         find_conf_file(rclone_impl)

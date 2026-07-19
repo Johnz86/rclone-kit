@@ -5,6 +5,8 @@ from types import SimpleNamespace
 import pytest
 
 from rclone_kit import rclone_impl as rclone_impl_module
+from rclone_kit.dir_listing import DirListing
+from rclone_kit.exceptions import RcloneCommandError
 from rclone_kit.process import Process
 from rclone_kit.rclone_impl import RcloneImpl
 from rclone_kit.types import SizeResult
@@ -12,6 +14,38 @@ from rclone_kit.types import SizeResult
 
 def _bare_rclone_impl() -> RcloneImpl:
     return object.__new__(RcloneImpl)
+
+
+def test_stat_raises_file_not_found_for_missing_path() -> None:
+    rclone = _bare_rclone_impl()
+    rclone.ls = lambda *_args, **_kwargs: DirListing([])
+
+    with pytest.raises(FileNotFoundError):
+        rclone.stat("remote:bucket/missing.txt")
+
+
+def test_read_bytes_raises_rclone_command_error_when_copy_fails() -> None:
+    rclone = _bare_rclone_impl()
+
+    def copy_to(*_args, **_kwargs):
+        raise subprocess.CalledProcessError(1, ["rclone", "copyto"], stderr="boom")
+
+    rclone.copy_to = copy_to
+
+    with pytest.raises(RcloneCommandError):
+        rclone.read_bytes("remote:bucket/missing.txt")
+
+
+def test_config_show_raises_rclone_command_error_on_failed_command() -> None:
+    rclone = _bare_rclone_impl()
+
+    def run(*_args, **_kwargs):
+        raise subprocess.CalledProcessError(1, ["rclone", "config", "show"], stderr="boom")
+
+    rclone._run = run
+
+    with pytest.raises(RcloneCommandError):
+        rclone.config_show()
 
 
 def test_size_files_empty_input_returns_empty_result() -> None:

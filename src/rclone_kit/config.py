@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from rclone_kit.exceptions import ConfigParseError
+from rclone_kit.exceptions import ConfigParseError, RcloneCommandError
 
 if TYPE_CHECKING:
     from rclone_kit import Rclone
@@ -159,10 +159,11 @@ def _discover_config_file_path(rclone: "Rclone | RcloneImpl | None") -> Path | N
     if not isinstance(rclone_impl, RcloneImpl):
         raise TypeError(f"rclone must be an Rclone or RcloneImpl instance, got {type(rclone)!r}")
 
-    paths_or_error = rclone_impl.config_paths()
-    if isinstance(paths_or_error, Exception):
-        raise ConfigDiscoveryError("rclone config paths") from paths_or_error
-    return paths_or_error[0] if paths_or_error else None
+    try:
+        paths = rclone_impl.config_paths()
+    except RcloneCommandError as error:
+        raise ConfigDiscoveryError("rclone config paths") from error
+    return paths[0] if paths else None
 
 
 def _config_paths_via_resolved_executable() -> list[Path]:
