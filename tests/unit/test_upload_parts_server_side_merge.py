@@ -14,10 +14,12 @@ from rclone_kit.s3.multipart.merge_state import MergeState, Part
 from rclone_kit.s3.multipart.upload_parts_server_side_merge import (
     S3MultiPartMerger,
     WriteMergeStateThread,
+    _begin_or_resume_merge,
     _cleanup_merge,
     _complete_multipart_upload_from_parts,
     _upload_part_copy_task,
 )
+from rclone_kit.s3.types import S3Credentials, S3Provider
 
 
 def _stub_rclone_impl() -> RcloneImpl:
@@ -170,3 +172,56 @@ def test_merge_closes_write_thread_on_success(monkeypatch: pytest.MonkeyPatch) -
 
     assert merger.write_thread is not None
     assert not merger.write_thread.is_alive()
+
+
+def _fake_s3_credentials() -> S3Credentials:
+    return S3Credentials(
+        bucket_name="bucket",
+        provider=S3Provider.S3,
+        access_key_id="fake-access-key-id",
+        secret_access_key="fake-secret-access-key",  # noqa: S106
+    )
+
+
+class _FakeS3ClientForNewUpload:
+    def create_multipart_upload(self, **_kwargs: object) -> dict:
+        return {"UploadId": "new-upload-id"}
+
+
+def _stub_info_for_begin_or_resume() -> InfoJson:
+    return cast(
+        InfoJson,
+        SimpleNamespace(
+            dst="remote:bucket/dst",
+            src_info="remote:bucket/dst-parts/info.json",
+            parts_dir="remote:bucket/dst-parts",
+            fetch_is_done=lambda: True,
+            fetch_all_finished=lambda: ["part.00001_0-100"],
+            first_part=1,
+            last_part=1,
+            dst_name="dst",
+        ),
+    )
+
+
+def test_begin_or_resume_merge_falls_back_to_fresh_merge_on_corrupt_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A malformed prior merge.json must not abort the merge: `MergeState.from_json`
+    raises `KeyError`/`MergeStateError`, which `_begin_or_resume_merge` treats as "no
+    usable prior state" and falls back to starting a fresh merge instead.
+    """
+    rclone = _stub_rclone_impl()
+    monkeypatch.setattr(rclone, "get_s3_credentials", lambda **_kwargs: _fake_s3_credentials())
+    monkeypatch.setattr(rclone, "read_text", lambda _path: "{}")
+    monkeypatch.setattr(
+        "rclone_kit.s3.multipart.upload_parts_server_side_merge.create_s3_client",
+        lambda **_kwargs: _FakeS3ClientForNewUpload(),
+    )
+
+    with pytest.warns(UserWarning, match="Failed to resume merge"):
+        merger = _begin_or_resume_merge(rclone=rclone, info=_stub_info_for_begin_or_resume())
+
+    assert merger.state is not None
+    assert merger.state.upload_id == "new-upload-id"
+    assert merger.state.finished == []
