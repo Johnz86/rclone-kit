@@ -1,5 +1,7 @@
+import contextlib
 import random
 import time
+import warnings
 from collections.abc import Generator
 from concurrent.futures import ThreadPoolExecutor
 from queue import Empty, Queue
@@ -11,6 +13,7 @@ from rclone_kit.dir_listing import DirListing
 from rclone_kit.types import ListingOption, Order
 
 _MAX_OUT_QUEUE_SIZE = 50
+_WORKER_JOIN_TIMEOUT_SECONDS = 30.0
 
 
 def _reorder_inplace(data: list, order: Order) -> None:
@@ -103,6 +106,20 @@ def async_diff_dir_walk_task(
         out_queue.put(None)
 
 
+def _drain_queue_until_sentinel(out_queue: Queue[Dir | None]) -> None:
+    """Consume `out_queue` until the walk task's sentinel `None` appears.
+
+    Used when a `scan_missing_folders` consumer stops iterating early
+    (`break`, or garbage collection closing the generator) instead of
+    letting the walk run to completion. Without this, the background walk
+    thread would block forever on `out_queue.put()` once nobody drains its
+    bounded queue, leaking a permanently blocked thread.
+    """
+    with contextlib.suppress(KeyboardInterrupt):
+        while out_queue.get() is not None:
+            pass
+
+
 def scan_missing_folders(
     src: Dir,
     dst: Dir,
@@ -119,33 +136,44 @@ def scan_missing_folders(
         DirListing: Directory listing for each directory encountered
     """
 
-    try:
-        out_queue: Queue[Dir | None] = Queue(maxsize=_MAX_OUT_QUEUE_SIZE)
+    out_queue: Queue[Dir | None] = Queue(maxsize=_MAX_OUT_QUEUE_SIZE)
 
-        def task() -> None:
-            async_diff_dir_walk_task(
-                src=src,
-                dst=dst,
-                max_depth=max_depth,
-                out_queue=out_queue,
-                order=order,
-            )
-
-        worker = Thread(
-            target=task,
-            daemon=True,
+    def task() -> None:
+        async_diff_dir_walk_task(
+            src=src,
+            dst=dst,
+            max_depth=max_depth,
+            out_queue=out_queue,
+            order=order,
         )
-        worker.start()
 
+    worker = Thread(
+        target=task,
+        daemon=True,
+    )
+    worker.start()
+
+    sentinel_seen = False
+    try:
         while True:
             try:
                 dir = out_queue.get_nowait()
-                if dir is None:
-                    break
-                yield dir
             except Empty:
                 time.sleep(0.1)
-
-        worker.join()
+                continue
+            if dir is None:
+                sentinel_seen = True
+                break
+            yield dir
     except KeyboardInterrupt:
         pass
+    finally:
+        if not sentinel_seen:
+            _drain_queue_until_sentinel(out_queue)
+        worker.join(timeout=_WORKER_JOIN_TIMEOUT_SECONDS)
+        if worker.is_alive():
+            warnings.warn(
+                "scan_missing_folders background walk did not finish within "
+                f"{_WORKER_JOIN_TIMEOUT_SECONDS}s of generator teardown",
+                stacklevel=2,
+            )
