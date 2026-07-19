@@ -1,6 +1,4 @@
-"""
-Unit test file.
-"""
+"""Rclone implementation providing the public operation surface."""
 
 from __future__ import annotations
 

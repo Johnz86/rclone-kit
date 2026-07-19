@@ -1,6 +1,4 @@
-"""
-Unit test file.
-"""
+"""Streaming iteration over rclone `lsjson` output."""
 
 from collections.abc import Generator
 from typing import Self
