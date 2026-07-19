@@ -34,7 +34,7 @@ class FinishedPiece:
 
         count_eos = 0
         for p in parts:
-            if p is EndOfStream:
+            if isinstance(p, EndOfStream):
                 count_eos += 1
 
         if count_eos > 1:

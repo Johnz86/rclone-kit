@@ -109,10 +109,6 @@ class UploadState:
 
         parts_json = FinishedPiece.to_json_array(parts)
         is_done = self.is_done()
-        count_non_none: int = 0
-        for p in parts:
-            if p is not EndOfStream:
-                count_non_none += 1
 
         file_size_bytes = self.upload_info.file_size
         finished_count, total = self.count()
