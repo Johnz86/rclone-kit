@@ -3,8 +3,8 @@ import logging
 import warnings
 from pathlib import Path
 from threading import Lock
-from typing import Any
 
+from rclone_kit.s3.multipart.file_info import S3FileInfo
 from rclone_kit.types import get_chunk_tmpdir
 
 logger = logging.getLogger(__name__)
@@ -30,7 +30,7 @@ atexit.register(_on_exit_cleanup)
 
 
 class FilePart:
-    def __init__(self, payload: Path | bytes | Exception, extra: Any) -> None:
+    def __init__(self, payload: Path | bytes | Exception, extra: S3FileInfo) -> None:
         from rclone_kit.util import random_str
 
         self.extra = extra

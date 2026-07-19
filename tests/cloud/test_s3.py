@@ -3,7 +3,6 @@ import tempfile
 import unittest
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
-from typing import Any
 
 import pytest
 
@@ -12,6 +11,7 @@ from rclone_kit.env_file import load_env_file
 from rclone_kit.file_part import FilePart
 from rclone_kit.s3.api import S3Client
 from rclone_kit.s3.create import S3Provider
+from rclone_kit.s3.multipart.file_info import S3FileInfo
 from rclone_kit.s3.multipart.upload_parts_inline import MultiUploadResult
 from rclone_kit.s3.types import S3Credentials, S3MutliPartUploadConfig, S3UploadTarget
 
@@ -61,7 +61,7 @@ class RcloneS3Tester(unittest.TestCase):
             filesize = tmpfile.stat().st_size
             state_json = Path(tempdir) / "state.json"
 
-            def simple_fetcher(offset: int, chunk_size: int, extra: Any) -> Future[FilePart]:
+            def simple_fetcher(offset: int, chunk_size: int, extra: S3FileInfo) -> Future[FilePart]:
                 with ThreadPoolExecutor() as executor:
 
                     def task(tmpfile=tmpfile, offset=offset, chunk_size=chunk_size) -> FilePart:

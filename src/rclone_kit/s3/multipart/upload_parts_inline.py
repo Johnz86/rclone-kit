@@ -9,7 +9,6 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from queue import Queue
 from threading import Event, Thread
-from typing import Any
 
 from botocore.client import BaseClient
 
@@ -182,7 +181,7 @@ def upload_runner(
 
 def upload_file_multipart(
     s3_client: BaseClient,
-    chunk_fetcher: Callable[[int, int, Any], Future[FilePart]],
+    chunk_fetcher: Callable[[int, int, S3FileInfo], Future[FilePart]],
     bucket_name: str,
     file_path: Path,
     file_size: int | None,

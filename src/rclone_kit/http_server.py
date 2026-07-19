@@ -1,6 +1,4 @@
-"""
-Unit test file for testing rclone mount functionality.
-"""
+"""HTTP client for rclone's `serve http`, used to fetch file chunks for S3 multipart uploads."""
 
 import logging
 import time
@@ -11,13 +9,14 @@ from html.parser import HTMLParser
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event, Semaphore
-from typing import Any, Self
+from typing import Self
 from urllib.parse import quote
 
 import httpx
 
 from rclone_kit.file_part import FilePart
 from rclone_kit.process import Process
+from rclone_kit.s3.multipart.file_info import S3FileInfo
 from rclone_kit.types import Range, SizeSuffix, get_chunk_tmpdir
 
 _TIMEOUT = 10 * 60
@@ -360,7 +359,7 @@ class HttpFetcher:
         self.semaphore = Semaphore(n_threads)
 
     def bytes_fetcher(
-        self, offset: int | SizeSuffix, size: int | SizeSuffix, extra: Any
+        self, offset: int | SizeSuffix, size: int | SizeSuffix, extra: S3FileInfo
     ) -> Future[FilePart]:
         if isinstance(offset, SizeSuffix):
             offset = offset.as_int()

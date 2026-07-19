@@ -5,7 +5,6 @@ from concurrent.futures import Future
 from pathlib import Path
 from queue import Queue
 from threading import Event, Lock
-from typing import Any
 
 from rclone_kit.file_part import FilePart
 from rclone_kit.s3.multipart.file_info import S3FileInfo
@@ -100,7 +99,7 @@ class _OnCompleteHandler:
 
 def file_chunker(
     upload_state: UploadState,
-    fetcher: Callable[[int, int, Any], Future[FilePart]],
+    fetcher: Callable[[int, int, S3FileInfo], Future[FilePart]],
     max_chunks: int | None,
     cancel_signal: Event,
     queue_upload: Queue[FilePart | EndOfStream],
