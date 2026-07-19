@@ -23,6 +23,26 @@ logger = logging.getLogger(__name__)
 
 _LOCK = threading.Lock()
 
+_TMP_UPLOAD_DIRS: set[Path] = set()
+
+
+def _cleanup_tmp_upload_dirs() -> None:
+    """Remove every temporary chunk directory still tracked at exit.
+
+    Registered once at import time rather than once per
+    `upload_parts_resumable` call, so a long-running process performing
+    many resumable uploads does not grow `atexit`'s internal registration
+    list without bound. A tmp_dir stays tracked here until
+    `upload_parts_resumable` itself removes it after a successful cleanup,
+    so an upload that raises before reaching that point still gets a
+    best-effort removal at process exit.
+    """
+    for tmp_dir in list(_TMP_UPLOAD_DIRS):
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+atexit.register(_cleanup_tmp_upload_dirs)
+
 
 def _log(msg: str) -> None:
     logger.info(msg)
@@ -261,8 +281,7 @@ def upload_parts_resumable(
 
     finished_tasks: list[UploadPart] = []
     tmp_dir = str(Path("chunks") / random_str(12))
-
-    atexit.register(lambda: shutil.rmtree(tmp_dir, ignore_errors=True))
+    _TMP_UPLOAD_DIRS.add(Path(tmp_dir))
 
     with self.serve_http(src_dir, cache_mode="minimal") as http_server:
         tmpdir: Path = Path(tmp_dir)
@@ -321,6 +340,7 @@ def upload_parts_resumable(
     exceptions: list[Exception] = [t.exception for t in finished_tasks if t.exception is not None]
 
     shutil.rmtree(tmp_dir, ignore_errors=True)
+    _TMP_UPLOAD_DIRS.discard(Path(tmp_dir))
 
     if len(exceptions) > 0:
         msg = f"Failed to copy parts: {exceptions}"
