@@ -50,8 +50,11 @@ def _async_diff_dir_walk_task(
         src_dir_listing: DirListing = t1.result()
         dst_dir_listing: DirListing = t2.result()
     next_depth = max_depth - ls_depth if max_depth > 0 else max_depth
-    dst_dirs: list[str] = [d.relative_to(src) for d in dst_dir_listing.dirs]
-    src_dirs: list[str] = [d.relative_to(dst) for d in src_dir_listing.dirs]
+    # Each listing's entries must be made relative to their OWN root (not
+    # the other side's) - the relative path is what gets compared between
+    # src and dst below, independent of their differing absolute prefixes.
+    dst_dirs: list[str] = [d.relative_to(dst) for d in dst_dir_listing.dirs]
+    src_dirs: list[str] = [d.relative_to(src) for d in src_dir_listing.dirs]
     dst_files_set: set[str] = set(dst_dirs)
     matching_dirs: list[str] = []
     _reorder_inplace(src_dirs, order)
@@ -59,21 +62,20 @@ def _async_diff_dir_walk_task(
     for _i, src_dir in enumerate(src_dirs):
         src_dir_dir = src / src_dir
         if src_dir not in dst_files_set:
-            queue_dir_listing: Queue[DirListing | None] = Queue()
+            out_queue.put(src_dir_dir)
             if next_depth > 0 or next_depth == -1:
+                queue_dir_listing: Queue[DirListing | None] = Queue()
                 walk_runner_depth_first(
                     dir=src_dir_dir,
                     out_queue=queue_dir_listing,
                     order=order,
                     max_depth=next_depth,
                 )
-                out_queue.put(src)
-            while dirlisting := queue_dir_listing.get():
-                if dirlisting is None:
-                    break
-
-                for d in dirlisting.dirs:
-                    out_queue.put(d)
+                while dirlisting := queue_dir_listing.get():
+                    if dirlisting is None:
+                        break
+                    for d in dirlisting.dirs:
+                        out_queue.put(d)
         else:
             matching_dirs.append(src_dir)
 
@@ -126,14 +128,23 @@ def scan_missing_folders(
     max_depth: int = -1,
     order: Order = Order.NORMAL,
 ) -> Generator[Dir]:
-    """Walk through the given directory recursively.
+    """Yield every directory present under `src` that is missing under the
+    corresponding relative path in `dst`.
+
+    A folder found missing is yielded once for itself; if it has a
+    subtree, every descendant directory is yielded too (walked via
+    `walk_runner_depth_first`, since a whole missing subtree needs no
+    further src/dst comparison - none of it exists on the `dst` side by
+    definition). Folders present under `src` and `dst` at a given relative
+    path are recursed into, in case they diverge further down.
 
     Args:
-        dir: Directory or Remote to walk through
+        src: Source directory to walk through
+        dst: Destination directory to walk through
         max_depth: Maximum depth to traverse (-1 for unlimited)
 
     Yields:
-        DirListing: Directory listing for each directory encountered
+        Dir: each directory present under `src` but missing under `dst`
     """
 
     out_queue: Queue[Dir | None] = Queue(maxsize=_MAX_OUT_QUEUE_SIZE)

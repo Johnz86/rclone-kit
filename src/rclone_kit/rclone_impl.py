@@ -360,9 +360,16 @@ class RcloneImpl:
         max_depth: int = -1,
         order: Order = Order.NORMAL,
     ) -> Generator[Dir]:
-        """Walk through the given path recursively.
+        """Yield every directory present under `src` that is missing under
+        the corresponding relative path in `dst`.
 
-        WORK IN PROGRESS!!
+        A folder found missing is yielded once for itself; if it has a
+        subtree, every descendant directory is yielded too (walked via
+        `detail.walk.walk_runner_depth_first`, since a whole missing
+        subtree needs no further src/dst comparison - none of it exists on
+        the `dst` side by definition). Folders present under `src` and
+        `dst` at a given relative path are recursed into, in case they
+        diverge further down.
 
         Args:
             src: Source directory or Remote to walk through
@@ -370,7 +377,7 @@ class RcloneImpl:
             max_depth: Maximum depth to traverse (-1 for unlimited)
 
         Yields:
-            DirListing: Directory listing for each directory encountered
+            Dir: each directory present under `src` but missing under `dst`
         """
         from rclone_kit.scan_missing_folders import scan_missing_folders
 
