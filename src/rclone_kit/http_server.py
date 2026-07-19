@@ -8,12 +8,12 @@ import time
 import warnings
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
+from html.parser import HTMLParser
 from pathlib import Path
 from threading import Semaphore
 from typing import Any, Self
 
 import httpx
-from bs4 import BeautifulSoup
 
 from rclone_kit.file_part import FilePart
 from rclone_kit.process import Process
@@ -33,29 +33,74 @@ class FileList:
     files: list[str]
 
 
+_ROW_TAG = "tr"
+_ROW_CLASS = "file"
+_NAME_SPAN_TAG = "span"
+_NAME_SPAN_CLASS = "name"
+_ANCHOR_TAG = "a"
+_DIRECTORY_NAME_SUFFIX = "/"
+
+
+class _FileListingHTMLParser(HTMLParser):
+    """Parses the directory-listing HTML produced by rclone's own
+    `serve http` autoindex template.
+
+    This depends on a fixed, self-generated HTML shape, not arbitrary web
+    content: every entry is a `<tr class="file">` row containing exactly one
+    `<span class="name"><a href="...">NAME</a></span>`. A name ending in `/`
+    denotes a directory, otherwise a file. Any change to rclone's own
+    autoindex template requires updating this parser to match.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.files: list[str] = []
+        self.dirs: list[str] = []
+        self._in_row = False
+        self._in_name_span = False
+        self._in_anchor = False
+        self._anchor_text_parts: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attribute_map = dict(attrs)
+        classes = (attribute_map.get("class") or "").split()
+        if tag == _ROW_TAG and _ROW_CLASS in classes:
+            self._in_row = True
+            return
+        if self._in_row and tag == _NAME_SPAN_TAG and _NAME_SPAN_CLASS in classes:
+            self._in_name_span = True
+            return
+        if self._in_name_span and tag == _ANCHOR_TAG:
+            self._in_anchor = True
+            self._anchor_text_parts = []
+
+    def handle_data(self, data: str) -> None:
+        if self._in_anchor:
+            self._anchor_text_parts.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == _ANCHOR_TAG and self._in_anchor:
+            self._in_anchor = False
+            name = "".join(self._anchor_text_parts).strip()
+            self._anchor_text_parts = []
+            if name:
+                if name.endswith(_DIRECTORY_NAME_SUFFIX):
+                    self.dirs.append(name)
+                else:
+                    self.files.append(name)
+            return
+        if tag == _NAME_SPAN_TAG:
+            self._in_name_span = False
+            return
+        if tag == _ROW_TAG:
+            self._in_row = False
+
+
 def _parse_files_and_dirs(html: str) -> FileList:
-    soup = BeautifulSoup(html, "html.parser")
-    files = []
-    dirs = []
-    # Find each table row with class "file"
-    for tr in soup.find_all("tr", class_="file"):
-        name_span = tr.find("span", class_="name")  # type: ignore
-        if not name_span:
-            continue
-        a_tag = name_span.find("a")  # type: ignore
-        if not a_tag:
-            continue
-        # Get the text from the <a> tag
-        file_name = a_tag.get_text(strip=True)  # type: ignore
-        # Skip directories (they end with a slash)
-        # if not file_name.endswith("/"):
-        #    files.append(file_name)
-        # files.append(file_name)
-        if file_name.endswith("/"):
-            dirs.append(file_name)
-        else:
-            files.append(file_name)
-    return FileList(dirs=dirs, files=files)
+    parser = _FileListingHTMLParser()
+    parser.feed(html)
+    parser.close()
+    return FileList(dirs=parser.dirs, files=parser.files)
 
 
 class HttpServer:
