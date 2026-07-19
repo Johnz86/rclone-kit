@@ -34,7 +34,13 @@ class RcloneRemoteFSTester(unittest.TestCase):
             finally:
                 remote_tester.rmtree(ignore_errors=True)
 
-    @unittest.skip("This test fails, file remains in cache after removal")
+    @unittest.skip(
+        "Known bug, not yet root-caused: RemoteFS.exists() (backed by rclone's HTTP "
+        "serve autoindex) still reports the file present immediately after "
+        "new_file_path.remove() succeeds, presumably due to a caching layer between "
+        "the HTTP listing and the actual remote delete. Needs investigation against "
+        "a live bucket before re-enabling; not covered by a deterministic fake."
+    )
     def test_create_and_remove_remote_fs(self) -> None:
         """Test create and remove functionality."""
         fs = RemoteFS.from_rclone_config(CLOUD_TEST_REMOTE_ROOT, self.config)

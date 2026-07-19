@@ -14,6 +14,9 @@ from rclone_kit.env_file import load_env_file
 
 load_env_file()
 
+# Manual test: requires a real OS mount facility (FUSE on Linux, WinFsp on
+# Windows) plus a live bucket; not covered by a deterministic fake. Flip to
+# True locally to run it when validating S3-tuned mount behavior.
 _ENABLED = False
 
 
@@ -37,7 +40,7 @@ class RcloneMountS3Tests(unittest.TestCase):
         os.environ["RCLONE_KIT_VERBOSE"] = "1"
         self.rclone = Rclone(self.config)
 
-    @unittest.skipUnless(_ENABLED, "Test is disabled by default")
+    @unittest.skipUnless(_ENABLED, "Disabled by default; see _ENABLED above")
     def test_mount(self) -> None:
         """Test mounting a remote bucket."""
         remote_path = f"dst:{self.bucket_name}"

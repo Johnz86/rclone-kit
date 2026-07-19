@@ -56,7 +56,10 @@ class RcloneCopyBytesTester(unittest.TestCase):
         skip_if_missing_cloud_env(self, DIGITAL_OCEAN_SPACES_ENV_VARS)
         os.environ["RCLONE_KIT_VERBOSE"] = "1"
 
-    @unittest.skip("Skip for now - long running test")
+    @unittest.skip(
+        "Manual test: downloads a real 1MB range from a live bucket; long-running "
+        "and not covered by a deterministic fake."
+    )
     def test_copy_bytes_to_temp_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir) / "tmp.mp4"

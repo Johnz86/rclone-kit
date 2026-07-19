@@ -22,7 +22,11 @@ load_env_file()
 class RcloneS3Tester(unittest.TestCase):
     """Test rclone functionality."""
 
-    @unittest.skip("Skip test")
+    @unittest.skip(
+        "Manual test: performs a real multi-part upload/resume/suspend cycle "
+        "against a live Backblaze B2 bucket; long-running and not covered by a "
+        "deterministic fake."
+    )
     def test_upload_chunks(self) -> None:
         """Test basic Webdav serve functionality."""
         skip_if_missing_cloud_env(self, BACKBLAZE_B2_ENV_VARS)

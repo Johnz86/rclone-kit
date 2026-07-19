@@ -67,7 +67,10 @@ class RcloneCopyResumableFileToS3(unittest.TestCase):
         skip_if_missing_cloud_env(self, DIGITAL_OCEAN_SPACES_ENV_VARS)
         os.environ["RCLONE_KIT_VERBOSE"] = "1"
 
-    @unittest.skip("takes a long time to run")
+    @unittest.skip(
+        "Manual test: performs a real resumable multi-part S3 copy against a live "
+        "bucket; long-running and not covered by a deterministic fake."
+    )
     def test_copy_parts(self) -> None:
         src_file = f"{CLOUD_TEST_REMOTE_ROOT}/zachs_video/global_alliance.mp4"
         dst = f"{CLOUD_TEST_REMOTE_ROOT}/test_data/global_alliance.mp4"

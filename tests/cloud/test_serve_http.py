@@ -99,7 +99,11 @@ class RcloneServeHttpTester(unittest.TestCase):
         finally:
             pass
 
-    @unittest.skip("Skip for now")
+    @unittest.skip(
+        "Manual test: downloads a real ~70MB file over rclone's HTTP server to "
+        "compare single-stream vs multi-threaded download correctness; "
+        "long-running and not covered by a deterministic fake."
+    )
     def test_server_http(self) -> None:
         """Test mounting a remote bucket."""
         remote_path = f"dst:{self.bucket_name}"
@@ -161,7 +165,11 @@ class RcloneServeHttpTester(unittest.TestCase):
         finally:
             pass
 
-    @unittest.skip("Skip for now")
+    @unittest.skip(
+        "Manual test: downloads a real byte-range over rclone's HTTP server to "
+        "compare single-stream vs multi-threaded download correctness; not "
+        "covered by a deterministic fake."
+    )
     def test_small_range(self) -> None:
         """Test mounting a remote bucket."""
         remote_path = f"dst:{self.bucket_name}"

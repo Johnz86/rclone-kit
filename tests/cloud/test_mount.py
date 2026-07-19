@@ -35,7 +35,11 @@ class RcloneMountTests(unittest.TestCase):
         os.environ["RCLONE_KIT_VERBOSE"] = "1"
         self.rclone = Rclone(self.config)
 
-    @unittest.skip("Skipping test_mount")
+    @unittest.skip(
+        "Manual test: requires a real OS mount facility (FUSE on Linux, WinFsp on "
+        "Windows) plus a live bucket; not covered by a deterministic fake. Run "
+        "manually when validating mount behavior."
+    )
     def test_mount(self) -> None:
         """Test mounting a remote bucket."""
         remote_path = f"dst:{self.bucket_name}"

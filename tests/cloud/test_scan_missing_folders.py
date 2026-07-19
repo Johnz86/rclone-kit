@@ -27,7 +27,10 @@ class RcloneScanMissingFoldersTests(unittest.TestCase):
     def setUp(self) -> None:
         os.environ["RCLONE_KIT_VERBOSE"] = "1"
 
-    @unittest.skip("Skip test")
+    @unittest.skip(
+        "Manual test: compares two real directory trees on a live bucket; not "
+        "covered by a deterministic fake."
+    )
     def test_scan_missing_folders(self) -> None:
         """Test copying a single file to remote storage."""
         rclone = Rclone(self.config)
