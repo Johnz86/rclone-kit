@@ -15,7 +15,7 @@ from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from queue import Queue
 from threading import Semaphore, Thread
-from typing import cast
+from typing import Self, cast
 
 from rclone_kit.exceptions import MergeStateError, S3MergeError
 from rclone_kit.rclone_impl import RcloneImpl
@@ -39,6 +39,7 @@ _TIMEOUT_CONNECTION = 900
 
 
 _DEFAULT_PART_COPY_RETRIES = 9
+_WRITE_THREAD_CLOSE_TIMEOUT_SECONDS = 30.0
 
 
 def _upload_part_copy_task(
@@ -232,6 +233,7 @@ class WriteMergeStateThread(Thread):
         self.merge_path = merge_state.merge_path
         self.rclone_impl = rclone_impl
         self.queue: Queue[FinishedPiece | EndOfStream] = Queue()
+        self._closed = False
         self.start()
 
     def _get_next(self) -> FinishedPiece | EndOfStream:
@@ -273,6 +275,27 @@ class WriteMergeStateThread(Thread):
 
     def add_eos(self) -> None:
         self.queue.put(EndOfStream())
+
+    def close(self, timeout: float = _WRITE_THREAD_CLOSE_TIMEOUT_SECONDS) -> None:
+        """Stop the writer and wait for it to finish.
+
+        Idempotent, and always sends the end-of-stream sentinel itself
+        before joining, so a caller doesn't need to have already called
+        `add_eos()` (or remember to at all) for this to terminate the
+        thread. Raises `S3MergeError` if the writer doesn't finish within
+        `timeout`, since a writer still stuck at that point means
+        `merge_path` may not reflect every part this run finished.
+        """
+        if self._closed:
+            return
+        self._closed = True
+        self.add_eos()
+        self.join(timeout)
+        if self.is_alive():
+            raise S3MergeError(
+                f"WriteMergeStateThread did not finish within {timeout}s of close(); "
+                f"{self.merge_path} may not reflect every finished part"
+            )
 
 
 def _cleanup_merge(rclone: RcloneImpl, info: InfoJson) -> None:
@@ -399,6 +422,7 @@ class S3MultiPartMerger:
         self.client = create_s3_client(s3_creds=self.s3_creds, s3_config=s3_config)
         self.state: MergeState | None = None
         self.write_thread: WriteMergeStateThread | None = None
+        self._closed = False
 
     @staticmethod
     def create(
@@ -465,15 +489,33 @@ class S3MultiPartMerger:
         if state is None:
             raise S3MergeError("No merge state loaded")
         self.start_write_thread()
-        _do_upload_task(
-            s3_client=self.client,
-            merge_state=state,
-            max_workers=self.max_workers,
-            on_finished=self._on_piece_finished,
-        )
+        assert self.write_thread is not None
+        try:
+            _do_upload_task(
+                s3_client=self.client,
+                merge_state=state,
+                max_workers=self.max_workers,
+                on_finished=self._on_piece_finished,
+            )
+        finally:
+            self.write_thread.close()
 
     def cleanup(self) -> None:
         _cleanup_merge(rclone=self.rclone_impl, info=self.info)
+
+    def close(self) -> None:
+        """Stop the write thread if one was started. Idempotent."""
+        if self._closed:
+            return
+        self._closed = True
+        if self.write_thread is not None:
+            self.write_thread.close()
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        self.close()
 
 
 def s3_server_side_multi_part_merge(
@@ -494,5 +536,6 @@ def s3_server_side_multi_part_merge(
     merger = S3MultiPartMerger.create(
         rclone=rclone, info=info, max_workers=max_workers, verbose=verbose
     )
-    merger.merge()
+    with merger:
+        merger.merge()
     merger.cleanup()

@@ -12,6 +12,8 @@ from rclone_kit.rclone_impl import RcloneImpl
 from rclone_kit.s3.multipart.info_json import InfoJson
 from rclone_kit.s3.multipart.merge_state import MergeState, Part
 from rclone_kit.s3.multipart.upload_parts_server_side_merge import (
+    S3MultiPartMerger,
+    WriteMergeStateThread,
     _cleanup_merge,
     _complete_multipart_upload_from_parts,
     _upload_part_copy_task,
@@ -114,3 +116,57 @@ def test_cleanup_merge_raises_s3_merge_error_when_purge_fails(
 
     with pytest.raises(S3MergeError):
         _cleanup_merge(rclone=rclone, info=_stub_info(size=100))
+
+
+def _stub_merger() -> S3MultiPartMerger:
+    merger = cast(S3MultiPartMerger, object.__new__(S3MultiPartMerger))
+    merger.rclone_impl = _stub_rclone_impl()
+    merger.state = _stub_merge_state()
+    merger.write_thread = None
+    merger.client = cast(Any, object())
+    merger.max_workers = 1
+    merger.verbose = False
+    merger._closed = False
+    return merger
+
+
+def test_write_merge_state_thread_close_is_idempotent_with_nothing_queued() -> None:
+    thread = WriteMergeStateThread(
+        rclone_impl=_stub_rclone_impl(), merge_state=_stub_merge_state(), verbose=False
+    )
+
+    thread.close()
+    thread.close()
+
+    assert not thread.is_alive()
+
+
+def test_merge_closes_write_thread_when_do_upload_task_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _raise(**_kwargs: object) -> None:
+        raise RuntimeError("part copy failed")
+
+    monkeypatch.setattr(
+        "rclone_kit.s3.multipart.upload_parts_server_side_merge._do_upload_task", _raise
+    )
+    merger = _stub_merger()
+
+    with pytest.raises(RuntimeError, match="part copy failed"):
+        merger.merge()
+
+    assert merger.write_thread is not None
+    assert not merger.write_thread.is_alive()
+
+
+def test_merge_closes_write_thread_on_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "rclone_kit.s3.multipart.upload_parts_server_side_merge._do_upload_task",
+        lambda **_kwargs: None,
+    )
+    merger = _stub_merger()
+
+    merger.merge()
+
+    assert merger.write_thread is not None
+    assert not merger.write_thread.is_alive()
