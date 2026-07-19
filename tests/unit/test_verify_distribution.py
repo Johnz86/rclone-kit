@@ -123,7 +123,7 @@ LOG_FILE_MEMBER_IS_DENYLISTED = DenylistCase("build.log", True)
 DS_STORE_MEMBER_IS_DENYLISTED = DenylistCase("rclone_kit/.DS_Store", True)
 THUMBS_DB_MEMBER_IS_DENYLISTED = DenylistCase("rclone_kit/Thumbs.db", True)
 PYC_SUFFIX_MEMBER_IS_DENYLISTED = DenylistCase("rclone_kit/foo.pyc", True)
-ORDINARY_SOURCE_MEMBER_IS_NOT_DENYLISTED = DenylistCase("rclone_kit/cli.py", False)
+ORDINARY_SOURCE_MEMBER_IS_NOT_DENYLISTED = DenylistCase("rclone_kit/util.py", False)
 LATEST_NAMED_MEMBER_IS_NOT_DENYLISTED = DenylistCase("rclone_kit/latest.py", False)
 
 DENYLIST_CASES = [
@@ -375,14 +375,14 @@ def test_check_bundled_executable_hash_flags_expected_digest_mismatch(tmp_path: 
 
 def test_check_wheel_denylisted_members_flags_pycache() -> None:
     wheel_path = Path(_WINDOWS_WHEEL_NAME)
-    members = ("rclone_kit/__pycache__/cli.cpython-313.pyc",)
+    members = ("rclone_kit/__pycache__/util.cpython-313.pyc",)
     violations = verify_distribution.check_wheel_denylisted_members(wheel_path, members)
     assert len(violations) == 1
 
 
 def test_check_wheel_denylisted_members_passes_clean_tree() -> None:
     wheel_path = Path(_WINDOWS_WHEEL_NAME)
-    members = ("rclone_kit/cli.py", "rclone_kit/__init__.py")
+    members = ("rclone_kit/util.py", "rclone_kit/__init__.py")
     assert verify_distribution.check_wheel_denylisted_members(wheel_path, members) == []
 
 
@@ -411,7 +411,7 @@ def test_check_sdist_has_no_staged_platform_executables_flags_bundled_binary() -
 
 def test_check_sdist_has_no_staged_platform_executables_passes_clean_sdist() -> None:
     sdist_path = Path("rclone_kit-1.0.0.tar.gz")
-    members = ("rclone_kit-1.0.0/src/rclone_kit/cli.py",)
+    members = ("rclone_kit-1.0.0/src/rclone_kit/util.py",)
     assert (
         verify_distribution.check_sdist_has_no_staged_platform_executables(sdist_path, members)
         == []
@@ -488,7 +488,7 @@ def test_verify_sdist_flags_real_tar_gz_bundling_staged_executable(tmp_path: Pat
     sdist_path = _write_tar(
         tmp_path / "rclone_kit-1.0.0.tar.gz",
         [
-            "rclone_kit-1.0.0/src/rclone_kit/cli.py",
+            "rclone_kit-1.0.0/src/rclone_kit/util.py",
             "rclone_kit-1.0.0/src/rclone_kit/assets/rclone/win_amd64/rclone.exe",
         ],
     )

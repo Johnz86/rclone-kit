@@ -99,7 +99,7 @@ def test_wheel_names_returns_only_whl_files(tmp_path: Path) -> None:
 
 
 def test_ignore_build_cruft_filters_pycache_and_egg_info() -> None:
-    names = ["cli.py", "__pycache__", "rclone_kit.egg-info", "assets"]
+    names = ["util.py", "__pycache__", "rclone_kit.egg-info", "assets"]
 
     assert build_distribution._ignore_build_cruft(".", names) == {
         "__pycache__",
