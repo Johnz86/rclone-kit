@@ -20,6 +20,7 @@ class FilesStream:
         self.process.__exit__(*exc_info)
 
     def files(self) -> Generator[FileItem]:
+        assert self.process.stdout is not None, "Process must be launched with capture_stdout=True"
         line: bytes
         for line in self.process.stdout:
             linestr: str = line.decode("utf-8").strip()

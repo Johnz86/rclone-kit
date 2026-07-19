@@ -5,7 +5,7 @@ import threading
 import weakref
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Self
+from typing import IO, Self, cast
 
 from rclone_kit.config import Config
 from rclone_kit.process_tree import terminate_process_tree
@@ -17,6 +17,16 @@ from rclone_kit.util import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _spawn_bytes_mode(cmd: list[str], kwargs: dict) -> subprocess.Popen[bytes]:
+    """Launch `cmd` and assert the result is `Popen[bytes]`.
+
+    `kwargs` is splatted rather than passed as literal keywords, so `Popen`'s
+    `text`/`encoding`-based overload resolution can't see that no caller ever
+    sets `text=`/`encoding=` here; every `Process` runs in bytes mode.
+    """
+    return cast(subprocess.Popen[bytes], subprocess.Popen(cmd, **kwargs))
 
 
 @dataclass
@@ -63,7 +73,7 @@ class Process:
             kwargs["stdout"] = subprocess.PIPE
             kwargs["stderr"] = subprocess.STDOUT
 
-        self.process = subprocess.Popen(self.cmd, **kwargs)
+        self.process = _spawn_bytes_mode(self.cmd, kwargs)
 
         self_ref = weakref.ref(self)
 
@@ -135,11 +145,11 @@ class Process:
         return self.process.returncode
 
     @property
-    def stdout(self) -> Any:
+    def stdout(self) -> IO[bytes] | None:
         return self.process.stdout
 
     @property
-    def stderr(self) -> Any:
+    def stderr(self) -> IO[bytes] | None:
         return self.process.stderr
 
     def poll(self) -> int | None:
