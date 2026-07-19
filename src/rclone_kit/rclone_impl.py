@@ -44,7 +44,6 @@ from rclone_kit.types import (
     SizeSuffix,
 )
 from rclone_kit.util import (
-    find_free_port,
     get_check,
     get_rclone_exe,
     get_verbose,
@@ -1127,18 +1126,17 @@ class RcloneImpl:
         Raises:
             ValueError: If the NFS server fails to start
         """
-        src_str = convert_to_str(src)
-        cmd_list: list[str] = ["serve", "webdav", "--addr", addr, src_str]
-        cmd_list.extend(["--user", user, "--pass", password])
-        if allow_other:
-            cmd_list.append("--allow-other")
-        if other_args:
-            cmd_list += other_args
-        proc = self._launch_process(cmd_list)
-        time.sleep(2)
-        if proc.poll() is not None:
-            raise ValueError("NFS serve process failed to start")
-        return proc
+        from rclone_kit.detail.serve_ops import launch_webdav_server
+
+        return launch_webdav_server(
+            self,
+            src,
+            user,
+            password,
+            addr=addr,
+            allow_other=allow_other,
+            other_args=other_args,
+        )
 
     def serve_http(
         self,
@@ -1154,36 +1152,16 @@ class RcloneImpl:
             src: Remote or directory to serve
             addr: Network address and port to serve on (default: localhost:8080)
         """
-        addr = addr or f"localhost:{find_free_port()}"
-        _, subpath = src.split(":", 1)
-        cmd_list: list[str] = [
-            "serve",
-            "http",
-            "--addr",
-            addr,
-            src,
-            "--vfs-disk-space-total-size",
-            "0",
-            "--vfs-read-chunk-size-limit",
-            "512M",
-        ]
+        from rclone_kit.detail.serve_ops import launch_http_server
 
-        if cache_mode:
-            cmd_list += [
-                FLAG_VFS_CACHE_MODE,
-                cache_mode,
-            ]
-        if serve_http_log:
-            cmd_list += ["--log-file", str(serve_http_log)]
-            cmd_list += ["-vvvv"]
-        if other_args:
-            cmd_list += other_args
-        proc = self._launch_process(cmd_list, log=serve_http_log)
-        time.sleep(2)
-        if proc.poll() is not None:
-            raise ValueError("HTTP serve process failed to start")
-        out: HttpServer = HttpServer(url=f"http://{addr}", subpath=subpath, process=proc)
-        return out
+        return launch_http_server(
+            self,
+            src,
+            cache_mode,
+            addr=addr,
+            serve_http_log=serve_http_log,
+            other_args=other_args,
+        )
 
     def config_paths(
         self, remote: str | None = None, obscure: bool = False, no_obscure: bool = False
