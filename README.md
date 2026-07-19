@@ -99,7 +99,7 @@ uv python install
 uv sync --locked --all-groups
 uv run ruff format --check .
 uv run ruff check .
-uv run pyright src tests scripts
+uv run pyright _build_backend.py src tests scripts
 uv run pytest tests/unit
 uv run pytest tests/integration
 ```

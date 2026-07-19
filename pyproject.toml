@@ -41,6 +41,10 @@ dev = [
     "pytest-xdist>=3.8.0",
     "pyright>=1.1.411",
     "ruff>=0.15.22",
+    # Pinned to the exact [build-system] requires version so
+    # tests/unit/test_build_backend.py exercises the same setuptools
+    # bdist_wheel implementation the real build uses.
+    "setuptools==83.0.0",
 ]
 
 [tool.setuptools]
@@ -225,7 +229,8 @@ extraPaths = ["scripts"]
 [tool.pytest.ini_options]
 addopts = "-ra --strict-markers"
 testpaths = ["tests"]
-pythonpath = ["tests", "scripts"]
+# "." lets tests/unit/test_build_backend.py do a bare `import _build_backend`.
+pythonpath = ["tests", "scripts", "."]
 markers = [
     "cloud: requires external cloud credentials",
     "mount: requires operating-system mount support",

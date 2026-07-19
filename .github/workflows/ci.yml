@@ -53,7 +53,7 @@ jobs:
         run: uv run ruff check .
 
       - name: Type check
-        run: uv run pyright src tests scripts
+        run: uv run pyright _build_backend.py src tests scripts
 
   tests-windows:
     name: Test (windows-latest)

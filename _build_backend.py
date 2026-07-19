@@ -23,6 +23,19 @@ this module adds is:
    language-version floor. Step 1 alone would otherwise let `setuptools`
    pick the building interpreter's own ABI tag, needlessly pinning the
    wheel to the exact CPython minor version it was built with.
+3. Rewriting the Linux platform component from the build host's generic
+   `sysconfig` tag (`linux_x86_64`) to the manylinux compatibility tag
+   `rclone_kit.runtime.platform.LINUX_AMD64_ARTIFACT` certifies
+   (`manylinux2014_x86_64`). This module cannot import
+   `rclone_kit.runtime.platform` to read that value directly: at build time
+   it runs inside an isolated PEP 517 environment that has only
+   `setuptools` installed, never `rclone_kit` or its runtime dependencies
+   (see `scripts/build_distribution.py`). The manylinux prefix is
+   therefore a small, independently duplicated literal; if it and
+   `LINUX_AMD64_ARTIFACT.wheel_platform_tag` ever drift apart,
+   `scripts/verify_distribution.py`'s `check_exact_wheel_tag` — which reads
+   the authoritative value — fails the build loudly rather than silently
+   accepting a stale tag.
 
 `pyproject.toml` selects this module through `[build-system] build-backend
 = "_build_backend"` with `backend-path = ["."]`.
@@ -36,6 +49,10 @@ from setuptools.dist import Distribution
 _WHEEL_PYTHON_TAG = "py3"
 _WHEEL_ABI_TAG = "none"
 
+_LINUX_GENERIC_PLATFORM_PREFIX = "linux_"
+# Keep in sync with rclone_kit.runtime.platform.LINUX_AMD64_ARTIFACT.wheel_platform_tag.
+_LINUX_MANYLINUX_PLATFORM_PREFIX = "manylinux2014_"
+
 
 def _force_platform_specific_wheels() -> None:
     """Make every `Distribution` report that it has extension modules.
@@ -47,20 +64,32 @@ def _force_platform_specific_wheels() -> None:
     which is the documented, minimal way to opt a data-only distribution
     into platform-specific wheel tagging.
     """
-    Distribution.has_ext_modules = lambda _self: True
+    Distribution.has_ext_modules = lambda self: True  # noqa: ARG005
 
 
 def _normalize_platform_tag(raw_platform_name: str) -> str:
     return raw_platform_name.lower().replace("-", "_").replace(".", "_").replace(" ", "_")
 
 
+def _certified_platform_tag(normalized_platform_name: str) -> str:
+    """Rewrite a generic Linux platform tag (`linux_x86_64`) to the declared
+    manylinux compatibility tag (`manylinux2014_x86_64`); every other
+    platform tag (`win_amd64`, and so on) passes through unchanged.
+    """
+    if normalized_platform_name.startswith(_LINUX_GENERIC_PLATFORM_PREFIX):
+        suffix = normalized_platform_name.removeprefix(_LINUX_GENERIC_PLATFORM_PREFIX)
+        return _LINUX_MANYLINUX_PLATFORM_PREFIX + suffix
+    return normalized_platform_name
+
+
 def _get_tag_without_cpython_abi(self: _bdist_wheel_command) -> tuple[str, str, str]:
     """Return `(python_tag, abi_tag, platform_tag)` for a platform-specific
     wheel that declares no CPython ABI dependency.
 
-    Computes `platform_tag` exactly as the stock, non-pure branch of
-    `bdist_wheel.get_tag()` does (an explicitly supplied `--plat-name`, else
-    `get_platform(self.bdist_dir)`), but always returns `py3`/`none` for the
+    Computes `platform_tag` from the stock, non-pure branch of
+    `bdist_wheel.get_tag()` (an explicitly supplied `--plat-name`, else
+    `get_platform(self.bdist_dir)`), rewritten to the certified manylinux
+    compatibility tag on Linux, but always returns `py3`/`none` for the
     interpreter and ABI components instead of a concrete CPython tag. Does
     not call the stock implementation: it asserts its computed tag is a
     member of `packaging.tags.sys_tags()`, which a deliberately
@@ -70,7 +99,8 @@ def _get_tag_without_cpython_abi(self: _bdist_wheel_command) -> tuple[str, str, 
         raw_platform_name = self.plat_name
     else:
         raw_platform_name = _get_platform(self.bdist_dir)
-    return (_WHEEL_PYTHON_TAG, _WHEEL_ABI_TAG, _normalize_platform_tag(raw_platform_name))
+    platform_tag = _certified_platform_tag(_normalize_platform_tag(raw_platform_name))
+    return (_WHEEL_PYTHON_TAG, _WHEEL_ABI_TAG, platform_tag)
 
 
 def _force_abi_independent_wheel_tag() -> None:
