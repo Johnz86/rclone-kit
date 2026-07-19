@@ -3,6 +3,7 @@
 import logging
 import os
 from threading import Lock
+from typing import Self
 
 from sqlmodel import Session, SQLModel, col, create_engine, select
 
@@ -48,6 +49,12 @@ class DB:
         """Close the database connection and release resources."""
         if hasattr(self, "engine") and self.engine is not None:
             self.engine.dispose()
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        self.close()
 
     def add_files(self, files: list[FileItem]) -> None:
         """Add files to the database.

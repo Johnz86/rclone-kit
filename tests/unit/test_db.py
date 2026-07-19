@@ -5,6 +5,7 @@ UUnit test file for the DB class.
 import os
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from rclone_kit import FileItem as DBFile
 from rclone_kit.db import DB
@@ -33,6 +34,21 @@ class RcloneDBTests(unittest.TestCase):
     def test_db_creation(self) -> None:
         """Test database creation."""
         self.assertTrue(DB_PATH.exists())
+
+    def test_context_manager_closes_engine_on_exit(self) -> None:
+        """`with DB(...)` calls close() on exit, same as calling it explicitly."""
+        context_db_path = HERE / "test_context_manager.db"
+        sql_url = "sqlite:///" + str(context_db_path)
+        db = DB(sql_url)
+        try:
+            with patch.object(db, "close", wraps=db.close) as close_spy:
+                with db:
+                    pass
+                close_spy.assert_called_once()
+        finally:
+            db.close()
+            if context_db_path.exists():
+                context_db_path.unlink()
 
     def test_table(self) -> None:
         """Test table section functionality."""
