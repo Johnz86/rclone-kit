@@ -5,6 +5,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from rclone_kit.exceptions import ConfigParseError
+
 if TYPE_CHECKING:
     from rclone_kit import Rclone
     from rclone_kit.rclone_impl import RcloneImpl
@@ -89,7 +91,11 @@ class Config:
             pass
 
     @staticmethod
-    def from_json(json_data: dict) -> "Config | Exception":
+    def from_json(json_data: dict) -> "Config":
+        """Build a `Config` from a JSON dict of `{section: {key: value}}`.
+
+        Raises `ConfigParseError` when `json_data` isn't shaped that way.
+        """
         return json_to_rclone_config(json_data)
 
     def parse(self) -> Parsed:
@@ -236,9 +242,13 @@ def _json_to_rclone_config_str_or_raise(json_data: dict | str) -> str:
     return out
 
 
-def json_to_rclone_config(json_data: dict) -> Config | Exception:
+def json_to_rclone_config(json_data: dict) -> Config:
+    """Build a `Config` from a JSON dict of `{section: {key: value}}`.
+
+    Raises `ConfigParseError` when `json_data` isn't shaped that way.
+    """
     try:
         text = _json_to_rclone_config_str_or_raise(json_data)
-        return Config(text=text)
-    except Exception as e:
-        return e
+    except (json.JSONDecodeError, TypeError, AttributeError, AssertionError) as e:
+        raise ConfigParseError(e) from e
+    return Config(text=text)

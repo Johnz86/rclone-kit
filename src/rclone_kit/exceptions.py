@@ -23,3 +23,29 @@ class FilesystemError(RcloneKitError):
         self.path = path
         self.cause = cause
         super().__init__(f"Filesystem operation failed for {path!r}: {cause}")
+
+
+class ConfigParseError(RcloneKitError):
+    """Raised when a JSON dict cannot be converted to rclone config text.
+
+    Carries the original failure (malformed JSON, or a value shape that
+    isn't a mapping of section name to key/value pairs) as `__cause__`.
+    """
+
+    def __init__(self, cause: Exception) -> None:
+        self.cause = cause
+        super().__init__(f"Failed to convert JSON to rclone config: {cause}")
+
+
+class RcloneCommandError(RcloneKitError):
+    """Raised when an `rclone` subprocess invocation fails.
+
+    Carries the rclone executable's stderr output, and the underlying
+    `subprocess.CalledProcessError` or `OSError` as `__cause__`.
+    """
+
+    def __init__(self, command: str, stderr: str, cause: Exception) -> None:
+        self.command = command
+        self.stderr = stderr
+        self.cause = cause
+        super().__init__(f"rclone {command} failed: {stderr or cause}")

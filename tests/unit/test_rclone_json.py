@@ -4,7 +4,10 @@ Unit test file.
 
 import unittest
 
+import pytest
+
 from rclone_kit import Config
+from rclone_kit.exceptions import ConfigParseError
 
 TEXT = """
 {
@@ -29,19 +32,18 @@ JSON_DATA = {
 }
 
 
-def json_to_rclone_config(json_data: dict) -> Config | Exception:
-    return Config.from_json(json_data)
-
-
 class MainTester(unittest.TestCase):
     """Main tester class."""
 
     def test_json_to_rclone(self) -> None:
         """Test command line interface (CLI)."""
-        rclone_conf = json_to_rclone_config(JSON_DATA)
-        self.assertFalse(isinstance(rclone_conf, Exception))
-        print(rclone_conf)
-        print("done")
+        rclone_conf = Config.from_json(JSON_DATA)
+        self.assertIsInstance(rclone_conf, Config)
+
+
+def test_from_json_raises_config_parse_error_for_non_mapping_section() -> None:
+    with pytest.raises(ConfigParseError):
+        Config.from_json({"dst": "not-a-mapping"})
 
 
 if __name__ == "__main__":
