@@ -860,12 +860,9 @@ class RcloneImpl:
         Raises FileNotFoundError if no file matches `src`, or ValueError
         if more than one file matches.
         """
-        dirlist: DirListing = self.ls(src, listing_option=ListingOption.FILES_ONLY, max_depth=0)
-        if len(dirlist.files) == 0:
-            raise FileNotFoundError(f"File not found: {src}")
-        if len(dirlist.files) > 1:
-            raise ValueError(f"More than one file found: {src}")
-        return SizeSuffix(dirlist.files[0].size)
+        from rclone_kit.detail.listing_ops import fetch_size_file
+
+        return fetch_size_file(self, src)
 
     def get_s3_credentials(self, remote: str, verbose: bool | None = None) -> S3Credentials:
         from rclone_kit.detail.config_ops import fetch_s3_credentials
@@ -1116,68 +1113,14 @@ class RcloneImpl:
         verbose: bool | None = None,
     ) -> SizeResult:
         """Get the size of a list of files. Example of files items: "remote:bucket/to/file"."""
-        verbose = get_verbose(verbose)
-        check = get_check(check)
-        if not files:
-            return SizeResult(prefix=src, total_size=0, file_sizes={})
-        if len(files) < 2:
-            full_path = f"{src}/{files[0]}"
-            tmp = self.size_file(full_path)
-            return SizeResult(
-                prefix=src, total_size=tmp.as_int(), file_sizes={files[0]: tmp.as_int()}
-            )
-        if fast_list or (other_args and FLAG_FAST_LIST in other_args):
-            warnings.warn(
-                "It's not recommended to use --fast-list with size_files as this will perform poorly on large repositories since the entire repository has to be scanned.",
-                stacklevel=2,
-            )
-        files = list(files)
-        all_files: list[File] = []
+        from rclone_kit.detail.listing_ops import fetch_size_files
 
-        cmd = ["lsjson", src, "--files-only", "-R"]
-        with TemporaryDirectory() as tmpdir:
-            include_files_txt = Path(tmpdir) / "include_files.txt"
-            include_files_txt.write_text("\n".join(files), encoding="utf-8")
-            cmd += [FLAG_FILES_FROM, str(include_files_txt)]
-            if fast_list:
-                cmd.append(FLAG_FAST_LIST)
-            if other_args:
-                cmd += other_args
-            cp = self._run(cmd, check=check)
-
-            if cp.returncode != 0:
-                if check:
-                    raise ValueError(f"Error getting file sizes: {cp.stderr}")
-                else:
-                    warnings.warn(f"Error getting file sizes: {cp.stderr}", stacklevel=2)
-            stdout = cp.stdout
-            pieces = src.split(":", 1)
-            remote_name = pieces[0]
-            parent_path: str | None
-            parent_path = pieces[1] if len(pieces) > 1 else None
-            remote = Remote(name=remote_name, rclone=self)
-            paths: list[RPath] = RPath.from_json_str(stdout, remote, parent_path=parent_path)
-
-            all_files += [File(p) for p in paths]
-        file_sizes: dict[str, int] = {}
-        f: File
-        for f in all_files:
-            p = f.to_string(include_remote=True)
-            if p in file_sizes:
-                warnings.warn(f"Duplicate file found: {p}", stacklevel=2)
-                continue
-            size = f.size
-            if size == 0:
-                warnings.warn(f"File size is 0: {p}", stacklevel=2)
-            file_sizes[p] = f.size
-        total_size = sum(file_sizes.values())
-        file_sizes_path_corrected: dict[str, int] = {}
-        for path, size in file_sizes.items():
-            prefix = src.rstrip("/") + "/"
-            if not path.startswith(prefix):
-                raise ValueError(f"Listed path {path!r} is outside source {src!r}")
-            file_sizes_path_corrected[path.removeprefix(prefix)] = size
-        out: SizeResult = SizeResult(
-            prefix=src, total_size=total_size, file_sizes=file_sizes_path_corrected
+        return fetch_size_files(
+            self,
+            src,
+            files,
+            fast_list=fast_list,
+            other_args=other_args,
+            check=check,
+            verbose=verbose,
         )
-        return out

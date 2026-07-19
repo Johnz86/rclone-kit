@@ -1,17 +1,20 @@
 import random
 import subprocess
+import warnings
 from datetime import datetime
 from fnmatch import fnmatch
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from rclone_kit.convert import convert_to_str
 from rclone_kit.dir import Dir
 from rclone_kit.dir_listing import DirListing
 from rclone_kit.file import File
-from rclone_kit.rclone_impl import RcloneImpl
+from rclone_kit.rclone_impl import FLAG_FAST_LIST, FLAG_FILES_FROM, RcloneImpl
 from rclone_kit.remote import Remote
 from rclone_kit.rpath import RPath
-from rclone_kit.types import ListingOption, Order
-from rclone_kit.util import to_path
+from rclone_kit.types import ListingOption, Order, SizeResult, SizeSuffix
+from rclone_kit.util import get_check, get_verbose, to_path
 
 
 def fetch_ls(
@@ -128,3 +131,92 @@ def fetch_modtime(self: RcloneImpl, src: str) -> str:
 def fetch_modtime_dt(self: RcloneImpl, src: str) -> datetime:
     """Get the modification time of a file or directory."""
     return self.stat(src).mod_time_dt()
+
+
+def fetch_size_file(self: RcloneImpl, src: str) -> SizeSuffix:
+    """Get the size of a file or directory.
+
+    Raises FileNotFoundError if no file matches `src`, or ValueError
+    if more than one file matches.
+    """
+    dirlist: DirListing = self.ls(src, listing_option=ListingOption.FILES_ONLY, max_depth=0)
+    if len(dirlist.files) == 0:
+        raise FileNotFoundError(f"File not found: {src}")
+    if len(dirlist.files) > 1:
+        raise ValueError(f"More than one file found: {src}")
+    return SizeSuffix(dirlist.files[0].size)
+
+
+def fetch_size_files(
+    self: RcloneImpl,
+    src: str,
+    files: list[str],
+    fast_list: bool = False,
+    other_args: list[str] | None = None,
+    check: bool | None = False,
+    verbose: bool | None = None,
+) -> SizeResult:
+    """Get the size of a list of files. Example of files items: "remote:bucket/to/file"."""
+    verbose = get_verbose(verbose)
+    check = get_check(check)
+    if not files:
+        return SizeResult(prefix=src, total_size=0, file_sizes={})
+    if len(files) < 2:
+        full_path = f"{src}/{files[0]}"
+        tmp = self.size_file(full_path)
+        return SizeResult(prefix=src, total_size=tmp.as_int(), file_sizes={files[0]: tmp.as_int()})
+    if fast_list or (other_args and FLAG_FAST_LIST in other_args):
+        warnings.warn(
+            "It's not recommended to use --fast-list with size_files as this will perform poorly on large repositories since the entire repository has to be scanned.",
+            stacklevel=2,
+        )
+    files = list(files)
+    all_files: list[File] = []
+
+    cmd = ["lsjson", src, "--files-only", "-R"]
+    with TemporaryDirectory() as tmpdir:
+        include_files_txt = Path(tmpdir) / "include_files.txt"
+        include_files_txt.write_text("\n".join(files), encoding="utf-8")
+        cmd += [FLAG_FILES_FROM, str(include_files_txt)]
+        if fast_list:
+            cmd.append(FLAG_FAST_LIST)
+        if other_args:
+            cmd += other_args
+        cp = self._run(cmd, check=check)
+
+        if cp.returncode != 0:
+            if check:
+                raise ValueError(f"Error getting file sizes: {cp.stderr}")
+            else:
+                warnings.warn(f"Error getting file sizes: {cp.stderr}", stacklevel=2)
+        stdout = cp.stdout
+        pieces = src.split(":", 1)
+        remote_name = pieces[0]
+        parent_path: str | None
+        parent_path = pieces[1] if len(pieces) > 1 else None
+        remote = Remote(name=remote_name, rclone=self)
+        paths: list[RPath] = RPath.from_json_str(stdout, remote, parent_path=parent_path)
+
+        all_files += [File(p) for p in paths]
+    file_sizes: dict[str, int] = {}
+    f: File
+    for f in all_files:
+        p = f.to_string(include_remote=True)
+        if p in file_sizes:
+            warnings.warn(f"Duplicate file found: {p}", stacklevel=2)
+            continue
+        size = f.size
+        if size == 0:
+            warnings.warn(f"File size is 0: {p}", stacklevel=2)
+        file_sizes[p] = f.size
+    total_size = sum(file_sizes.values())
+    file_sizes_path_corrected: dict[str, int] = {}
+    for path, size in file_sizes.items():
+        prefix = src.rstrip("/") + "/"
+        if not path.startswith(prefix):
+            raise ValueError(f"Listed path {path!r} is outside source {src!r}")
+        file_sizes_path_corrected[path.removeprefix(prefix)] = size
+    out: SizeResult = SizeResult(
+        prefix=src, total_size=total_size, file_sizes=file_sizes_path_corrected
+    )
+    return out

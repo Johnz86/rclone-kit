@@ -18,13 +18,16 @@ from rclone_kit.detail.listing_ops import (
     fetch_ls,
     fetch_modtime,
     fetch_modtime_dt,
+    fetch_size_file,
+    fetch_size_files,
     fetch_stat,
     print_contents,
 )
 from rclone_kit.dir_listing import DirListing
 from rclone_kit.file import File
-from rclone_kit.rclone_impl import RcloneImpl
+from rclone_kit.rclone_impl import FLAG_FILES_FROM, RcloneImpl
 from rclone_kit.remote import Remote
+from rclone_kit.types import SizeResult, SizeSuffix
 
 _LSJSON_ONE_FILE = json.dumps(
     [
@@ -36,6 +39,27 @@ _LSJSON_ONE_FILE = json.dumps(
             "ModTime": "2024-01-01T00:00:00Z",
             "IsDir": False,
         }
+    ]
+)
+
+_LSJSON_TWO_FILES = json.dumps(
+    [
+        {
+            "Path": "a.txt",
+            "Name": "a.txt",
+            "Size": 1,
+            "MimeType": "text/plain",
+            "ModTime": "2024-01-01T00:00:00Z",
+            "IsDir": False,
+        },
+        {
+            "Path": "b.txt",
+            "Name": "b.txt",
+            "Size": 2,
+            "MimeType": "text/plain",
+            "ModTime": "2024-01-02T00:00:00Z",
+            "IsDir": False,
+        },
     ]
 )
 
@@ -186,6 +210,91 @@ def test_check_is_synced_false_on_called_process_error() -> None:
     rclone._run = run
 
     assert check_is_synced(rclone, "src:bucket", "dst:bucket") is False
+
+
+def test_fetch_size_file_raises_file_not_found_for_missing_path() -> None:
+    rclone = _bare_rclone_impl()
+    rclone._run = lambda *_args, **_kwargs: subprocess.CompletedProcess(
+        [], 0, stdout="[]", stderr=""
+    )
+
+    with pytest.raises(FileNotFoundError):
+        fetch_size_file(rclone, "remote:bucket/missing.txt")
+
+
+def test_fetch_size_file_raises_value_error_for_multiple_matches() -> None:
+    rclone = _bare_rclone_impl()
+    rclone._run = lambda *_args, **_kwargs: subprocess.CompletedProcess(
+        [], 0, stdout=_LSJSON_TWO_FILES, stderr=""
+    )
+
+    with pytest.raises(ValueError, match="More than one file found"):
+        fetch_size_file(rclone, "remote:bucket/a.txt")
+
+
+def test_fetch_size_file_returns_size_of_single_match() -> None:
+    rclone = _bare_rclone_impl()
+    rclone._run = lambda *_args, **_kwargs: subprocess.CompletedProcess(
+        [], 0, stdout=_LSJSON_ONE_FILE, stderr=""
+    )
+
+    assert fetch_size_file(rclone, "remote:bucket/a.txt").as_int() == 1
+
+
+def test_fetch_size_files_empty_input_returns_empty_result() -> None:
+    rclone = _bare_rclone_impl()
+
+    result = fetch_size_files(rclone, "remote:bucket", [])
+
+    assert result == SizeResult(prefix="remote:bucket", total_size=0, file_sizes={})
+
+
+def test_fetch_size_files_single_file_delegates_to_size_file() -> None:
+    rclone = _bare_rclone_impl()
+    calls: list[str] = []
+
+    def size_file(src: str) -> SizeSuffix:
+        calls.append(src)
+        return SizeSuffix(42)
+
+    rclone.size_file = size_file
+
+    result = fetch_size_files(rclone, "remote:bucket", ["a.txt"])
+
+    assert calls == ["remote:bucket/a.txt"]
+    assert result == SizeResult(prefix="remote:bucket", total_size=42, file_sizes={"a.txt": 42})
+
+
+def test_fetch_size_files_builds_expected_command_vector_and_aggregates() -> None:
+    rclone = _bare_rclone_impl()
+    commands: list[list[str]] = []
+
+    def run(cmd: list[str], check: bool = False, capture=None):
+        del check, capture
+        commands.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout=_LSJSON_TWO_FILES, stderr="")
+
+    rclone._run = run
+
+    result = fetch_size_files(rclone, "remote:bucket", ["a.txt", "b.txt"])
+
+    assert len(commands) == 1
+    cmd = commands[0]
+    assert cmd[:3] == ["lsjson", "remote:bucket", "--files-only"]
+    assert "-R" in cmd
+    assert FLAG_FILES_FROM in cmd
+    assert result.total_size == 3
+    assert result.file_sizes == {"a.txt": 1, "b.txt": 2}
+
+
+def test_fetch_size_files_fast_list_warns() -> None:
+    rclone = _bare_rclone_impl()
+    rclone._run = lambda *_args, **_kwargs: subprocess.CompletedProcess(
+        [], 0, stdout=_LSJSON_TWO_FILES, stderr=""
+    )
+
+    with pytest.warns(UserWarning, match="fast-list"):
+        fetch_size_files(rclone, "remote:bucket", ["a.txt", "b.txt"], fast_list=True)
 
 
 def test_print_contents_prints_read_text_result(capsys: pytest.CaptureFixture[str]) -> None:
