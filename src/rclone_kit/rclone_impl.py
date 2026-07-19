@@ -1001,48 +1001,22 @@ class RcloneImpl:
                 operating-system mount facility rclone's `mount` subcommand
                 requires (WinFsp on Windows, FUSE on Linux)
         """
-        from rclone_kit.mount_util import clean_mount, ensure_mount_supported, prepare_mount
+        from rclone_kit.detail.mount_ops import launch_mount
 
-        ensure_mount_supported()
-        allow_writes = False if allow_writes is None else allow_writes
-        use_links = True if use_links is None else use_links
-        verbose = get_verbose(verbose) or (log is not None)
-        vfs_cache_mode = vfs_cache_mode or "full"
-        clean_mount(outdir, verbose=verbose)
-        prepare_mount(outdir, verbose=verbose)
-        debug_fuse = log is not None
-        src_str = convert_to_str(src)
-        cmd_list: list[str] = ["mount", src_str, str(outdir)]
-        if not allow_writes:
-            cmd_list.append("--read-only")
-        if use_links:
-            cmd_list.append("--links")
-        if vfs_cache_mode:
-            cmd_list.append(FLAG_VFS_CACHE_MODE)
-            cmd_list.append(vfs_cache_mode)
-        if cache_dir:
-            cmd_list.append("--cache-dir")
-            cmd_list.append(str(cache_dir.absolute()))
-        if transfers is not None:
-            cmd_list.append(FLAG_TRANSFERS)
-            cmd_list.append(str(transfers))
-        if debug_fuse:
-            cmd_list.append("--debug-fuse")
-        if verbose:
-            cmd_list.append("-vvvv")
-        if other_args:
-            cmd_list += other_args
-        proc = self._launch_process(cmd_list, log=log)
-        mount_read_only = not allow_writes
-        mount: Mount = Mount(
-            src=src_str,
-            mount_path=outdir,
-            process=proc,
-            read_only=mount_read_only,
+        return launch_mount(
+            self,
+            src,
+            outdir,
+            allow_writes=allow_writes,
+            transfers=transfers,
+            use_links=use_links,
+            vfs_cache_mode=vfs_cache_mode,
+            verbose=verbose,
             cache_dir=cache_dir,
             cache_dir_delete_on_exit=cache_dir_delete_on_exit,
+            log=log,
+            other_args=other_args,
         )
-        return mount
 
     def mount_s3(
         self,
@@ -1067,40 +1041,23 @@ class RcloneImpl:
             src: Remote or directory to mount
             outdir: Local path to mount to
         """
-        other_args = other_args or []
-        if modtime_strategy is not None:
-            other_args.append(f"--{modtime_strategy.value}")
-        if (vfs_cache_mode in {"full", "writes"}) and (
-            transfers is not None and FLAG_TRANSFERS not in other_args
-        ):
-            other_args.append(FLAG_TRANSFERS)
-            other_args.append(str(transfers))
-        if dir_cache_time is not None and "--dir-cache-time" not in other_args:
-            other_args.append("--dir-cache-time")
-            other_args.append(dir_cache_time)
-        if vfs_disk_space_total_size is not None and "--vfs-cache-max-size" not in other_args:
-            other_args.append("--vfs-cache-max-size")
-            other_args.append(vfs_disk_space_total_size)
-        if vfs_refresh and "--vfs-refresh" not in other_args:
-            other_args.append("--vfs-refresh")
-        if attribute_timeout is not None and "--attr-timeout" not in other_args:
-            other_args.append("--attr-timeout")
-            other_args.append(attribute_timeout)
-        if vfs_read_chunk_streams:
-            other_args.append("--vfs-read-chunk-streams")
-            other_args.append(str(vfs_read_chunk_streams))
-        if vfs_read_chunk_size:
-            other_args.append("--vfs-read-chunk-size")
-            other_args.append(vfs_read_chunk_size)
-        if vfs_fast_fingerprint:
-            other_args.append("--vfs-fast-fingerprint")
+        from rclone_kit.detail.mount_ops import launch_s3_mount
 
-        other_args = other_args if other_args else None
-        return self.mount(
+        return launch_s3_mount(
+            self,
             url,
             outdir,
             allow_writes=allow_writes,
             vfs_cache_mode=vfs_cache_mode,
+            dir_cache_time=dir_cache_time,
+            attribute_timeout=attribute_timeout,
+            vfs_disk_space_total_size=vfs_disk_space_total_size,
+            transfers=transfers,
+            modtime_strategy=modtime_strategy,
+            vfs_read_chunk_streams=vfs_read_chunk_streams,
+            vfs_read_chunk_size=vfs_read_chunk_size,
+            vfs_fast_fingerprint=vfs_fast_fingerprint,
+            vfs_refresh=vfs_refresh,
             other_args=other_args,
         )
 

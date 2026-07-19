@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from rclone_kit import rclone_impl as rclone_impl_module
+from rclone_kit.detail import mount_ops as mount_ops_module
 from rclone_kit.dir_listing import DirListing
 from rclone_kit.exceptions import RcloneCommandError
 from rclone_kit.group_files import group_files
@@ -124,7 +124,7 @@ def test_mount_respects_explicit_false_for_links(
     monkeypatch.setattr("rclone_kit.mount_util.clean_mount", lambda *_args, **_kwargs: None)
     monkeypatch.setattr("rclone_kit.mount_util.prepare_mount", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
-        rclone_impl_module,
+        mount_ops_module,
         "Mount",
         SimpleNamespace,
     )
