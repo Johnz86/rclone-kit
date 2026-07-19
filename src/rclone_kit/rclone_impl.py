@@ -71,19 +71,6 @@ FLAG_TRANSFERS = "--transfers"
 FLAG_VFS_CACHE_MODE = "--vfs-cache-mode"
 
 
-def _raise_if_exception[T](result: T | Exception) -> T:
-    """Convert an Exception-as-return-value into a raised exception.
-
-    A transitional bridge for call sites already migrated to raise that
-    still call into `copy_file_parts_resumable`, not yet migrated off the
-    `T | Exception` return convention. Delete this and its one remaining
-    call site once that callee raises directly instead.
-    """
-    if isinstance(result, Exception):
-        raise result
-    return result
-
-
 def rclone_verbose(verbose: bool | None) -> bool:
     if verbose is not None:
         os.environ["RCLONE_KIT_VERBOSE"] = "1" if verbose else "0"
@@ -878,15 +865,13 @@ class RcloneImpl:
             dst = dst[:-1]
         dst_dir = f"{dst}-parts"
 
-        _raise_if_exception(
-            copy_file_parts_resumable(
-                self=self,
-                src=src,
-                dst_dir=dst_dir,
-                part_infos=part_infos,
-                upload_threads=upload_threads,
-                merge_threads=merge_threads,
-            )
+        copy_file_parts_resumable(
+            self=self,
+            src=src,
+            dst_dir=dst_dir,
+            part_infos=part_infos,
+            upload_threads=upload_threads,
+            merge_threads=merge_threads,
         )
 
     def write_text(

@@ -12,8 +12,7 @@ def copy_file_parts_resumable(
     upload_threads: int = 10,
     merge_threads: int = 5,
     verbose: bool | None = None,
-) -> Exception | None:
-
+) -> None:
     from rclone_kit.s3.multipart.upload_parts_resumable import upload_parts_resumable
     from rclone_kit.s3.multipart.upload_parts_server_side_merge import (
         s3_server_side_multi_part_merge,
@@ -22,21 +21,16 @@ def copy_file_parts_resumable(
     if verbose is None:
         verbose = self.get_verbose()
 
-    err: Exception | None = upload_parts_resumable(
+    upload_parts_resumable(
         self=self,
         src=src,
         dst_dir=dst_dir,
         part_infos=part_infos,
         threads=upload_threads,
     )
-    if isinstance(err, Exception):
-        return err
     if dst_dir.endswith("/"):
         dst_dir = dst_dir[:-1]
     dst_info = f"{dst_dir}/info.json"
-    err = s3_server_side_multi_part_merge(
+    s3_server_side_multi_part_merge(
         rclone=self, info_path=dst_info, max_workers=merge_threads, verbose=verbose
     )
-    if isinstance(err, Exception):
-        return err
-    return None

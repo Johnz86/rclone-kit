@@ -253,9 +253,9 @@ class RemoteFS(FS):
         """Remove a file or symbolic link."""
 
         path = path if isinstance(path, str) else path.as_posix()
-        err = self.rclone.delete_files(path)
-        if isinstance(err, Exception):
-            raise FileNotFoundError(f"File not found: {path}, because of {err}") from err
+        cp = self.rclone.delete_files(path)
+        if cp.failed():
+            raise FileNotFoundError(f"File not found: {path}, because of {cp}")
 
     def get_path(self, path: str) -> "FSPath":
         return FSPath(self, path)

@@ -77,13 +77,10 @@ def main() -> int:
     args = _parse_args()
     rclone = Rclone(rclone_conf=args.config_path)
 
-    err: Exception | None = rclone.copy_file_s3_resumable(
+    rclone.copy_file_s3_resumable(
         src=args.src,
         dst=args.dst,
     )
-    if err is not None:
-        print(f"Error: {err}")
-        raise err
     return 0
 
 
