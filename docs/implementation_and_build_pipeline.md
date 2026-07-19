@@ -386,11 +386,28 @@ The error model phase is done: `rclone_kit.exceptions` now holds a typed
 as data now raises, and the transitional `_raise_if_exception` bridge has
 been removed along with its last call site.
 
+The resource ownership phase is done except for one item folded into the S3
+multipart phase below: `Process` and `rclone_execute` no longer register a
+per-instance/per-call `atexit` closure (replaced by a single import-time
+registration draining a `WeakSet` registry, mirroring `mount_util.py`'s
+existing mount registry); `FilePart` prunes its exit-cleanup list and its
+`dispose()` is idempotent; `scan_missing_folders` no longer leaks a blocked
+background thread when a caller stops iterating early; `FSWalkThread` and
+`FSWalker` gained an idempotent `close()` reachable outside the
+context-manager protocol, which also fixed a latent double-`Thread.start()`
+bug; `upload_parts_resumable` reuses the same registry pattern instead of a
+per-call `atexit` closure; `RemoteFS` and `DB` gained context-manager support
+to match their sibling resource owners; and `fs/walk.py`'s module-level
+thread pool is now documented as an intentional process-lifetime singleton
+rather than an undocumented oversight. `WriteMergeStateThread` and
+`S3MultiPartMerger` in `upload_parts_server_side_merge.py` still need an
+explicit `close()`/`stop()` and confirmed ownership; that is deferred to the
+S3 multipart phase since it touches the same state machine.
+
 | Area | Current constraint | Preferred next step | Required evidence |
 |---|---|---|---|
 | Public facade | `Rclone` and `RcloneImpl` remain large and duplicate the operation surface. | Extract pure command builders and cohesive listing, transfer, configuration, serve, mount, and S3 services while keeping `Rclone` stable. | Characterization tests and an API compatibility snapshot. |
-| Resource ownership | Some cleanup still depends on `atexit`, `__del__`, weak references, or global executors. | Give each process, executor, producer, mount, and temporary resource one explicit owner with idempotent close/shutdown behavior. | Tests leave no live subprocesses, threads, temporary files, or blocked producers. |
-| S3 multipart | Several strategies coordinate futures, persisted state, retries, and cleanup separately. | Define and test explicit states and transitions before consolidating orchestration. | Fake-S3 tests cover resume, retry exhaustion, corruption, worker failure, completion failure, and cleanup. |
+| S3 multipart | Several strategies coordinate futures, persisted state, retries, and cleanup separately; `WriteMergeStateThread` has no explicit close/stop path. | Define and test explicit states and transitions before consolidating orchestration; give `WriteMergeStateThread`/`S3MultiPartMerger` explicit, idempotent ownership of the write thread. | Fake-S3 tests cover resume, retry exhaustion, corruption, worker failure, completion failure, and cleanup. |
 | Paths and filesystems | Local paths, rclone paths, and strings still overlap. | Introduce immutable local/rclone path values and one documented `FS.ls` contract. | Identical remote-path behavior on Windows and Linux. |
 | Typing and linting | Legacy rule families remain globally ignored and Pyright is not strict. | Make new modules strict, then remove one narrow ignore family per behavior-preserving change. | Quality gates pass with a smaller ignore surface and no broad `Any` escape hatches in changed code. |
 | Test isolation | Cloud tests retain legacy `unittest` setup and disabled scenarios. | Move shared setup to pytest fixtures and replace disabled tests with deterministic fakes where possible. | Unit tests run offline and in arbitrary order; external suites are explicitly opt-in. |
