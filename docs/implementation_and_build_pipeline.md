@@ -537,9 +537,40 @@ turned out to reference a real, still-open bug
 immediately after a successful `remove()`, likely an HTTP-serve caching
 layer) that couldn't be root-caused without live bucket access.
 
+The typing and linting phase made a first pass, not the full rollout: four
+small, independently-revertable ignore-list items are resolved, and the
+groundwork for a future Pyright-strict rollout is in place, but the large
+deferred families (`S101`, `ANN`, `TRY`, `FBT001`/`FBT002`/`FBT003`,
+`A001`/`A002`, `PLR0913`, `PTH`, `PLR0911`/`PLR0912`/`PLR0915`) and the
+strict-mode rollout itself are still open. Every `subprocess.CompletedProcess`
+return type and construction across `util.py`, `exec.py`,
+`rclone_impl.py`, `completed_process.py`, and `detail/transfer_ops.py` is
+now parameterized as `CompletedProcess[str]` - true for every call site,
+since every `Popen` invocation already passes `encoding="utf-8"` - instead
+of the bare, effectively `Unknown`-typed generic Pyright previously
+inferred; a strict-mode trial on three already-clean modules
+(`detail/listing_ops.py`, `detail/transfer_ops.py`, `group_files.py`)
+dropped from 115 to 60 errors from this change alone, confirming it as
+the single largest source of strict-mode noise and the right prerequisite
+before any `strict = [...]` rollout. Three narrow ignore families are now
+fully resolved and removed: `S324` (the one `hashlib.md5()` finding in
+`s3/multipart/info_json.py` is a content-fingerprint hash, not a security
+use, so `usedforsecurity=False` documents that without changing the
+digest); `PLR2004` in `src/` (8 magic-value comparisons now have named
+constants - reusing `httpx.codes.OK` instead of a bespoke `200` in
+`http_server.py` - while the ignore itself moved to a
+`tests/**/*.py`-scoped `per-file-ignores` entry, since this project's test
+style guide already prefers literal expected values in parametrized
+cases); and `ARG002` (the stale `config_paths` example in the old ignore
+comment no longer applied - `fetch_config_paths` already consumes its
+reserved parameters via `del` - and the 5 remaining findings, all
+signature-bound to the `FS` abstract base class or a test double's
+`Protocol`/duck-typed contract, were suppressed the same way rather than
+by loosening any signature).
+
 | Area | Current constraint | Preferred next step | Required evidence |
 |---|---|---|---|
-| Typing and linting | Legacy rule families remain globally ignored and Pyright is not strict. | Make new modules strict, then remove one narrow ignore family per behavior-preserving change. | Quality gates pass with a smaller ignore surface and no broad `Any` escape hatches in changed code. |
+| Typing and linting | `S101`, `ANN`, `TRY`, `FBT001`/`FBT002`/`FBT003`, `A001`/`A002`, `PLR0913`, `PTH`, `PLR0911`/`PLR0912`/`PLR0915` remain globally ignored, and Pyright is not strict anywhere. | With `CompletedProcess[str]` now propagated, add a real `[tool.pyright]` `strict = [...]` list starting from near-zero-finding modules (`detail/config_ops.py`, `detail/mount_ops.py`, `detail/serve_ops.py`, `completed_process.py`, `exec.py`), then work through the remaining ignore families with per-call-site judgment. | Quality gates pass with a smaller ignore surface and no broad `Any` escape hatches in changed code. |
 | Release publication | CI assembles verified wheels but does not publish or attest them. | Configure PyPI trusted publishing, an approval-protected environment, a tag-driven publish job, and artifact attestations. | Only a verified `release-dist` artifact can reach the publish job. |
 | Build isolation | Smoke tests poison proxies but do not enforce network denial. | Run them in a network-disabled container or namespace where supported. | A deliberate network attempt fails while the bundled executable still runs. |
 | Source distributions | An sdist cannot yet build a complete certified wheel. | Keep wheel-only releases, or add a verified artifact input/download hook and test sdist-to-wheel builds on every target. | A built-from-sdist wheel passes the same verifier and smoke test. |
