@@ -293,7 +293,7 @@ def rclone_execute(
     check: bool,
     capture: bool | Path | None = None,
     verbose: bool | None = None,
-) -> subprocess.CompletedProcess:
+) -> subprocess.CompletedProcess[str]:
     tmpfile: Path | None = None
     verbose = get_verbose(verbose)
 
@@ -336,7 +336,7 @@ def rclone_execute(
 
         out, err = process.communicate()
 
-        cp: subprocess.CompletedProcess = subprocess.CompletedProcess(
+        cp: subprocess.CompletedProcess[str] = subprocess.CompletedProcess(
             args=full_cmd,
             returncode=process.returncode,
             stdout=out,

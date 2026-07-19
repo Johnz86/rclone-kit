@@ -97,7 +97,7 @@ class RcloneImpl:
 
     def _run(
         self, cmd: list[str], check: bool = False, capture: bool | Path | None = None
-    ) -> subprocess.CompletedProcess:
+    ) -> subprocess.CompletedProcess[str]:
         return self._exec.execute(cmd, check=check, capture=capture)
 
     def _launch_process(

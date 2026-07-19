@@ -222,7 +222,7 @@ def copy_files_partitioned(
             def _task(
                 files: list[str] | Path = partition_files,
                 common_prefix: str = common_prefix,
-            ) -> subprocess.CompletedProcess:
+            ) -> subprocess.CompletedProcess[str]:
                 with TemporaryDirectory() as tmpdir:
                     filelist: list[str] = []
                     filepath: Path
@@ -290,7 +290,7 @@ def copy_files_partitioned(
             fut: Future = executor.submit(_task)
             futures.append(fut)
         for fut in futures:
-            cp: subprocess.CompletedProcess = fut.result()
+            cp: subprocess.CompletedProcess[str] = fut.result()
             assert cp is not None
             out.append(CompletedProcess.from_subprocess(cp))
             if cp.returncode != 0:
@@ -317,7 +317,7 @@ def delete_files_partitioned(
     if len(payload) == 0:
         if verbose:
             logger.info("No files to delete")
-        cp = subprocess.CompletedProcess(
+        cp: subprocess.CompletedProcess[str] = subprocess.CompletedProcess(
             args=["rclone", "delete", FLAG_FILES_FROM, "[]"],
             returncode=0,
             stdout="",
@@ -326,7 +326,7 @@ def delete_files_partitioned(
         return CompletedProcess.from_subprocess(cp)
 
     datalists: dict[str, list[str]] = group_files(payload)
-    completed_processes: list[subprocess.CompletedProcess] = []
+    completed_processes: list[subprocess.CompletedProcess[str]] = []
 
     futures: list[Future] = []
 
@@ -335,7 +335,7 @@ def delete_files_partitioned(
 
             def _task(
                 files=remote_files, check=check, remote=remote
-            ) -> subprocess.CompletedProcess:
+            ) -> subprocess.CompletedProcess[str]:
                 with TemporaryDirectory() as tmpdir:
                     include_files_txt = Path(tmpdir) / "include_files.txt"
                     include_files_txt.write_text("\n".join(files), encoding="utf-8")

@@ -15,7 +15,7 @@ class RcloneExec:
 
     def execute(
         self, cmd: list[str], check: bool, capture: bool | Path | None = None
-    ) -> subprocess.CompletedProcess:
+    ) -> subprocess.CompletedProcess[str]:
         """Execute rclone command."""
         from rclone_kit.util import rclone_execute
 
