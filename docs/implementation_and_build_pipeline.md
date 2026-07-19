@@ -502,10 +502,44 @@ asymmetry is load-bearing, since `FSPath.__truediv__`/`fs_walk`'s
 itself an absolute path - previously undocumented and one accidental
 "normalize `RealFS.ls` to bare names" cleanup away from breaking `walk`.
 
+The test-isolation phase is done for its "move shared setup to pytest
+fixtures" goal; "replace disabled tests with deterministic fakes" was
+assessed and deliberately not attempted. 18 of `tests/cloud`'s 21 files
+each duplicated their own `_generate_rclone_config()` (13 near-identical
+lines) plus a `unittest.TestCase.setUp()` calling `skip_if_missing_cloud_env`
+- exactly the legacy setup the roadmap named. `tests/cloud/conftest.py`
+gained a `do_spaces_config` fixture that builds the same `Config` and skips
+via `pytest.skip` when `DIGITAL_OCEAN_SPACES_ENV_VARS` are missing; every
+file using the standard DigitalOcean Spaces pattern now requests it through
+an autouse fixture method (confirmed live that pytest runs autouse fixtures
+on a `unittest.TestCase` before `setUp`, so files that build `self.rclone`
+in `setUp` can rely on `self.config` already being set) - a net -319 lines
+across those 18 files. Three files were deliberately left alone:
+`test_s3.py` builds `S3Credentials`/`S3Client` directly rather than an
+rclone `Config`; `test_copy_file_resumable_s3.py` and
+`test_read_write_text.py` build a differently-shaped config that doesn't
+fit the fixture. `tests/cloud/test_conftest.py` verifies the fixture's
+skip and config-building logic offline with monkeypatched env vars, no
+`@pytest.mark.cloud` marker needed since it never touches the network.
+
+For "replace disabled tests with deterministic fakes": every currently
+`@unittest.skip`'d cloud test either needs a real OS mount facility
+(FUSE/WinFsp) or exercises real byte-for-byte transfer, range-download, or
+multi-part-upload correctness against live provider behavior that a
+hand-rolled fake would not meaningfully validate (unlike the S3 multipart
+phase's fakes, which stood in for a well-defined boto3 method surface, not
+an entire storage backend's actual bytes). Building that infrastructure was
+judged out of scope for this pass. Every skip reason was rewritten from
+opaque text ("Skip for now", "Skip test") to state why it's disabled, so a
+future contributor doesn't have to re-derive the reasoning; one skip reason
+turned out to reference a real, still-open bug
+(`RemoteFS.exists()` in `test_fs_remote.py` reports a file present
+immediately after a successful `remove()`, likely an HTTP-serve caching
+layer) that couldn't be root-caused without live bucket access.
+
 | Area | Current constraint | Preferred next step | Required evidence |
 |---|---|---|---|
 | Typing and linting | Legacy rule families remain globally ignored and Pyright is not strict. | Make new modules strict, then remove one narrow ignore family per behavior-preserving change. | Quality gates pass with a smaller ignore surface and no broad `Any` escape hatches in changed code. |
-| Test isolation | Cloud tests retain legacy `unittest` setup and disabled scenarios. | Move shared setup to pytest fixtures and replace disabled tests with deterministic fakes where possible. | Unit tests run offline and in arbitrary order; external suites are explicitly opt-in. |
 | Release publication | CI assembles verified wheels but does not publish or attest them. | Configure PyPI trusted publishing, an approval-protected environment, a tag-driven publish job, and artifact attestations. | Only a verified `release-dist` artifact can reach the publish job. |
 | Build isolation | Smoke tests poison proxies but do not enforce network denial. | Run them in a network-disabled container or namespace where supported. | A deliberate network attempt fails while the bundled executable still runs. |
 | Source distributions | An sdist cannot yet build a complete certified wheel. | Keep wheel-only releases, or add a verified artifact input/download hook and test sdist-to-wheel builds on every target. | A built-from-sdist wheel passes the same verifier and smoke test. |
