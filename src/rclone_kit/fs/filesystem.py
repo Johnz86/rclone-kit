@@ -269,6 +269,12 @@ class RemoteFS(FS):
     def __del__(self) -> None:
         self.dispose()
 
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        self.dispose()
+
 
 class FSPath:
     @staticmethod
