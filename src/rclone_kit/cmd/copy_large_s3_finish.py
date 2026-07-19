@@ -69,11 +69,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    import sys
-
-    sys.argv.append("--config")
-    sys.argv.append("rclone.conf")
-    sys.argv.append(
-        "dst:TorrentBooks/aa_misc_data/aa_misc_data/world_lending_library_2024_11.tar.zst-parts/"
-    )
-    main()
+    raise SystemExit(main())

@@ -1,5 +1,4 @@
 import argparse
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -89,10 +88,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.argv.append("--config")
-    sys.argv.append("rclone.conf")
-    sys.argv.append("45061:aa_misc_data/aa_misc_data/world_lending_library_2024_11.tar.zst")
-    sys.argv.append(
-        "dst:TorrentBooks/aa_misc_data/aa_misc_data/world_lending_library_2024_11.tar.zst"
-    )
-    main()
+    raise SystemExit(main())

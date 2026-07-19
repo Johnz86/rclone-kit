@@ -43,9 +43,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    import sys
-
-    cwd = Path().absolute()
-    print(f"cwd: {cwd}")
-    sys.argv.append("dst:TorrentBooks")
-    main()
+    raise SystemExit(main())
