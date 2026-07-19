@@ -11,6 +11,7 @@ from pathlib import Path
 
 from rclone_kit.mount import Mount
 from rclone_kit.process import Process
+from rclone_kit.util import format_command
 
 _SYSTEM = platform.system()  # "Linux", "Darwin", "Windows", etc.
 _WINDOWS = "Windows"
@@ -188,17 +189,14 @@ def wait_for_mount(
     if not isinstance(mount_process, Process):
         raise TypeError("mount_process must be an instance of Process")
 
-    expire_time = time.time() + timeout
+    expire_time = time.monotonic() + timeout
     last_error = None
 
-    while time.time() < expire_time:
+    while time.monotonic() < expire_time:
         # Check if the mount process has terminated unexpectedly.
         rtn = mount_process.poll()
         if rtn is not None:
-            print(
-                "Mount process terminated unexpectedly: "
-                f"{subprocess.list2cmdline(mount_process.cmd)}"
-            )
+            print(f"Mount process terminated unexpectedly: {format_command(mount_process.cmd)}")
             raise subprocess.CalledProcessError(rtn, mount_process.cmd)
 
         # Check if the mount path exists.
@@ -231,11 +229,10 @@ def wait_for_mount(
 
         time.sleep(poll_interval)
 
-    # raise TimeoutError(
-    #     f"Mount point {src} did not become available within {timeout} seconds. Last error: {last_error}"
-    # )
+    message = f"Mount point {src} did not become available within {timeout} seconds"
     if last_error is not None:
-        raise last_error
+        raise TimeoutError(message) from last_error
+    raise TimeoutError(message)
 
 
 def _rmtree_ignore_mounts(path):

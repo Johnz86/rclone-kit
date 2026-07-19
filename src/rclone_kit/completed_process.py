@@ -1,6 +1,8 @@
 import subprocess
 from dataclasses import dataclass
 
+from rclone_kit.util import format_command
+
 
 @dataclass
 class CompletedProcess:
@@ -53,7 +55,7 @@ class CompletedProcess:
         cmd_strs: list[str] = []
         rtn_cods: list[int] = []
         for cp in self.completed:
-            cmd_strs.append(subprocess.list2cmdline(cp.args))
+            cmd_strs.append(format_command(cp.args))
             rtn_cods.append(cp.returncode)
         msg = f"CompletedProcess: {len(cmd_strs)} commands\n"
         msg += "\n".join([f"{cmd} -> {rtn}" for cmd, rtn in zip(cmd_strs, rtn_cods, strict=False)])

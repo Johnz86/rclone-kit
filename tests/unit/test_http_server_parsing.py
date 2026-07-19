@@ -7,10 +7,15 @@ trailing slash on the name distinguishing a directory from a file.
 """
 
 from dataclasses import dataclass
+from pathlib import Path
+from types import TracebackType
+from typing import Self
 
 import pytest
 
-from rclone_kit.http_server import FileList, _parse_files_and_dirs
+from rclone_kit import http_server as http_server_module
+from rclone_kit.http_server import FileList, HttpServer, _parse_files_and_dirs
+from rclone_kit.types import Range
 
 _TABLE_HEADER = """
 <html>
@@ -90,3 +95,69 @@ PARSE_IDS = [
 def test_parse_files_and_dirs(case: ParseCase) -> None:
     result = _parse_files_and_dirs(case.html)
     assert result == case.expected
+
+
+def test_file_url_escapes_remote_path_without_platform_conversion() -> None:
+    server = HttpServer("http://localhost:8080/", "", process=object())  # type: ignore[arg-type]
+
+    assert (
+        server._get_file_url("folder/a file #1.txt")
+        == "http://localhost:8080/folder/a%20file%20%231.txt"
+    )
+
+
+def test_get_returns_download_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    server = HttpServer("http://localhost:8080", "", process=object())  # type: ignore[arg-type]
+    failure = OSError("download failed")
+    monkeypatch.setattr(server, "download", lambda *_args, **_kwargs: failure)
+
+    assert server.get("missing.txt") is failure
+
+
+class _ShortRangeResponse:
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        del exc_type, exc_value, traceback
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def iter_bytes(self, chunk_size: int):
+        del chunk_size
+        yield b"ab"
+
+
+def test_download_rejects_short_ranged_response(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    server = HttpServer("http://localhost:8080", "", process=object())  # type: ignore[arg-type]
+    destination = tmp_path / "download"
+    monkeypatch.setattr(
+        http_server_module.httpx,
+        "stream",
+        lambda *_args, **_kwargs: _ShortRangeResponse(),
+    )
+    monkeypatch.setattr(http_server_module, "_range", lambda _count: iter((0,)))
+    monkeypatch.setattr(http_server_module.time, "sleep", lambda _seconds: None)
+
+    with pytest.warns(UserWarning):
+        result = server.download("file.bin", destination, Range(0, 4))
+
+    assert isinstance(result, Exception)
+    assert not destination.exists()
+
+
+def test_download_after_shutdown_returns_failure(tmp_path: Path) -> None:
+    server = HttpServer("http://localhost:8080", "", process=object())  # type: ignore[arg-type]
+    server.process = None
+
+    result = server.download("file.bin", tmp_path / "download")
+
+    assert isinstance(result, RuntimeError)

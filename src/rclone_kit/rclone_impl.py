@@ -9,7 +9,6 @@ import os
 import random
 import subprocess
 import time
-import tracemalloc
 import warnings
 from collections.abc import Generator
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -64,9 +63,6 @@ if TYPE_CHECKING:
     # never requires `boto3` to be installed.
     from rclone_kit.s3.api import S3Client
 
-# Enable tracing memory usage always
-tracemalloc.start()
-
 logger = logging.getLogger(__name__)
 
 
@@ -94,10 +90,10 @@ def _parse_paths(src: str) -> list[Path] | Exception:
     paths: list[Path] = []
     for line in lines:
         try:
-            parts = line.split(":")
-            if len(parts) != 2:
+            _label, separator, value = line.partition(":")
+            if not separator:
                 continue
-            path = Path(parts[1].strip())
+            path = Path(value.strip())
             paths.append(path)
         except Exception as e:
             return e
@@ -556,13 +552,12 @@ class RcloneImpl:
             payload: Dictionary of source and destination file paths
         """
         check = get_check(check)
-        max_partition_workers = max_partition_workers or 1
-        low_level_retries = low_level_retries or 10
-        retries = retries or 3
-        other_args = other_args or []
-        other_args.append("--s3-no-check-bucket")
-        checkers = checkers or 1000
-        transfers = transfers or 32
+        max_partition_workers = 1 if max_partition_workers is None else max_partition_workers
+        low_level_retries = 10 if low_level_retries is None else low_level_retries
+        retries = 3 if retries is None else retries
+        command_args = [*(other_args or ()), "--s3-no-check-bucket"]
+        checkers = 1000 if checkers is None else checkers
+        transfers = 32 if transfers is None else transfers
         verbose = get_verbose(verbose)
         payload: list[str] = (
             files
@@ -578,7 +573,7 @@ class RcloneImpl:
                     f"Invalid file path, contains a remote, which is not allowed for copy_files: {p}"
                 )
 
-        using_fast_list = "--fast-list" in other_args
+        using_fast_list = "--fast-list" in command_args
         if using_fast_list:
             warnings.warn(
                 "It's not recommended to use --fast-list with copy_files as this will perform poorly on large repositories since the entire repository has to be scanned.",
@@ -659,12 +654,11 @@ class RcloneImpl:
                                 str(multi_thread_streams),
                             ]
                         if verbose:
-                            if not any("-v" in x for x in other_args):
+                            if not any("-v" in x for x in command_args):
                                 cmd_list.append("-vvvv")
-                            if not any("--progress" in x for x in other_args):
+                            if not any("--progress" in x for x in command_args):
                                 cmd_list.append("--progress")
-                        if other_args:
-                            cmd_list += other_args
+                        cmd_list += command_args
                         out = self._run(cmd_list, capture=not verbose)
                         return out
 
@@ -1132,8 +1126,8 @@ class RcloneImpl:
         from rclone_kit.mount_util import clean_mount, ensure_mount_supported, prepare_mount
 
         ensure_mount_supported()
-        allow_writes = allow_writes or False
-        use_links = use_links or True
+        allow_writes = False if allow_writes is None else allow_writes
+        use_links = True if use_links is None else use_links
         verbose = get_verbose(verbose) or (log is not None)
         vfs_cache_mode = vfs_cache_mode or "full"
         clean_mount(outdir, verbose=verbose)
@@ -1346,6 +1340,26 @@ class RcloneImpl:
         except subprocess.CalledProcessError as e:
             return e
 
+    def config_show(
+        self, remote: str | None = None, obscure: bool = False, no_obscure: bool = False
+    ) -> str | Exception:
+        """Return the configuration text reported by `rclone config show`."""
+        if obscure and no_obscure:
+            raise ValueError("obscure and no_obscure cannot both be enabled")
+        cmd_list = ["config", "show"]
+        if remote is not None:
+            cmd_list.append(remote)
+        if obscure:
+            cmd_list.append("--obscure")
+        if no_obscure:
+            cmd_list.append("--no-obscure")
+        try:
+            cp = self._run(cmd_list, capture=True, check=True)
+        except subprocess.CalledProcessError as error:
+            return error
+        stdout = cp.stdout
+        return stdout.decode("utf-8") if isinstance(stdout, bytes) else stdout
+
     def size_files(
         self,
         src: str,
@@ -1358,6 +1372,8 @@ class RcloneImpl:
         """Get the size of a list of files. Example of files items: "remote:bucket/to/file"."""
         verbose = get_verbose(verbose)
         check = get_check(check)
+        if not files:
+            return SizeResult(prefix=src, total_size=0, file_sizes={})
         if len(files) < 2:
             full_path = f"{src}/{files[0]}"
             tmp = self.size_file(full_path)
@@ -1415,10 +1431,10 @@ class RcloneImpl:
         total_size = sum(file_sizes.values())
         file_sizes_path_corrected: dict[str, int] = {}
         for path, size in file_sizes.items():
-            # remove the prefix
-            path_path = Path(path)
-            path_str = path_path.relative_to(src).as_posix()
-            file_sizes_path_corrected[path_str] = size
+            prefix = src.rstrip("/") + "/"
+            if not path.startswith(prefix):
+                raise ValueError(f"Listed path {path!r} is outside source {src!r}")
+            file_sizes_path_corrected[path.removeprefix(prefix)] = size
         out: SizeResult = SizeResult(
             prefix=src, total_size=total_size, file_sizes=file_sizes_path_corrected
         )

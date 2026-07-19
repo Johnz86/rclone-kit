@@ -8,7 +8,12 @@ from typing import Any, Self
 
 from rclone_kit.config import Config
 from rclone_kit.process_tree import terminate_process_tree
-from rclone_kit.util import clear_temp_config_file, get_verbose, make_temp_config_file
+from rclone_kit.util import (
+    clear_temp_config_file,
+    format_command,
+    get_verbose,
+    make_temp_config_file,
+)
 
 
 @dataclass
@@ -49,7 +54,7 @@ class Process:
             self.args.log.parent.mkdir(parents=True, exist_ok=True)
             self.cmd += ["--log-file", str(self.args.log)]
         if verbose:
-            cmd_str = subprocess.list2cmdline(self.cmd)
+            cmd_str = format_command(self.cmd)
             print(f"Running: {cmd_str}")
         kwargs: dict = {"shell": False}
         if args.capture_stdout:
@@ -83,8 +88,8 @@ class Process:
         self.dispose()
 
     def cleanup(self) -> None:
-        if self.tempfile:
-            clear_temp_config_file(self.tempfile)
+        if tempfile := getattr(self, "tempfile", None):
+            clear_temp_config_file(tempfile)
 
     def _kill_process_tree(self) -> None:
         """Recursively terminate the main process and all its child processes.

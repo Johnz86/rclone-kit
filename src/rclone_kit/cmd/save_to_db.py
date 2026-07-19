@@ -16,7 +16,7 @@ def _db_url_from_env_or_raise() -> str:
     return db_url
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class Args:
     config: Path
     path: str
@@ -28,10 +28,8 @@ class Args:
             raise FileNotFoundError(f"Config file not found: {self.config}")
 
 
-def fill_db(rclone: Rclone, path: str, fast_list: bool) -> None:
+def fill_db(rclone: Rclone, path: str, db_url: str, fast_list: bool) -> None:
     """List files in a remote path."""
-    # db = DB(_db_url_from_env_or_raise())
-    db_url = _db_url_from_env_or_raise()
     rclone.save_to_db(src=path, db_url=db_url, fast_list=fast_list)
 
 
@@ -58,14 +56,9 @@ def main() -> int:
     args = _parse_args()
     path = args.path
     rclone = Rclone(Path(args.config))
-    fill_db(rclone=rclone, path=path, fast_list=args.fast_list)
+    fill_db(rclone=rclone, path=path, db_url=args.db_url, fast_list=args.fast_list)
     return 0
 
 
 if __name__ == "__main__":
-    import sys
-
-    cwd = Path().absolute()
-    print(f"cwd: {cwd}")
-    sys.argv.append("dst:TorrentBooks/meta")
-    main()
+    raise SystemExit(main())

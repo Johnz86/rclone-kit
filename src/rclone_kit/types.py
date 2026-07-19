@@ -76,12 +76,7 @@ def _to_size_suffix(size: int) -> str:
         return val, unit
 
     def _fmt(_val: float, _unit: str) -> str:
-        # If the float is an integer, drop the decimal, otherwise format with one decimal.
-        val_str: str = str(_val)
-        if not val_str.endswith(".0"):
-            first_str: str = f"{_val:.1f}"
-        else:
-            first_str = str(int(_val))
+        first_str = str(int(_val)) if float(_val).is_integer() else f"{_val:.1f}"
         return first_str + _unit
 
     val, unit = _convert(size)
@@ -129,19 +124,23 @@ def _from_size_suffix(size: str) -> int:
     raise ValueError(f"Invalid size suffix: {suffix}")
 
 
+@dataclass(frozen=True, slots=True, init=False)
 class SizeSuffix:
+    _size: int
+
     def __init__(self, size: "int | str | SizeSuffix"):
-        self._size: int
+        parsed_size: int
         if isinstance(size, SizeSuffix):
-            self._size = size._size
+            parsed_size = size._size
         elif isinstance(size, int):
-            self._size = size
+            parsed_size = size
         elif isinstance(size, str):
-            self._size = _from_size_suffix(size)
+            parsed_size = _from_size_suffix(size)
         elif isinstance(size, float):
-            self._size = int(size)
+            parsed_size = int(size)
         else:
             raise ValueError(f"Invalid type for size: {type(size)}")
+        object.__setattr__(self, "_size", parsed_size)
 
     def as_int(self) -> int:
         return self._size
@@ -231,10 +230,7 @@ class SizeSuffix:
         return self._size < SizeSuffix(other)._size
 
     def __le__(self, other: "int | SizeSuffix") -> bool:
-        # if not isinstance(other, SizeSuffix):
-        #     return False
-        # return self._size <= other._size
-        return self._size < SizeSuffix(other)._size
+        return self._size <= SizeSuffix(other)._size
 
     def __gt__(self, other: "int | SizeSuffix") -> bool:
         return self._size > SizeSuffix(other)._size
@@ -249,14 +245,10 @@ class SizeSuffix:
         return self._size
 
     def __iadd__(self, other: "int | SizeSuffix") -> Self:
-        other_int = SizeSuffix(other)
-        self._size += other_int._size
-        return self
+        return type(self)(self._size + SizeSuffix(other)._size)
 
     def __isub__(self, other: "int | SizeSuffix") -> Self:
-        other_int = SizeSuffix(other)
-        self._size -= other_int._size
-        return self
+        return type(self)(self._size - SizeSuffix(other)._size)
 
 
 _TMP_DIR_ACCESS_LOCK = Lock()
@@ -304,12 +296,20 @@ class EndOfStream:
     pass
 
 
+@dataclass(frozen=True, slots=True, init=False)
 class Range:
+    start: SizeSuffix
+    end: SizeSuffix
+
     def __init__(self, start: int | SizeSuffix, end: int | SizeSuffix):
-        self.start: SizeSuffix = SizeSuffix(start)  # inclusive
-        self.end: SizeSuffix = SizeSuffix(
-            end
-        )  # exclusive (not like http byte range which is inclusive)
+        parsed_start = SizeSuffix(start)
+        parsed_end = SizeSuffix(end)
+        if parsed_start < 0:
+            raise ValueError("Range start must not be negative")
+        if parsed_end <= parsed_start:
+            raise ValueError("Range end must be greater than start")
+        object.__setattr__(self, "start", parsed_start)
+        object.__setattr__(self, "end", parsed_end)
 
     def to_header(self) -> dict[str, str]:
         last = self.end - 1
@@ -330,8 +330,12 @@ _MAX_PART_NUMBER = 10000
 def _get_chunk_size(src_size: int | SizeSuffix, target_chunk_size: int | SizeSuffix) -> SizeSuffix:
     src_size = SizeSuffix(src_size)
     target_chunk_size = SizeSuffix(target_chunk_size)
-    min_chunk_size = src_size // (_MAX_PART_NUMBER - 1)  # overriden
-    # chunk_size = max(min_chunk_size, target_chunk_size)
+    if src_size < 0:
+        raise ValueError("Source size must not be negative")
+    if target_chunk_size <= 0:
+        raise ValueError("Target chunk size must be greater than zero")
+    minimum_bytes = (src_size.as_int() + _MAX_PART_NUMBER - 1) // _MAX_PART_NUMBER
+    min_chunk_size = SizeSuffix(minimum_bytes)
     if min_chunk_size > target_chunk_size:
         warnings.warn(
             f"min_chunk_size: {min_chunk_size} is greater than target_chunk_size: {target_chunk_size}, adjusting target_chunk_size to min_chunk_size",
@@ -346,9 +350,12 @@ def _get_chunk_size(src_size: int | SizeSuffix, target_chunk_size: int | SizeSuf
 def _create_part_infos(
     src_size: int | SizeSuffix, target_chunk_size: int | SizeSuffix
 ) -> list["PartInfo"]:
-    # now break it up into 10 parts
     target_chunk_size = SizeSuffix(target_chunk_size)
     src_size = SizeSuffix(src_size)
+    if src_size < 0:
+        raise ValueError("Source size must not be negative")
+    if src_size == 0:
+        return []
     chunk_size = _get_chunk_size(src_size=src_size, target_chunk_size=target_chunk_size)
 
     part_infos: list[PartInfo] = []
@@ -375,7 +382,7 @@ def _create_part_infos(
     return part_infos
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class PartInfo:
     part_number: int
     range: Range
@@ -387,11 +394,9 @@ class PartInfo:
         out = _create_part_infos(size, target_chunk_size)
         return out
 
-    def __post_init__(self):
-        assert self.part_number >= 0
-        assert self.part_number <= 10000
-        assert self.range.start >= 0
-        assert self.range.end > self.range.start
+    def __post_init__(self) -> None:
+        if not 1 <= self.part_number <= _MAX_PART_NUMBER:
+            raise ValueError(f"Part number must be between 1 and {_MAX_PART_NUMBER}")
 
     @property
     def name(self) -> str:

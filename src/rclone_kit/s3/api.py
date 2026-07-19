@@ -1,4 +1,3 @@
-import json
 import warnings
 
 from botocore.client import BaseClient
@@ -94,20 +93,13 @@ class S3Client:
             return out
         except Exception as e:
             key = upload_target.s3_key
-            access_key_id = self.credentials.access_key_id[:4] + "..."
-            secret = self.credentials.secret_access_key[:4] + "..."
             endpoint_url = self.credentials.endpoint_url
             provider = self.credentials.provider.value
             region_name = self.credentials.region_name
-            info_json = {
-                "bucket": bucket_name,
-                "key": key,
-                "access_key_id": access_key_id[:4] + "...",
-                "secret": secret[:4] + "...",
-                "endpoint_url": endpoint_url,
-                "provider": provider,
-                "region": region_name,
-            }
-            info_json_str = json.dumps(info_json, indent=2)
-            warnings.warn(f"Error uploading file: {e}\nInfo:\n\n{info_json_str}", stacklevel=2)
+            warnings.warn(
+                "Error uploading file "
+                f"{key!r} to bucket {bucket_name!r} via {provider!r} "
+                f"at {endpoint_url!r} in region {region_name!r}: {type(e).__name__}",
+                stacklevel=2,
+            )
             raise

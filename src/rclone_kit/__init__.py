@@ -7,6 +7,7 @@ The API wraps the rclone command-line tool, providing a Pythonic interface
 for common operations like copying, listing, and managing remote storage.
 """
 
+import logging
 import os
 from collections.abc import Generator
 
@@ -30,7 +31,8 @@ from .fs.filesystem import FSPath, RealFS, RemoteFS  # Filesystem utilities
 from .http_server import HttpFetcher, HttpServer, Range  # HTTP serving capabilities
 
 # Import logging configuration utilities
-from .log import configure_logging, setup_default_logging
+from .log import configure_logging
+from .log import setup_default_logging as setup_default_logging
 from .mount import Mount  # Mount remote filesystems
 from .process import Process  # Process management
 from .remote import Remote  # Remote storage representation
@@ -44,8 +46,7 @@ from .types import (  # Common types
     SizeSuffix,
 )
 
-# Set up default logging configuration when the package is imported
-setup_default_logging()
+logging.getLogger(__name__).addHandler(logging.NullHandler())
 
 
 def rclone_verbose(val: bool | None, from_api: bool = False) -> bool:
@@ -254,7 +255,7 @@ class Rclone:
 
     def config_show(
         self, remote: str | None = None, obscure: bool = False, no_obscure: bool = False
-    ) -> list[Path] | Exception:
+    ) -> str | Exception:
         """Show the current configuration.
 
         Args:
@@ -265,7 +266,7 @@ class Rclone:
         Returns:
             Configuration as text or an Exception if an error occurred
         """
-        return self.impl.config_paths(remote=remote, obscure=obscure, no_obscure=no_obscure)
+        return self.impl.config_show(remote=remote, obscure=obscure, no_obscure=no_obscure)
 
     def ls_stream(
         self,

@@ -39,7 +39,3 @@ def configure_logging(level=logging.INFO, log_file=None):
         handlers=handlers,
         force=True,  # Override any existing configuration
     )
-
-
-# Call setup_default_logging when this module is imported
-setup_default_logging()

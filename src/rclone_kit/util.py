@@ -28,6 +28,9 @@ _PRINT_LOCK = Lock()
 _TMP_CONFIG_DIR_PREFIX = "rclone-kit-config-"
 _RCLONE_CONFIGS_LIST: list[Path] = []
 _DO_CLEANUP = os.getenv("RCLONE_KIT_CLEANUP", "1") == "1"
+_REDACTED_VALUE = "<redacted>"
+_SENSITIVE_FLAG_PARTS = frozenset({"auth", "password", "pass", "secret", "token"})
+_SENSITIVE_COMPOUND_FLAGS = ("access-key", "private-key")
 
 
 def _clean_configs(signum: int | None = None, _frame: object | None = None) -> None:
@@ -79,7 +82,9 @@ def make_temp_config_file() -> Path:
     """
     tmpdir = Path(tempfile.mkdtemp(prefix=_TMP_CONFIG_DIR_PREFIX))
     _RCLONE_CONFIGS_LIST.append(tmpdir)
-    return tmpdir / "rclone.conf"
+    config_path = tmpdir / "rclone.conf"
+    config_path.touch(mode=0o600, exist_ok=False)
+    return config_path
 
 
 def clear_temp_config_file(path: Path | None) -> None:
@@ -91,8 +96,44 @@ def clear_temp_config_file(path: Path | None) -> None:
     """
     if path is None or not _DO_CLEANUP:
         return
+    config_dir = path.parent
+    if config_dir not in _RCLONE_CONFIGS_LIST:
+        with contextlib.suppress(OSError):
+            path.unlink(missing_ok=True)
+        return
     with contextlib.suppress(OSError):
-        path.unlink(missing_ok=True)
+        shutil.rmtree(config_dir)
+    with contextlib.suppress(ValueError):
+        _RCLONE_CONFIGS_LIST.remove(config_dir)
+
+
+def _is_sensitive_flag(flag: str) -> bool:
+    normalized = flag.lstrip("-").lower()
+    parts = frozenset(normalized.split("-"))
+    return bool(parts & _SENSITIVE_FLAG_PARTS) or any(
+        compound in normalized for compound in _SENSITIVE_COMPOUND_FLAGS
+    )
+
+
+def format_command(command: list[str]) -> str:
+    """Format an argument vector for diagnostics with credential values redacted."""
+    redacted: list[str] = []
+    redact_next = False
+    for argument in command:
+        if redact_next:
+            redacted.append(_REDACTED_VALUE)
+            redact_next = False
+            continue
+        flag, separator, _value = argument.partition("=")
+        if argument.startswith("-") and _is_sensitive_flag(flag):
+            if separator:
+                redacted.append(f"{flag}={_REDACTED_VALUE}")
+            else:
+                redacted.append(argument)
+                redact_next = True
+            continue
+        redacted.append(argument)
+    return subprocess.list2cmdline(redacted)
 
 
 def locked_print(*args: Any, **kwargs: Any) -> None:
@@ -261,7 +302,7 @@ def rclone_execute(
             full_cmd += ["--config", str(rclone_conf.resolve())]
         full_cmd += cmd
         if verbose:
-            cmd_str = subprocess.list2cmdline(full_cmd)
+            cmd_str = format_command(full_cmd)
             print(f"\nRunning: {cmd_str}")
 
         # Prepare subprocess parameters.
@@ -307,7 +348,7 @@ def rclone_execute(
 
         # Warn or raise if return code is non-zero.
         if cp.returncode != 0:
-            cmd_str = subprocess.list2cmdline(full_cmd)
+            cmd_str = format_command(full_cmd)
             warnings.warn(
                 f"Error running: {cmd_str}, returncode: {cp.returncode}\n{cp.stdout}\n{cp.stderr}",
                 stacklevel=2,

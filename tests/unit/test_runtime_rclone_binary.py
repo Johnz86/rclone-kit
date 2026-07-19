@@ -6,6 +6,7 @@ a monkeypatched stand-in.
 """
 
 import hashlib
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -31,7 +32,7 @@ _TEST_ARTIFACT = RcloneArtifact(
     sha256_digest="1" * 64,
     executable_member_name="rclone-test/rclone",
     executable_name="rclone",
-    executable_sha256_digest="2" * 64,
+    executable_sha256_digest=_EXECUTABLE_DIGEST,
     wheel_platform_tag="manylinux2014_x86_64",
 )
 
@@ -91,6 +92,19 @@ def test_bundled_asset_corrupt_content_raises_cache_verification_error(tmp_path:
         )
 
 
+def test_bundled_asset_tampered_manifest_raises_cache_verification_error(
+    tmp_path: Path,
+) -> None:
+    assets_root = tmp_path / "assets"
+    cache_root = tmp_path / "cache"
+    _stage_bundled_asset(assets_root, _EXECUTABLE_CONTENT, "0" * 64)
+
+    with pytest.raises(CacheVerificationError):
+        resolve_rclone_executable(
+            artifact=_TEST_ARTIFACT, packaged_assets_root=assets_root, cache_root=cache_root
+        )
+
+
 def test_reuses_existing_valid_cache_entry_without_recopying(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -132,6 +146,27 @@ def test_replaces_existing_invalid_cache_entry(tmp_path: Path) -> None:
     )
 
     assert result.read_bytes() == _EXECUTABLE_CONTENT
+
+
+def test_concurrent_cache_installation_uses_one_valid_result(tmp_path: Path) -> None:
+    assets_root = tmp_path / "assets"
+    cache_root = tmp_path / "cache"
+    _stage_bundled_asset(assets_root, _EXECUTABLE_CONTENT, _EXECUTABLE_DIGEST)
+
+    def resolve() -> Path:
+        return resolve_rclone_executable(
+            artifact=_TEST_ARTIFACT,
+            packaged_assets_root=assets_root,
+            cache_root=cache_root,
+        )
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = [executor.submit(resolve) for _ in range(16)]
+        results = [future.result() for future in futures]
+
+    assert len(set(results)) == 1
+    assert results[0].read_bytes() == _EXECUTABLE_CONTENT
+    assert list(results[0].parent.glob("*.tmp")) == []
 
 
 def test_atomic_replacement_failure_propagates(

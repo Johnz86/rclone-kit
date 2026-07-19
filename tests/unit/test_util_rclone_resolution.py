@@ -108,7 +108,7 @@ def test_make_temp_config_file_is_outside_cwd(
         assert config_path.name == "rclone.conf"
     finally:
         util.clear_temp_config_file(config_path)
-        config_path.parent.rmdir()
+        assert not config_path.parent.exists()
 
 
 def test_clear_temp_config_file_is_idempotent(tmp_path: Path) -> None:

@@ -9,10 +9,12 @@ lists rather than `shell=True`.
 """
 
 import importlib.resources
+import os
 import shutil
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
-from tempfile import TemporaryDirectory
+from tempfile import NamedTemporaryFile, TemporaryDirectory
 
 from rclone_kit.runtime.archive_extract import extract_single_member
 from rclone_kit.runtime.cache_dir import user_cache_dir
@@ -35,6 +37,7 @@ _PACKAGED_ASSETS_PACKAGE_NAME = "rclone_kit"
 _PACKAGED_ASSETS_SUBDIRECTORY = ("assets", "rclone")
 _EXECUTABLE_MANIFEST_SUFFIX = ".sha256"
 _TEMP_FILE_SUFFIX = ".tmp"
+_LOCK_FILE_SUFFIX = ".lock"
 
 _STRATEGY_BUNDLED_ASSET = "bundled_asset"
 _STRATEGY_PATH_LOOKUP = "path_lookup"
@@ -138,7 +141,10 @@ def _try_bundled_asset(
     )
     if not packaged_executable.is_file() or not manifest_path.is_file():
         return None
-    expected_digest = _read_manifest_digest(manifest_path)
+    manifest_digest = _read_manifest_digest(manifest_path)
+    expected_digest = artifact.executable_sha256_digest
+    if manifest_digest != expected_digest:
+        raise CacheVerificationError(manifest_path, expected_digest, manifest_digest)
     cache_path = cache_root / artifact.wheel_platform_tag / artifact.executable_name
 
     def populate(temp_path: Path) -> None:
@@ -155,12 +161,16 @@ def _install_via_verified_download(artifact: RcloneArtifact, cache_root: Path) -
         fetch_verified_archive(artifact, archive_path)
         extracted_path = temp_dir / artifact.executable_name
         extract_single_member(archive_path, artifact.executable_member_name, extracted_path)
-        expected_digest = sha256_of_file(extracted_path)
 
         def populate(temp_path: Path) -> None:
             shutil.copyfile(extracted_path, temp_path)
 
-        return _install_into_cache(cache_path, expected_digest, populate, artifact)
+        return _install_into_cache(
+            cache_path,
+            artifact.executable_sha256_digest,
+            populate,
+            artifact,
+        )
 
 
 def _install_into_cache(
@@ -177,19 +187,67 @@ def _install_into_cache(
     not match `expected_digest`, and `CacheReplacementError` (propagated from
     `atomic_replace_file`) when the atomic replacement itself fails.
     """
-    if cache_path.is_file() and sha256_of_file(cache_path) == expected_digest:
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    with _cache_install_lock(cache_path):
+        if cache_path.is_file() and sha256_of_file(cache_path) == expected_digest:
+            return cache_path
+
+        with NamedTemporaryFile(
+            dir=cache_path.parent,
+            prefix=f"{cache_path.name}.",
+            suffix=_TEMP_FILE_SUFFIX,
+            delete=False,
+        ) as temp_file:
+            temp_path = Path(temp_file.name)
+        try:
+            populate(temp_path)
+            actual_digest = sha256_of_file(temp_path)
+            if actual_digest != expected_digest:
+                raise CacheVerificationError(cache_path, expected_digest, actual_digest)
+            apply_executable_permission(temp_path, artifact)
+            atomic_replace_file(temp_path, cache_path)
+        finally:
+            best_effort_unlink(temp_path)
         return cache_path
 
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = cache_path.with_name(cache_path.name + _TEMP_FILE_SUFFIX)
-    populate(temp_path)
-    actual_digest = sha256_of_file(temp_path)
-    if actual_digest != expected_digest:
-        best_effort_unlink(temp_path)
-        raise CacheVerificationError(cache_path, expected_digest, actual_digest)
-    apply_executable_permission(temp_path, artifact)
-    atomic_replace_file(temp_path, cache_path)
-    return cache_path
+
+@contextmanager
+def _cache_install_lock(cache_path: Path) -> Iterator[None]:
+    """Serialize cache installation across processes on Windows and POSIX."""
+    lock_path = cache_path.with_name(cache_path.name + _LOCK_FILE_SUFFIX)
+    with lock_path.open("a+b") as lock_file:
+        if lock_file.seek(0, os.SEEK_END) == 0:
+            lock_file.write(b"\0")
+            lock_file.flush()
+        lock_file.seek(0)
+        _lock_file(lock_file)
+        try:
+            yield
+        finally:
+            lock_file.seek(0)
+            _unlock_file(lock_file)
+
+
+def _lock_file(lock_file) -> None:
+    if os.name == "nt":
+        import msvcrt
+
+        msvcrt.locking(lock_file.fileno(), msvcrt.LK_LOCK, 1)
+        return
+    import fcntl
+
+    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+
+
+def _unlock_file(lock_file) -> None:
+    if os.name == "nt":
+        import msvcrt
+
+        msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+        return
+    import fcntl
+
+    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 def _read_manifest_digest(manifest_path: Path) -> str:

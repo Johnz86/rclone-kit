@@ -3,15 +3,16 @@ Unit test file for testing rclone mount functionality.
 """
 
 import logging
-import tempfile
 import time
 import warnings
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from threading import Semaphore
 from typing import Any, Self
+from urllib.parse import quote
 
 import httpx
 
@@ -112,10 +113,8 @@ class HttpServer:
         self.process: Process | None = process
 
     def _get_file_url(self, path: str | Path) -> str:
-        # if self.subpath == "":
-        path = Path(path).as_posix()
-        return f"{self.url}/{path}"
-        # return f"{self.url}/{self.subpath}/{path}"
+        escaped_path = quote(str(path).lstrip("/"), safe="/")
+        return f"{self.url.rstrip('/')}/{escaped_path}"
 
     def _ensure_running(self) -> None:
         """Raise `RuntimeError` when this server has already been shut down."""
@@ -127,10 +126,12 @@ class HttpServer:
 
     def get(self, path: str, range: Range | None = None) -> bytes | Exception:
         """Get bytes from the server."""
-        with tempfile.TemporaryFile() as file:
-            self.download(path, Path(file.name), range)
-            file.seek(0)
-            return file.read()
+        with TemporaryDirectory() as tmpdir:
+            destination = Path(tmpdir) / "download"
+            result = self.download(path, destination, range)
+            if isinstance(result, Exception):
+                return result
+            return destination.read_bytes()
 
     def exists(self, path: str) -> bool:
         """Check if the file exists on the server."""
@@ -209,9 +210,12 @@ class HttpServer:
 
     def download(self, path: str, dst: Path, range: Range | None = None) -> Path | Exception:
         """Get bytes from the server."""
+        try:
+            self._ensure_running()
+        except RuntimeError as error:
+            return error
 
         def task() -> Path | Exception:
-
             if not dst.parent.exists():
                 dst.parent.mkdir(parents=True, exist_ok=True)
             headers: dict[str, str] = {}
@@ -233,8 +237,17 @@ class HttpServer:
                     else:
                         size = dst.stat().st_size
                         logger.info(f"Downloaded {size} bytes to {dst}")
+                    if range is not None:
+                        expected_size = (range.end - range.start).as_int()
+                        actual_size = dst.stat().st_size
+                        if actual_size != expected_size:
+                            raise OSError(
+                                f"Expected {expected_size} ranged bytes from {url}, "
+                                f"received {actual_size}"
+                            )
                     return dst
             except Exception as e:
+                dst.unlink(missing_ok=True)
                 warnings.warn(f"Failed to download {url} to {dst}: {e}", stacklevel=2)
                 return e
 
@@ -346,6 +359,7 @@ class HttpFetcher:
         self.server = server
         self.path = path
         self.executor = ThreadPoolExecutor(max_workers=n_threads)
+        self._closed = False
         # Semaphore throttles the number of concurrent fetches
         # TODO this is kind of a hack.
         self.semaphore = Semaphore(n_threads)
@@ -376,4 +390,13 @@ class HttpFetcher:
         return fut
 
     def shutdown(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
         self.executor.shutdown(wait=True)
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        self.shutdown()
