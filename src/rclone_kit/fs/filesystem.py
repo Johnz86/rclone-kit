@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Self
 
 from rclone_kit.config import Config
+from rclone_kit.exceptions import FilesystemError
 from rclone_kit.fs.walk_threaded_walker import FSWalker
 
 logger = logging.getLogger(__name__)
@@ -38,11 +39,11 @@ class FS(abc.ABC):
         """First is files and second is directories."""
 
     @abc.abstractmethod
-    def remove(self, path: Path | str) -> Exception | None:
+    def remove(self, path: Path | str) -> None:
         """Remove a file or symbolic link."""
 
     @abc.abstractmethod
-    def unlink(self, path: Path | str) -> Exception | None:
+    def unlink(self, path: Path | str) -> None:
         """Remove a file or symbolic link."""
 
     @abc.abstractmethod
@@ -90,29 +91,24 @@ class RealFS(FS):
     def exists(self, path: Path | str) -> bool:
         return Path(path).exists()
 
-    def unlink(self, path: Path | str) -> Exception | None:
+    def unlink(self, path: Path | str) -> None:
         """Remove a file or symbolic link."""
-        try:
-            Path(path).unlink()
-            return None
-        except KeyboardInterrupt:
-            raise
-        except FileNotFoundError as e:
-            return e
+        Path(path).unlink()
 
-    def remove(self, path: Path | str, ignore_errors=False) -> Exception | None:
+    def remove(self, path: Path | str, ignore_errors=False) -> None:
         """Remove a file or directory."""
+        path = Path(path)
         try:
-            path = Path(path)
             if path.is_dir():
                 shutil.rmtree(path, ignore_errors=ignore_errors)
             else:
                 path.unlink()
-            return None
         except KeyboardInterrupt:
             raise
-        except Exception as e:
-            return e
+        except FileNotFoundError:
+            raise
+        except OSError as e:
+            raise FilesystemError(str(path), e) from e
 
     def mkdir(self, path: str, parents=True, exist_ok=True) -> None:
         Path(path).mkdir(parents=parents, exist_ok=exist_ok)
@@ -238,20 +234,16 @@ class RemoteFS(FS):
             raise FileNotFoundError(f"File not found: {path}, because of {err}")
         return err
 
-    def unlink(self, path: Path | str) -> Exception | None:
-        return self.remove(path)
+    def unlink(self, path: Path | str) -> None:
+        self.remove(path)
 
-    def remove(self, path: Path | str) -> Exception | None:
+    def remove(self, path: Path | str) -> None:
         """Remove a file or symbolic link."""
 
         path = path if isinstance(path, str) else path.as_posix()
         err = self.rclone.delete_files(path)
         if isinstance(err, Exception):
-            return FileNotFoundError(f"File not found: {path}, because of {err}")
-        if isinstance(path, Path):
-            path = path.as_posix()
-
-        return None
+            raise FileNotFoundError(f"File not found: {path}, because of {err}") from err
 
     def get_path(self, path: str) -> "FSPath":
         return FSPath(self, path)
@@ -386,13 +378,13 @@ class FSPath:
         filenames, dirnames = self.fs.ls(self.path)
         return filenames, dirnames
 
-    def remove(self) -> Exception | None:
+    def remove(self) -> None:
         """Remove a file or directory, there are subtle differences between the Real and RemoteFS."""
-        return self.fs.remove(self.path)
+        self.fs.remove(self.path)
 
-    def unlink(self) -> Exception | None:
+    def unlink(self) -> None:
         """Remove a file or symbolic link, there are subtle differences between the Real and RemoteFS."""
-        return self.fs.unlink(self.path)
+        self.fs.unlink(self.path)
 
     def with_suffix(self, suffix: str) -> "FSPath":
         return FSPath(self.fs, Path(self.path).with_suffix(suffix).as_posix())

@@ -3,10 +3,14 @@ UUnit test file for the DB class.
 """
 
 import os
+import shutil
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+import pytest
+
+from rclone_kit.exceptions import FilesystemError
 from rclone_kit.fs.filesystem import FSPath, RealFS
 
 HERE = Path(__file__).parent
@@ -88,6 +92,37 @@ class RcloneFSTester(unittest.TestCase):
             self.assertTrue(fspath.exists())
             fspath.remove()
             self.assertFalse(fspath.exists())
+
+
+def test_unlink_raises_file_not_found_for_missing_file() -> None:
+    with TemporaryDirectory() as temp_dir:
+        missing = RealFS.from_path(Path(temp_dir) / "does-not-exist.txt")
+        with pytest.raises(FileNotFoundError):
+            missing.unlink()
+
+
+def test_remove_raises_file_not_found_for_missing_path() -> None:
+    with TemporaryDirectory() as temp_dir:
+        missing = RealFS.from_path(Path(temp_dir) / "does-not-exist.txt")
+        with pytest.raises(FileNotFoundError):
+            missing.remove()
+
+
+def test_remove_wraps_other_os_errors_in_filesystem_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _raise_permission_error(*_args, **_kwargs):
+        raise PermissionError("simulated permission failure")
+
+    with TemporaryDirectory() as temp_dir:
+        directory = RealFS.from_path(Path(temp_dir))
+        monkeypatch.setattr(shutil, "rmtree", _raise_permission_error)
+        try:
+            with pytest.raises(FilesystemError) as exc_info:
+                directory.remove()
+            assert isinstance(exc_info.value.cause, PermissionError)
+        finally:
+            monkeypatch.undo()
 
 
 if __name__ == "__main__":
