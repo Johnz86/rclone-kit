@@ -166,7 +166,7 @@ def file_chunker(
             fut.add_done_callback(callback.on_complete)
 
             qsize = queue_upload.qsize()
-            print(f"queue_upload_size: {qsize}")
+            logger.debug("queue_upload_size: %d", qsize)
             while queue_upload.full():
                 time.sleep(0.1)
     except Exception as e:

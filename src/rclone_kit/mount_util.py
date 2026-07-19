@@ -1,4 +1,5 @@
 import atexit
+import logging
 import os
 import platform
 import shutil
@@ -13,6 +14,8 @@ from typing import Protocol
 from rclone_kit.mount import Mount
 from rclone_kit.process import Process
 from rclone_kit.util import format_command
+
+logger = logging.getLogger(__name__)
 
 _SYSTEM = platform.system()
 _WINDOWS = "Windows"
@@ -118,14 +121,14 @@ def _run_command(cmd: list[str], verbose: bool) -> int:
     started at all (for example, it is not installed).
     """
     if verbose:
-        print(f"Executing: {subprocess.list2cmdline(cmd)}")
+        logger.info("Executing: %s", subprocess.list2cmdline(cmd))
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", check=False)
     except OSError as error:
         warnings.warn(f"Error running command {cmd!r}: {error}", stacklevel=2)
         return -1
     if result.returncode != 0 and verbose:
-        print(f"Command failed: {cmd}\nStdErr: {result.stderr.strip()}")
+        logger.info("Command failed: %s\nStdErr: %s", cmd, result.stderr.strip())
     return result.returncode
 
 
@@ -152,11 +155,11 @@ def remove_mount_for_gc(mount: Mount) -> None:
 def prepare_mount(outdir: Path, verbose: bool) -> None:
     if _SYSTEM == "Windows":
         if verbose:
-            print(f"Creating parent directories for {outdir}")
+            logger.info("Creating parent directories for %s", outdir)
         outdir.parent.mkdir(parents=True, exist_ok=True)
     else:
         if verbose:
-            print(f"Creating directories for {outdir}")
+            logger.info("Creating directories for %s", outdir)
         outdir.mkdir(parents=True, exist_ok=True)
 
 
@@ -199,33 +202,37 @@ def wait_for_mount(
     while time.monotonic() < expire_time:
         rtn = mount_process.poll()
         if rtn is not None:
-            print(f"Mount process terminated unexpectedly: {format_command(mount_process.cmd)}")
+            logger.error(
+                "Mount process terminated unexpectedly: %s", format_command(mount_process.cmd)
+            )
             raise subprocess.CalledProcessError(rtn, mount_process.cmd)
 
         if src.exists():
             if check_mount_flag:
                 try:
                     if not os.path.ismount(str(src)):
-                        print(f"{src} exists but is not recognized as a mount point yet.")
+                        logger.debug("%s exists but is not recognized as a mount point yet.", src)
                         time.sleep(poll_interval)
                         continue
                 except OSError as e:
-                    print(f"Could not verify mount point status for {src}: {e}")
+                    logger.warning("Could not verify mount point status for %s: %s", src, e)
 
             try:
                 if any(src.iterdir()):
-                    print(
-                        f"Mount point {src} appears available with files. Waiting {post_mount_delay} seconds for stabilization."
+                    logger.info(
+                        "Mount point %s appears available with files. Waiting %d seconds for stabilization.",
+                        src,
+                        post_mount_delay,
                     )
                     time.sleep(post_mount_delay)
                     return
                 else:
-                    print(f"Mount point {src} is empty. Waiting for files to appear.")
+                    logger.debug("Mount point %s is empty. Waiting for files to appear.", src)
             except OSError as e:
                 last_error = e
-                print(f"Error accessing {src}: {e}")
+                logger.warning("Error accessing %s: %s", src, e)
         else:
-            print(f"Mount point {src} does not exist yet.")
+            logger.debug("Mount point %s does not exist yet.", src)
 
         time.sleep(poll_interval)
 
@@ -248,7 +255,7 @@ def _rmtree_ignore_mounts(path):
             full_path = entry.path
             if entry.is_dir(follow_symlinks=False):
                 if os.path.ismount(full_path):
-                    print(f"Skipping mount point: {full_path}")
+                    logger.debug("Skipping mount point: %s", full_path)
                     continue
 
                 _rmtree_ignore_mounts(full_path)
@@ -270,7 +277,7 @@ def clean_mount(mount: Mount | Path, verbose: bool = False, wait=True) -> None:
 
     def verbose_print(msg: str):
         if verbose:
-            print(msg)
+            logger.info(msg)
 
     proc = mount.process if isinstance(mount, Mount) else None
     if proc is not None and proc.poll() is None:
@@ -306,7 +313,7 @@ def clean_mount(mount: Mount | Path, verbose: bool = False, wait=True) -> None:
             if mount_path.exists():
                 raise OSError(f"Failed to remove mount directory {mount_path}")
             if verbose:
-                print(f"Successfully removed mount directory {mount_path}")
+                logger.info("Successfully removed mount directory %s", mount_path)
         except OSError as error:
             warnings.warn(f"Failed to remove mount {mount_path}: {error}", stacklevel=2)
     else:

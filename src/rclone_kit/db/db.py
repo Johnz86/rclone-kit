@@ -1,7 +1,6 @@
-"""
-Database module for rclone_kit.
-"""
+"""Database module for rclone_kit."""
 
+import logging
 import os
 from threading import Lock
 
@@ -9,6 +8,8 @@ from sqlmodel import Session, SQLModel, col, create_engine, select
 
 from rclone_kit.db.models import RepositoryMeta, create_file_entry_model
 from rclone_kit.file import FileItem
+
+logger = logging.getLogger(__name__)
 
 
 def _to_table_name(remote_name: str) -> str:
@@ -33,7 +34,7 @@ class DB:
                 SQLModel.metadata.create_all(self.engine)
                 break
             except Exception as e:
-                print(f"Failed to connect to database. Retrying... {e}")
+                logger.warning("Failed to connect to database. Retrying... %s", e)
         else:
             raise Exception("Failed to connect to database.")
         self._cache: dict[str, DBRepo] = {}

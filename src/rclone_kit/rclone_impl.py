@@ -603,23 +603,23 @@ class RcloneImpl:
                         if verbose:
                             nfiles = len(filelist)
                             files_fqdn = [f"  {src_path}/{f}" for f in filelist]
-                            print(f"Copying {nfiles} files:")
+                            logger.info("Copying %d files:", nfiles)
                             chunk_size = 100
                             for i in range(0, nfiles, chunk_size):
                                 chunk = files_fqdn[i : i + chunk_size]
                                 files_str = "\n".join(chunk)
-                                print(f"{files_str}")
+                                logger.info("%s", files_str)
                         cmd_list: list[str] = [
                             "copy",
                             src_path,
                             dst_path,
-                            "--files-from",
+                            FLAG_FILES_FROM,
                             str(filepath),
-                            "--checkers",
+                            FLAG_CHECKERS,
                             str(checkers),
-                            "--transfers",
+                            FLAG_TRANSFERS,
                             str(transfers),
-                            "--low-level-retries",
+                            FLAG_LOW_LEVEL_RETRIES,
                             str(low_level_retries),
                             "--retries",
                             str(retries),
@@ -720,9 +720,9 @@ class RcloneImpl:
         payload: list[str] = convert_to_filestr_list(files)
         if len(payload) == 0:
             if verbose:
-                print("No files to delete")
+                logger.info("No files to delete")
             cp = subprocess.CompletedProcess(
-                args=["rclone", "delete", "--files-from", "[]"],
+                args=["rclone", "delete", FLAG_FILES_FROM, "[]"],
                 returncode=0,
                 stdout="",
                 stderr="",
@@ -993,11 +993,11 @@ class RcloneImpl:
         provider: str
         if provided_provider_str := get_provider_str():
             if verbose:
-                print(f"Using provided provider: {provided_provider_str}")
+                logger.info("Using provided provider: %s", provided_provider_str)
             provider = provided_provider_str
         else:
             if verbose:
-                print(f"Using default provider: {S3Provider.S3.value}")
+                logger.info("Using default provider: %s", S3Provider.S3.value)
             provider = S3Provider.S3.value
         provider_enum = S3Provider.from_str(provider)
 

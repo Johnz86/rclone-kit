@@ -1,4 +1,5 @@
 import atexit
+import logging
 import subprocess
 import threading
 import weakref
@@ -14,6 +15,8 @@ from rclone_kit.util import (
     get_verbose,
     make_temp_config_file,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -54,7 +57,7 @@ class Process:
             self.cmd += ["--log-file", str(self.args.log)]
         if verbose:
             cmd_str = format_command(self.cmd)
-            print(f"Running: {cmd_str}")
+            logger.info("Running: %s", cmd_str)
         kwargs: dict = {"shell": False}
         if args.capture_stdout:
             kwargs["stdout"] = subprocess.PIPE

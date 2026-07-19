@@ -1,5 +1,6 @@
 import atexit
 import contextlib
+import logging
 import os
 import secrets
 import shutil
@@ -20,6 +21,8 @@ from rclone_kit.remote import Remote
 from rclone_kit.rpath import RPath
 from rclone_kit.runtime.rclone_binary import resolve_rclone_executable
 from rclone_kit.types import S3PathInfo
+
+logger = logging.getLogger(__name__)
 
 _PRINT_LOCK = Lock()
 
@@ -297,7 +300,7 @@ def rclone_execute(
         full_cmd += cmd
         if verbose:
             cmd_str = format_command(full_cmd)
-            print(f"\nRunning: {cmd_str}")
+            logger.info("Running: %s", cmd_str)
 
         proc_kwargs: dict[str, Any] = {
             "encoding": "utf-8",

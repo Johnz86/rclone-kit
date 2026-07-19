@@ -1,5 +1,6 @@
 import _thread
 import atexit
+import logging
 import os
 import shutil
 import threading
@@ -17,11 +18,13 @@ from rclone_kit.types import (
     SizeSuffix,
 )
 
+logger = logging.getLogger(__name__)
+
 _LOCK = threading.Lock()
 
 
 def _log(msg: str) -> None:
-    print(msg)
+    logger.info(msg)
     if os.getenv("LOG_UPLOAD_S3_RESUMABLE") == "1":
         log_path = Path("log") / "s3_resumable_upload.log"
         with _LOCK:
@@ -203,9 +206,9 @@ def upload_parts_resumable(
     """Copy parts of a file from source to destination."""
     from rclone_kit.util import random_str
 
-    def verbose_print(*args, **kwargs):
+    def verbose_print(msg: str) -> None:
         if verbose:
-            print(*args, **kwargs)
+            logger.info(msg)
 
     if dst_dir.endswith("/"):
         dst_dir = dst_dir[:-1]
@@ -270,9 +273,7 @@ def upload_parts_resumable(
     info_json.save()
 
     info_json.load()
-    info_json.print()
-
-    print(info_json)
+    logger.debug("%s", info_json)
 
     finished_tasks: list[UploadPart] = []
     tmp_dir = str(Path("chunks") / random_str(12))
@@ -343,7 +344,7 @@ def upload_parts_resumable(
         return Exception(msg, exceptions)
 
     finished_parts: list[int] = info_json.fetch_all_finished_part_numbers()
-    print(f"finished_names: {finished_parts}")
+    logger.info("finished_names: %s", finished_parts)
 
     diff_set = set(all_part_numbers).symmetric_difference(set(finished_parts))
     all_part_numbers_done = len(diff_set) == 0

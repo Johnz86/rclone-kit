@@ -1,3 +1,4 @@
+import logging
 import warnings
 from dataclasses import dataclass
 
@@ -6,6 +7,8 @@ from botocore.client import BaseClient
 from botocore.config import Config
 
 from rclone_kit.s3.types import S3Credentials, S3Provider
+
+logger = logging.getLogger(__name__)
 
 _DEFAULT_BACKBLAZE_ENDPOINT = "https://s3.us-west-002.backblazeb2.com"
 _MAX_CONNECTIONS = 10
@@ -86,9 +89,9 @@ def create_s3_client(s3_creds: S3Credentials, s3_config: S3Config | None = None)
     provider = s3_creds.provider
     if provider == S3Provider.BACKBLAZE:
         if s3_config.verbose:
-            print("Creating BackBlaze S3 client")
+            logger.info("Creating BackBlaze S3 client")
         return _create_backblaze_s3_client(s3_creds=s3_creds, s3_config=s3_config)
     else:
         if s3_config.verbose:
-            print("Creating generic/unknown S3 client")
+            logger.info("Creating generic/unknown S3 client")
         return _create_unknown_s3_client(s3_creds=s3_creds, s3_config=s3_config)

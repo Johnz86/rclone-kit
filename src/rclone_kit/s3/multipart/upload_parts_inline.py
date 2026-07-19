@@ -1,5 +1,6 @@
 import _thread
 import contextlib
+import logging
 import os
 import traceback
 import warnings
@@ -21,6 +22,8 @@ from rclone_kit.s3.multipart.upload_state import UploadState
 from rclone_kit.s3.types import MultiUploadResult
 from rclone_kit.types import EndOfStream
 from rclone_kit.util import locked_print
+
+logger = logging.getLogger(__name__)
 
 _MIN_UPLOAD_CHUNK_SIZE = 5 * 1024 * 1024
 
@@ -76,7 +79,7 @@ def handle_upload(
         assert isinstance(fp.extra, S3FileInfo)
         extra: S3FileInfo = fp.extra
         part_number = extra.part_number
-        print(f"Handling upload for {part_number}, size {fp.size}")
+        logger.debug("Handling upload for %d, size %d", part_number, fp.size)
 
         part: FinishedPiece = upload_task(
             info=upload_info,
@@ -282,9 +285,7 @@ def upload_file_multipart(
             queue_errors.put(e)
             _thread.interrupt_main()
             raise
-        print("#########################################")
-        print("# CHUNKER TASK COMPLETED")
-        print("#########################################")
+        logger.debug("Chunker task completed")
 
     try:
         thread_chunker = Thread(target=chunker_task, daemon=True)

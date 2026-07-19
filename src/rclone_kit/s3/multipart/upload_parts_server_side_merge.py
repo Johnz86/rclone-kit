@@ -7,6 +7,7 @@ from existing S3 objects using upload_part_copy.
 """
 
 import json
+import logging
 import os
 import time
 import warnings
@@ -27,6 +28,8 @@ from rclone_kit.s3.multipart.info_json import InfoJson
 from rclone_kit.s3.multipart.merge_state import MergeState, Part
 from rclone_kit.types import EndOfStream
 from rclone_kit.util import locked_print
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_WORKERS = 5
 
@@ -306,7 +309,7 @@ def _cleanup_merge(rclone: RcloneImpl, info: InfoJson) -> Exception | None:
     if write_size != size:
         return ValueError(f"Size mismatch: {write_size} != {size}")
 
-    print(f"Upload complete: {dst}")
+    logger.info("Upload complete: %s", dst)
     cp = rclone.purge(parts_dir)
     if cp.failed():
         return Exception(f"Failed to purge parts dir: {cp}")
