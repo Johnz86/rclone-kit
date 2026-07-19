@@ -21,11 +21,14 @@ pip install rclone-kit
 Optional extras pull in only what you need:
 
 ```bash
-pip install "rclone-kit[s3]"        # boto3, for S3-specific helpers
-pip install "rclone-kit[database]"  # sqlmodel, for save_to_db
-pip install "rclone-kit[postgres]"  # database + psycopg2-binary
-pip install "rclone-kit[full]"      # everything above
+pip install "rclone-kit[s3]"
+pip install "rclone-kit[database]"
+pip install "rclone-kit[postgres]"
+pip install "rclone-kit[full]"
 ```
+
+The extras install S3 helpers, database export support, PostgreSQL support,
+or the complete optional feature set, respectively.
 
 Requires Python 3.13+. Supported platforms: Windows amd64 and Linux amd64
 (`manylinux2014_x86_64`).

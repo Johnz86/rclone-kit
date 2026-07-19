@@ -6,14 +6,14 @@ from rclone_kit.types import (
 
 def copy_file_parts_resumable(
     self: RcloneImpl,
-    src: str,  # src:/Bucket/path/myfile.large.zst
-    dst_dir: str,  # dst:/Bucket/path/myfile.large.zst-parts/
+    src: str,
+    dst_dir: str,
     part_infos: list[PartInfo] | None = None,
     upload_threads: int = 10,
     merge_threads: int = 5,
     verbose: bool | None = None,
 ) -> Exception | None:
-    # _upload_parts
+
     from rclone_kit.s3.multipart.upload_parts_resumable import upload_parts_resumable
     from rclone_kit.s3.multipart.upload_parts_server_side_merge import (
         s3_server_side_multi_part_merge,

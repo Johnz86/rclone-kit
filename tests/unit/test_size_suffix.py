@@ -4,6 +4,7 @@ Unit test file.
 
 import unittest
 from dataclasses import FrozenInstanceError, dataclass
+from typing import Any
 
 import pytest
 
@@ -36,7 +37,7 @@ class RcloneSuffixSize(unittest.TestCase):
         size_suffix = SizeSuffix("16.5M")
         size_int = size_suffix.as_int()
         self.assertEqual(size_int, int(16.5 * 1024 * 1024))
-        # now assert that the string value is the same as the input
+
         out_str = str(size_suffix)
         self.assertEqual(out_str, "16.5M")
 
@@ -44,7 +45,7 @@ class RcloneSuffixSize(unittest.TestCase):
         size_suffix = SizeSuffix("1M")
         size_int = size_suffix.as_int()
         size_int -= 1
-        # now assert that the string value is the same as the input
+
         tmp = SizeSuffix(size_int)
         out_str = tmp.as_str()
         self.assertEqual(out_str, "1M")
@@ -56,9 +57,10 @@ def test_less_than_or_equal_accepts_equal_value() -> None:
 
 def test_size_suffix_is_immutable() -> None:
     size = SizeSuffix(1)
+    mutable_view: Any = size
 
     with pytest.raises(FrozenInstanceError):
-        size._size = 2  # type: ignore[misc]
+        mutable_view._size = 2
 
 
 def test_in_place_addition_returns_a_new_value() -> None:

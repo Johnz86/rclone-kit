@@ -58,9 +58,6 @@ from rclone_kit.util import (
 )
 
 if TYPE_CHECKING:
-    # Only needed for the `_s3_client` return-type annotation below; the
-    # real import is lazy (see `_s3_client`) so importing `rclone_impl`
-    # never requires `boto3` to be installed.
     from rclone_kit.s3.api import S3Client
 
 logger = logging.getLogger(__name__)
@@ -83,9 +80,7 @@ def _to_rclone_conf(config: Config | Path | None) -> Config:
 
 
 def _parse_paths(src: str) -> list[Path] | Exception:
-    # Config file: C:\Users\niteris\AppData\Roaming\rclone\rclone.conf
-    # Cache dir:   C:\Users\niteris\AppData\Local\rclone
-    # Temp dir:    C:\Users\niteris\AppData\Local\Temp
+
     lines = src.splitlines()
     paths: list[Path] = []
     for line in lines:
@@ -105,7 +100,7 @@ class RcloneImpl:
         if isinstance(rclone_conf, Path) and not rclone_conf.exists():
             raise ValueError(f"Rclone config file not found: {rclone_conf}")
         rclone_exe = get_rclone_exe(rclone_exe)
-        # Not fully constructed version of ._exec, which can be used to find a config file from default paths.
+
         self._exec = RcloneExec(None, get_rclone_exe(rclone_exe))
         if rclone_conf is None:
             from rclone_kit.config import find_conf_file
@@ -114,7 +109,7 @@ class RcloneImpl:
             if not isinstance(maybe_path, Path):
                 warnings.warn("Rclone config file not found", stacklevel=2)
             rclone_conf = _to_rclone_conf(maybe_path)
-        # replace self._exec with one that has the config
+
         self._exec = RcloneExec(rclone_conf, get_rclone_exe(rclone_exe))
         self.config: Config = _to_rclone_conf(rclone_conf)
 
@@ -165,7 +160,7 @@ class RcloneImpl:
         if other_args:
             cmd += other_args
         out = self._launch_process(cmd, capture=False)
-        time.sleep(1)  # Give it some time to launch
+        time.sleep(1)
         return out
 
     def remote_control(
@@ -267,7 +262,6 @@ class RcloneImpl:
         """
 
         if src is None:
-            # list remotes instead
             list_remotes: list[Remote] = self.listremotes()
             dirs: list[Dir] = [Dir(remote) for remote in list_remotes]
             for d in dirs:
@@ -276,7 +270,7 @@ class RcloneImpl:
             return DirListing(rpaths)
 
         if isinstance(src, str):
-            src = Dir(to_path(src, self))  # assume it's a directory if ls is being called.
+            src = Dir(to_path(src, self))
 
         cmd = ["lsjson"]
         if max_depth is not None:
@@ -298,11 +292,10 @@ class RcloneImpl:
         if isinstance(src, Dir):
             parent_path = src.path.path
         paths: list[RPath] = RPath.from_json_str(text, remote, parent_path=parent_path)
-        # print(parent_path)
+
         for o in paths:
             o.set_rclone(self)
 
-        # do we have a glob pattern?
         if glob is not None:
             paths = [p for p in paths if fnmatch(p.path, glob)]
 
@@ -327,7 +320,6 @@ class RcloneImpl:
         """Get the status of a file or directory."""
         dirlist: DirListing = self.ls(src)
         if len(dirlist.files) == 0:
-            # raise FileNotFoundError(f"File not found: {src}")
             return FileNotFoundError(f"File not found: {src}")
         try:
             file: File = dirlist.files[0]
@@ -358,7 +350,7 @@ class RcloneImpl:
         text: str = cp.stdout
         tmp = text.splitlines()
         tmp = [t.strip() for t in tmp]
-        # strip out ":" from the end
+
         tmp = [t.replace(":", "") for t in tmp]
         out = [Remote(name=t, rclone=self) for t in tmp]
         return out
@@ -367,12 +359,8 @@ class RcloneImpl:
         self,
         src: str,
         dst: str,
-        min_size: (
-            str | None
-        ) = None,  # e. g. "1MB" - see rclone documentation: https://rclone.org/commands/rclone_check/
-        max_size: (
-            str | None
-        ) = None,  # e. g. "1GB" - see rclone documentation: https://rclone.org/commands/rclone_check/
+        min_size: (str | None) = None,
+        max_size: (str | None) = None,
         diff_option: DiffOption = DiffOption.COMBINED,
         fast_list: bool = True,
         size_only: bool | None = None,
@@ -439,7 +427,6 @@ class RcloneImpl:
         """
         dir_obj: Dir
         if isinstance(src, Dir):
-            # Create a Remote object for the path
             remote = src.remote
             rpath = RPath(
                 remote=remote,
@@ -488,7 +475,7 @@ class RcloneImpl:
 
     def cleanup(self, src: str, other_args: list[str] | None = None) -> CompletedProcess:
         """Cleanup any resources used by the Rclone instance."""
-        # rclone cleanup remote:path [flags]
+
         cmd = ["cleanup", src]
         if other_args:
             cmd += other_args
@@ -584,16 +571,16 @@ class RcloneImpl:
             datalists: dict[str, list[str]] = group_files(payload, fully_qualified=False)
         else:
             datalists = {"": payload}
-        # out: subprocess.CompletedProcess | None = None
+
         out: list[CompletedProcess] = []
 
         futures: list[Future] = []
 
         with ThreadPoolExecutor(max_workers=max_partition_workers) as executor:
-            for common_prefix, files in datalists.items():  # noqa: PLR1704
+            for common_prefix, partition_files in datalists.items():
 
                 def _task(
-                    files: list[str] | Path = files,
+                    files: list[str] | Path = partition_files,
                     common_prefix: str = common_prefix,
                 ) -> subprocess.CompletedProcess:
                     with TemporaryDirectory() as tmpdir:
@@ -693,8 +680,7 @@ class RcloneImpl:
             src: Source directory
             dst: Destination directory
         """
-        # src_dir = src.path.path
-        # dst_dir = dst.path.path
+
         src_dir = convert_to_str(src)
         dst_dir = convert_to_str(dst)
         check = get_check(check)
@@ -716,7 +702,7 @@ class RcloneImpl:
 
     def purge(self, src: Dir | str) -> CompletedProcess:
         """Purge a directory"""
-        # path should always be a string
+
         src = src if isinstance(src, str) else str(src.path)
         cmd_list: list[str] = ["purge", str(src)]
         cp = self._run(cmd_list)
@@ -752,14 +738,15 @@ class RcloneImpl:
         futures: list[Future] = []
 
         with ThreadPoolExecutor(max_workers=max_partition_workers) as executor:
-            for remote, files in datalists.items():  # noqa: PLR1704
+            for remote, remote_files in datalists.items():
 
-                def _task(files=files, check=check, remote=remote) -> subprocess.CompletedProcess:
+                def _task(
+                    files=remote_files, check=check, remote=remote
+                ) -> subprocess.CompletedProcess:
                     with TemporaryDirectory() as tmpdir:
                         include_files_txt = Path(tmpdir) / "include_files.txt"
                         include_files_txt.write_text("\n".join(files), encoding="utf-8")
 
-                        # print(include_files_txt)
                         cmd_list: list[str] = [
                             "delete",
                             remote,
@@ -806,7 +793,7 @@ class RcloneImpl:
         assert isinstance(arg, str)
         try:
             dir_listing = self.ls(arg)
-            # print(dir_listing)
+
             return len(dir_listing.dirs) > 0 or len(dir_listing.files) > 0
         except subprocess.CalledProcessError:
             return False
@@ -881,8 +868,8 @@ class RcloneImpl:
 
     def copy_file_s3_resumable(
         self,
-        src: str,  # src:/Bucket/path/myfile.large.zst
-        dst: str,  # dst:/Bucket/path/myfile.large
+        src: str,
+        dst: str,
         part_infos: list[PartInfo] | None = None,
         upload_threads: int = 8,
         merge_threads: int = 4,
@@ -969,16 +956,7 @@ class RcloneImpl:
 
     def size_file(self, src: str) -> SizeSuffix | Exception:
         """Get the size of a file or directory."""
-        # src_parent = os.path.dirname(src)
-        # src_name = os.path.basename(src)
-        # can't use this because it's only one file.
-        # out: SizeResult = self.size_files(src_parent, [src_name])
-        # one_file = len(out.file_sizes) == 1
-        # if not one_file:
-        #     return Exception(
-        #         f"More than one result returned, is this is a directory? {out}"
-        #     )
-        # return SizeSuffix(out.total_size)
+
         dirlist: DirListing = self.ls(src, listing_option=ListingOption.FILES_ONLY, max_depth=0)
         if len(dirlist.files) == 0:
             return FileNotFoundError(f"File not found: {src}")
@@ -993,7 +971,6 @@ class RcloneImpl:
         verbose = get_verbose(verbose)
         path_info: S3PathInfo = S3PathInfo.from_str(remote)
 
-        # path_info: S3PathInfo = split_s3_path(remote)
         remote = path_info.remote
         bucket_name = path_info.bucket
 
@@ -1074,7 +1051,7 @@ class RcloneImpl:
         self, src: str | Dir, dst: str | Dir, args: list[str] | None = None
     ) -> CompletedProcess:
         """Copy a directory from source to destination."""
-        # convert src to str, also dst
+
         src = convert_to_str(src)
         dst = convert_to_str(dst)
         cmd_list: list[str] = ["copy", src, dst, "--s3-no-check-bucket"]
@@ -1090,7 +1067,7 @@ class RcloneImpl:
         cmd_list: list[str] = ["copy", str(src), str(dst), "--s3-no-check-bucket"]
         if args is not None:
             cmd_list += args
-        # return self._run(cmd_list)
+
         cp = self._run(cmd_list)
         return CompletedProcess.from_subprocess(cp)
 
@@ -1166,7 +1143,6 @@ class RcloneImpl:
         )
         return mount
 
-    # Settings optimized for s3.
     def mount_s3(
         self,
         url: str,
@@ -1177,13 +1153,10 @@ class RcloneImpl:
         attribute_timeout: str | None = "1h",
         vfs_disk_space_total_size: str | None = "100M",
         transfers: int | None = 128,
-        modtime_strategy: (
-            ModTimeStrategy | None
-        ) = ModTimeStrategy.USE_SERVER_MODTIME,  # speeds up S3 operations
+        modtime_strategy: (ModTimeStrategy | None) = ModTimeStrategy.USE_SERVER_MODTIME,
         vfs_read_chunk_streams: int | None = 16,
         vfs_read_chunk_size: str | None = "4M",
         vfs_fast_fingerprint: bool = True,
-        # vfs-refresh
         vfs_refresh: bool = True,
         other_args: list[str] | None = None,
     ) -> Mount:
@@ -1260,7 +1233,7 @@ class RcloneImpl:
         if other_args:
             cmd_list += other_args
         proc = self._launch_process(cmd_list)
-        time.sleep(2)  # give it a moment to start
+        time.sleep(2)
         if proc.poll() is not None:
             raise ValueError("NFS serve process failed to start")
         return proc
@@ -1280,7 +1253,7 @@ class RcloneImpl:
             addr: Network address and port to serve on (default: localhost:8080)
         """
         addr = addr or f"localhost:{find_free_port()}"
-        _, subpath = src.split(":", 1)  # might not work on local paths.
+        _, subpath = src.split(":", 1)
         cmd_list: list[str] = [
             "serve",
             "http",
@@ -1291,8 +1264,6 @@ class RcloneImpl:
             "0",
             "--vfs-read-chunk-size-limit",
             "512M",
-            # "--attr-timeout",
-            # "0s",
         ]
 
         if cache_mode:
@@ -1364,7 +1335,7 @@ class RcloneImpl:
         self,
         src: str,
         files: list[str],
-        fast_list: bool = False,  # Recommend that this is False
+        fast_list: bool = False,
         other_args: list[str] | None = None,
         check: bool | None = False,
         verbose: bool | None = None,
@@ -1390,10 +1361,9 @@ class RcloneImpl:
             )
         files = list(files)
         all_files: list[File] = []
-        # prefix, files = group_under_one_prefix(src, files)
+
         cmd = ["lsjson", src, "--files-only", "-R"]
         with TemporaryDirectory() as tmpdir:
-            # print("files: " + ",".join(files))
             include_files_txt = Path(tmpdir) / "include_files.txt"
             include_files_txt.write_text("\n".join(files), encoding="utf-8")
             cmd += ["--files-from", str(include_files_txt)]
@@ -1415,7 +1385,7 @@ class RcloneImpl:
             parent_path = pieces[1] if len(pieces) > 1 else None
             remote = Remote(name=remote_name, rclone=self)
             paths: list[RPath] = RPath.from_json_str(stdout, remote, parent_path=parent_path)
-            # print(paths)
+
             all_files += [File(p) for p in paths]
         file_sizes: dict[str, int] = {}
         f: File

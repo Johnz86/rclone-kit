@@ -5,7 +5,7 @@ Database module for rclone_kit.
 import os
 from threading import Lock
 
-from sqlmodel import Session, SQLModel, create_engine, select
+from sqlmodel import Session, SQLModel, col, create_engine, select
 
 from rclone_kit.db.models import RepositoryMeta, create_file_entry_model
 from rclone_kit.file import FileItem
@@ -26,8 +26,6 @@ class DB:
         """
         self.db_path_url = db_path_url
 
-        # When running multiple commands in parallel, the database connection may fail once
-        # when the database is first populated.
         retries = 2
         for _ in range(retries):
             try:
@@ -109,16 +107,10 @@ class DBRepo:
         self.engine = engine
         self.remote_name = remote_name
 
-        # If table_name is not provided, derive one from the remote name.
         if table_name is None:
-            # table_name = (
-            #     "file_entries_"
-            #     + remote_name.replace(":", "_").replace(" ", "_").replace("/", "_").lower()
-            # )
             table_name = _to_table_name(remote_name)
         self.table_name = table_name
 
-        # Check if repository exists in RepositoryMeta; if not, create a new entry.
         with Session(self.engine) as session:
             existing_repo = session.exec(
                 select(RepositoryMeta).where(RepositoryMeta.repo_name == self.remote_name)
@@ -130,9 +122,11 @@ class DBRepo:
                 session.add(repo_meta)
                 session.commit()
 
-        # Dynamically create the file entry model and its table.
         self.FileEntryModel = create_file_entry_model(self.table_name)
-        SQLModel.metadata.create_all(self.engine, tables=[self.FileEntryModel.__table__])  # type: ignore
+        SQLModel.metadata.create_all(
+            self.engine,
+            tables=[SQLModel.metadata.tables[self.table_name]],
+        )
 
     def insert_file(self, file: FileItem) -> None:
         """Insert a file entry into the table.
@@ -153,15 +147,12 @@ class DBRepo:
 
         The FileEntryModel must define a unique constraint on (path, name) and have a primary key "id".
         """
-        # Step 1: Bulk select existing records.
-        # get_exists() returns a set of FileItem objects (based on path_no_remote and name) that already exist.
+
         existing_files = self.get_exists(files)
 
-        # Determine which files need to be updated vs. inserted.
         needs_update = existing_files
         is_new = set(files) - existing_files
 
-        # Step 2: Bulk insert new rows.
         new_values = [
             {
                 "path": file.path_no_remote,
@@ -175,25 +166,18 @@ class DBRepo:
         ]
         with Session(self.engine) as session:
             if new_values:
-                session.bulk_insert_mappings(self.FileEntryModel, new_values)  # type: ignore
+                session.bulk_insert_mappings(self.FileEntryModel, new_values)
                 session.commit()
 
-        # Step 3: Bulk update existing rows.
-        # First, query the database for the primary keys of rows that match the unique keys in needs_update.
         with Session(self.engine) as session:
-            # Collect all unique paths from files needing update.
             update_paths = [file.path_no_remote for file in needs_update]
-            # Query for existing rows matching any of these paths.
+
             db_entries = session.exec(
-                select(self.FileEntryModel).where(
-                    self.FileEntryModel.path.in_(update_paths)  # type: ignore
-                )
+                select(self.FileEntryModel).where(col(self.FileEntryModel.path).in_(update_paths))
             ).all()
 
-            # Build a mapping from the unique key (path, name) to the primary key (id).
             id_map = {(entry.path, entry.name): entry.id for entry in db_entries}
 
-            # Prepare bulk update mappings.
             update_values = []
             for file in needs_update:
                 key = (file.path_no_remote, file.name)
@@ -208,7 +192,7 @@ class DBRepo:
                         }
                     )
             if update_values:
-                session.bulk_update_mappings(self.FileEntryModel, update_values)  # type: ignore
+                session.bulk_update_mappings(self.FileEntryModel, update_values)
                 session.commit()
 
     def get_exists(self, files: list[FileItem]) -> set[FileItem]:
@@ -220,20 +204,16 @@ class DBRepo:
         Returns:
             Set of FileItem instances whose 'path_no_remote' exists in the table.
         """
-        # Extract unique paths from the input files.
+
         paths = {file.path_no_remote for file in files}
 
         with Session(self.engine) as session:
-            # Execute a single query to fetch all file paths in the table that match the input paths.
             result = session.exec(
-                select(self.FileEntryModel.path).where(
-                    self.FileEntryModel.path.in_(paths)  # type: ignore
-                )
+                select(self.FileEntryModel.path).where(col(self.FileEntryModel.path).in_(paths))
             ).all()
-            # Convert the result to a set for fast membership tests.
+
             existing_paths = set(result)
 
-        # Return the set of FileItem objects that have a path in the existing_paths.
         return {file for file in files if file.path_no_remote in existing_paths}
 
     def get_all_files(self) -> list[FileItem]:
@@ -242,17 +222,16 @@ class DBRepo:
         Returns:
             list: List of file entries
         """
-        # with Session(self.engine) as session:
-        #     return session.exec(select(self.FileEntryModel)).all()
+
         out: list[FileItem] = []
         with Session(self.engine) as session:
             query = session.exec(select(self.FileEntryModel)).all()
             for item in query:
-                name = item.name  # type: ignore
-                size = item.size  # type: ignore
-                mime_type = item.mime_type  # type: ignore
-                mod_time = item.mod_time  # type: ignore
-                path = item.path  # type: ignore
+                name = item.name
+                size = item.size
+                mime_type = item.mime_type
+                mod_time = item.mod_time
+                path = item.path
                 parent = os.path.dirname(path)
                 if parent in {"/", "."}:
                     parent = ""

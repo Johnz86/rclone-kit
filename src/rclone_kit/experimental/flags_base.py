@@ -36,18 +36,16 @@ class BaseFlags:
             value = getattr(self, field.name)
             if value is None:
                 continue
-            # If the field value is a nested dataclass that supports to_args, use it.
+
             to_args = getattr(value, "to_args", None)
             if is_dataclass(value) and callable(to_args):
                 args.extend(cast(Callable[[], list[str]], to_args)())
             elif isinstance(value, bool):
-                # Only include the flag if the boolean is True.
                 if value:
                     args.append(_field_name_to_flag(field.name))
             else:
                 args.append(_field_name_to_flag(field.name))
                 if isinstance(value, list):
-                    # Join list values with a comma.
                     args.append(",".join(map(str, value)))
                 else:
                     args.append(str(value))

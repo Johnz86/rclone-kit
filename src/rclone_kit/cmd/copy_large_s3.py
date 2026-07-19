@@ -36,7 +36,7 @@ def _parse_args() -> Args:
         "--chunk-size",
         help="Chunk size that will be read and uploaded in SizeSuffix form, too low or too high will cause issues",
         type=str,
-        default="128MB",  # if this is too low or too high an s3 service
+        default="128MB",
     )
     parser.add_argument(
         "--threads",
@@ -77,17 +77,7 @@ def main() -> int:
     register_signal_cleanup()
     args = _parse_args()
     rclone = Rclone(rclone_conf=args.config_path)
-    # unit_chunk = args.chunk_size / args.threads
-    # rslt: MultiUploadResult = rclone.copy_file_resumable_s3(
-    #     src=args.src,
-    #     dst=args.dst,
-    #     chunk_size=args.chunk_size,
-    #     read_threads=args.read_threads,
-    #     write_threads=args.write_threads,
-    #     retries=args.retries,
-    #     save_state_json=args.save_state_json,
-    #     verbose=args.verbose,
-    # )
+
     err: Exception | None = rclone.copy_file_s3_resumable(
         src=args.src,
         dst=args.dst,

@@ -5,14 +5,9 @@ from threading import Event, Thread
 from rclone_kit.fs.filesystem import FSPath
 from rclone_kit.fs.walk_threaded_walker import FSWalker
 
-### API
-
 
 def os_walk_threaded_begin(self: FSPath, max_backlog: int = 8) -> FSWalker:
     return FSWalker(self, max_backlog)
-
-
-### Implementation
 
 
 class FSWalkThread:
@@ -32,7 +27,7 @@ class FSWalkThread:
             if self.stop_event.is_set():
                 break
             self.result_queue.put((root, dirnames, filenames))
-        self.result_queue.put(None)  # Sentinel value to indicate completion
+        self.result_queue.put(None)
 
     def start(self):
         self.thread.start()
@@ -43,7 +38,7 @@ class FSWalkThread:
     def get_results(self) -> Generator[tuple[FSPath, list[str], list[str]]]:
         while True:
             result = self.result_queue.get()
-            if result is None:  # Check for sentinel value
+            if result is None:
                 break
             yield result
 

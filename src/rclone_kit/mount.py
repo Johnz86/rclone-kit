@@ -53,6 +53,5 @@ class Mount:
     def __del__(self):
         self.close(wait=False)
 
-    # make this a hashable object
     def __hash__(self):
         return hash(self.mount_path)

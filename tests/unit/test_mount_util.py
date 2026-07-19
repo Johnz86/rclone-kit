@@ -5,6 +5,7 @@ installed on the host; `_SYSTEM` and the filesystem/`PATH` checks are
 patched at the module boundary.
 """
 
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -18,6 +19,12 @@ from rclone_kit.mount_util import (
     wait_for_mount,
 )
 from rclone_kit.process import Process
+
+
+@dataclass
+class _MountStatus:
+    process: Process
+    mount_path: Path
 
 
 def test_is_winfsp_available_false_off_windows(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -119,7 +126,7 @@ def test_run_command_returns_negative_one_when_executable_missing() -> None:
 def test_wait_for_empty_mount_raises_timeout(tmp_path: Path) -> None:
     process = object.__new__(Process)
     process.cmd = ["rclone", "mount", "remote:bucket", str(tmp_path)]
-    mount = type("TestMount", (), {"process": process, "mount_path": tmp_path})()
+    mount = _MountStatus(process=process, mount_path=tmp_path)
 
     with pytest.raises(TimeoutError, match="did not become available"):
-        wait_for_mount(mount, timeout=0, post_mount_delay=0, poll_interval=0)  # type: ignore[arg-type]
+        wait_for_mount(mount, timeout=0, post_mount_delay=0, poll_interval=0)

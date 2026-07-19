@@ -1,23 +1,21 @@
 import logging
 import sys
+from threading import Event
 
-_INITIALISED = False
+_DEFAULT_LOGGING_INITIALISED = Event()
 
 
 def setup_default_logging():
     """Set up default logging configuration if none exists."""
-    global _INITIALISED  # noqa: PLW0603 -- one-time init flag, simplest form here
-    if _INITIALISED:
+    if _DEFAULT_LOGGING_INITIALISED.is_set():
         return
-    _INITIALISED = True
+    _DEFAULT_LOGGING_INITIALISED.set()
     if not logging.root.handlers:
         logging.basicConfig(
             level=logging.INFO,
             format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
             handlers=[
                 logging.StreamHandler(sys.stdout),
-                # Uncomment to add file logging
-                # logging.FileHandler('rclone_kit.log')
             ],
         )
 
@@ -37,5 +35,5 @@ def configure_logging(level=logging.INFO, log_file=None):
         level=level,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         handlers=handlers,
-        force=True,  # Override any existing configuration
+        force=True,
     )

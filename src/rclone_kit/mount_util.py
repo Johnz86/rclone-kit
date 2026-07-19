@@ -8,12 +8,13 @@ import warnings
 import weakref
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import Protocol
 
 from rclone_kit.mount import Mount
 from rclone_kit.process import Process
 from rclone_kit.util import format_command
 
-_SYSTEM = platform.system()  # "Linux", "Darwin", "Windows", etc.
+_SYSTEM = platform.system()
 _WINDOWS = "Windows"
 _LINUX = "Linux"
 _DARWIN = "Darwin"
@@ -27,6 +28,11 @@ _WINFSP_RELATIVE_DLL_PATHS = (
 _PROGRAM_FILES_ENV_VARS = ("ProgramFiles", "ProgramFiles(x86)")
 
 _MOUNTS_FOR_GC: weakref.WeakSet = weakref.WeakSet()
+
+
+class MountStatus(Protocol):
+    process: Process
+    mount_path: Path
 
 
 class MountPrerequisiteError(RuntimeError):
@@ -135,7 +141,7 @@ def cache_dir_delete_on_exit(cache_dir: Path) -> None:
 
 
 def add_mount_for_gc(mount: Mount) -> None:
-    # weak reference to avoid circular references
+
     _MOUNTS_FOR_GC.add(mount)
 
 
@@ -145,19 +151,17 @@ def remove_mount_for_gc(mount: Mount) -> None:
 
 def prepare_mount(outdir: Path, verbose: bool) -> None:
     if _SYSTEM == "Windows":
-        # Windows -> Must create parent directories only if they don't exist
         if verbose:
             print(f"Creating parent directories for {outdir}")
         outdir.parent.mkdir(parents=True, exist_ok=True)
     else:
-        # Linux -> Must create parent directories and the directory itself
         if verbose:
             print(f"Creating directories for {outdir}")
         outdir.mkdir(parents=True, exist_ok=True)
 
 
 def wait_for_mount(
-    mount: Mount,
+    mount: MountStatus,
     timeout: int = 20,
     post_mount_delay: int = 5,
     poll_interval: float = 1.0,
@@ -193,15 +197,12 @@ def wait_for_mount(
     last_error = None
 
     while time.monotonic() < expire_time:
-        # Check if the mount process has terminated unexpectedly.
         rtn = mount_process.poll()
         if rtn is not None:
             print(f"Mount process terminated unexpectedly: {format_command(mount_process.cmd)}")
             raise subprocess.CalledProcessError(rtn, mount_process.cmd)
 
-        # Check if the mount path exists.
         if src.exists():
-            # Optionally check if path is a mount point.
             if check_mount_flag:
                 try:
                     if not os.path.ismount(str(src)):
@@ -212,7 +213,6 @@ def wait_for_mount(
                     print(f"Could not verify mount point status for {src}: {e}")
 
             try:
-                # Check for at least one entry in the directory.
                 if any(src.iterdir()):
                     print(
                         f"Mount point {src} appears available with files. Waiting {post_mount_delay} seconds for stabilization."
@@ -242,26 +242,20 @@ def _rmtree_ignore_mounts(path):
     Directories that are mount points (where os.path.ismount returns True)
     are skipped.
     """
-    # Iterate over directory entries without following symlinks
+
     with os.scandir(path) as it:
         for entry in it:
             full_path = entry.path
             if entry.is_dir(follow_symlinks=False):
-                # If it's a mount point, skip recursing into it
                 if os.path.ismount(full_path):
                     print(f"Skipping mount point: {full_path}")
                     continue
-                # Recursively remove subdirectories
+
                 _rmtree_ignore_mounts(full_path)
             else:
-                # Remove files or symlinks
                 os.unlink(full_path)
-    # Remove the now-empty directory
+
     os.rmdir(path)
-
-
-# Example usage:
-# rmtree_ignore_mounts("/path/to/directory")
 
 
 def clean_mount(mount: Mount | Path, verbose: bool = False, wait=True) -> None:
@@ -283,15 +277,12 @@ def clean_mount(mount: Mount | Path, verbose: bool = False, wait=True) -> None:
         verbose_print(f"Terminating mount process {proc.pid}")
         proc.kill()
 
-    # Check if the mount path exists; if an OSError occurs, assume it exists.
     mount_path = mount.mount_path if isinstance(mount, Mount) else mount
     try:
         mount_exists = mount_path.exists()
     except OSError:
-        # warnings.warn(f"Error checking {mount_path}: {e}")
         mount_exists = True
 
-    # Give the system a moment (if unmount is in progress, etc.)
     if wait:
         time.sleep(2)
 
@@ -301,20 +292,15 @@ def clean_mount(mount: Mount | Path, verbose: bool = False, wait=True) -> None:
 
     verbose_print(f"{mount_path} still exists, attempting to unmount and remove.")
 
-    # Platform-specific unmount procedures
     if _SYSTEM == _LINUX:
-        # Try FUSE unmount first (if applicable), then the regular umount.
         _run_command(["fusermount", "-u", str(mount_path)], verbose)
         _run_command(["umount", str(mount_path)], verbose)
     elif _SYSTEM == _DARWIN:
-        # On macOS, use umount; optionally try diskutil for stubborn mounts.
         _run_command(["umount", str(mount_path)], verbose)
-        # Optionally: diskutil unmount is preferred for stubborn mounts.
-        # _run_command(["diskutil", "unmount", str(mount_path)], verbose)
+
     elif _SYSTEM == _WINDOWS:
-        # On Windows, remove the mount point using mountvol.
         _run_command(["mountvol", str(mount_path), "/D"], verbose)
-        # If that does not work, try to remove the directory directly.
+
         try:
             _rmtree_ignore_mounts(mount_path)
             if mount_path.exists():
@@ -326,11 +312,9 @@ def clean_mount(mount: Mount | Path, verbose: bool = False, wait=True) -> None:
     else:
         warnings.warn(f"Unsupported platform: {_SYSTEM}", stacklevel=2)
 
-    # Allow some time for the unmount commands to take effect.
     if wait:
         time.sleep(2)
 
-    # Re-check if the mount path still exists.
     try:
         still_exists = mount_path.exists()
     except OSError as e:
@@ -339,9 +323,7 @@ def clean_mount(mount: Mount | Path, verbose: bool = False, wait=True) -> None:
 
     if still_exists:
         verbose_print(f"{mount_path} still exists after unmount attempt.")
-        # Attempt to remove the directory if it is empty.
 
-        # Only remove if the directory is empty.
         if not any(mount_path.iterdir()):
             try:
                 mount_path.rmdir()

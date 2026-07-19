@@ -41,16 +41,40 @@ this module adds is:
 = "_build_backend"` with `backend-path = ["."]`.
 """
 
-from setuptools.build_meta import *  # noqa: F403
+from setuptools.build_meta import (
+    SetupRequirementsError,
+    __legacy__,
+    build_editable,
+    build_sdist,
+    build_wheel,
+    get_requires_for_build_editable,
+    get_requires_for_build_sdist,
+    get_requires_for_build_wheel,
+    prepare_metadata_for_build_editable,
+    prepare_metadata_for_build_wheel,
+)
 from setuptools.command.bdist_wheel import bdist_wheel as _bdist_wheel_command
 from setuptools.command.bdist_wheel import get_platform as _get_platform
 from setuptools.dist import Distribution
+
+__all__ = [
+    "SetupRequirementsError",
+    "__legacy__",
+    "build_editable",
+    "build_sdist",
+    "build_wheel",
+    "get_requires_for_build_editable",
+    "get_requires_for_build_sdist",
+    "get_requires_for_build_wheel",
+    "prepare_metadata_for_build_editable",
+    "prepare_metadata_for_build_wheel",
+]
 
 _WHEEL_PYTHON_TAG = "py3"
 _WHEEL_ABI_TAG = "none"
 
 _LINUX_GENERIC_PLATFORM_PREFIX = "linux_"
-# Keep in sync with rclone_kit.runtime.platform.LINUX_AMD64_ARTIFACT.wheel_platform_tag.
+
 _LINUX_MANYLINUX_PLATFORM_PREFIX = "manylinux2014_"
 
 
@@ -64,7 +88,12 @@ def _force_platform_specific_wheels() -> None:
     which is the documented, minimal way to opt a data-only distribution
     into platform-specific wheel tagging.
     """
-    Distribution.has_ext_modules = lambda self: True  # noqa: ARG005
+    Distribution.has_ext_modules = _has_extension_modules
+
+
+def _has_extension_modules(self: Distribution) -> bool:
+    _ = self
+    return True
 
 
 def _normalize_platform_tag(raw_platform_name: str) -> str:

@@ -26,7 +26,6 @@ class Dir:
             path: Either an RPath object or a Remote object
         """
         if isinstance(path, Remote):
-            # Need to create an RPath for the Remote's root
             self.path = RPath(
                 remote=path,
                 path=str(path),
@@ -36,11 +35,11 @@ class Dir:
                 mod_time="",
                 is_dir=True,
             )
-            # Ensure the RPath has the same rclone instance as the Remote
+
             self.path.set_rclone(path.rclone)
         else:
             self.path = path
-        # self.path.set_rclone(self.path.remote.rclone)
+
         assert self.path.rclone is not None
 
     def ls(
@@ -94,7 +93,6 @@ class Dir:
             _, out = out.split(":", 1)
         return out
 
-    # / operator
     def __truediv__(self, other: str) -> "Dir":
         """Join the current path with another path."""
         path = Path(self.path.path) / other

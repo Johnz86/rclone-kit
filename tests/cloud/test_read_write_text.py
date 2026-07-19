@@ -44,8 +44,7 @@ port = {SRC_SFTP_PORT}
 pass = {SRC_SFTP_PASS}
 
 """
-    # _CONFIG_PATH.write_text(config_text, encoding="utf-8")
-    # print(f"Config file written to: {_CONFIG_PATH}")
+
     return config_text
 
 

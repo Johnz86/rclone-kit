@@ -10,35 +10,29 @@ for common operations like copying, listing, and managing remote storage.
 import logging
 import os
 from collections.abc import Generator
-
-# Import core components and utilities
 from datetime import datetime
 from pathlib import Path
 
-# Import logging utilities
 from rclone_kit import log
 
-# Import data structures and models
 from .completed_process import CompletedProcess
-from .config import Config, Parsed, Section  # Configuration handling
-from .diff import DiffItem, DiffOption, DiffType  # File comparison utilities
-from .dir import Dir  # Directory representation
-from .dir_listing import DirListing  # Directory contents representation
-from .file import File, FileItem  # File representation
-from .file_stream import FilesStream  # Streaming file listings
-from .filelist import FileList  # File list utilities
-from .fs.filesystem import FSPath, RealFS, RemoteFS  # Filesystem utilities
-from .http_server import HttpFetcher, HttpServer, Range  # HTTP serving capabilities
-
-# Import logging configuration utilities
+from .config import Config, Parsed, Section
+from .diff import DiffItem, DiffOption, DiffType
+from .dir import Dir
+from .dir_listing import DirListing
+from .file import File, FileItem
+from .file_stream import FilesStream
+from .filelist import FileList
+from .fs.filesystem import FSPath, RealFS, RemoteFS
+from .http_server import HttpFetcher, HttpServer, Range
 from .log import configure_logging
 from .log import setup_default_logging as setup_default_logging
-from .mount import Mount  # Mount remote filesystems
-from .process import Process  # Process management
-from .remote import Remote  # Remote storage representation
-from .rpath import RPath  # Remote path utilities
-from .s3.types import MultiUploadResult  # S3-specific types
-from .types import (  # Common types
+from .mount import Mount
+from .process import Process
+from .remote import Remote
+from .rpath import RPath
+from .s3.types import MultiUploadResult
+from .types import (
     ListingOption,
     Order,
     PartInfo,
@@ -293,7 +287,7 @@ class Rclone:
     def save_to_db(
         self,
         src: str,
-        db_url: str,  # sqalchemy style url, use sqlite:///data.db or mysql://user:pass@localhost/db or postgres://user:pass@localhost/db
+        db_url: str,
         max_depth: int = -1,
         fast_list: bool = False,
     ) -> None:
@@ -359,12 +353,8 @@ class Rclone:
         self,
         src: str,
         dst: str,
-        min_size: (
-            str | None
-        ) = None,  # e. g. "1MB" - see rclone documentation: https://rclone.org/commands/rclone_check/
-        max_size: (
-            str | None
-        ) = None,  # e. g. "1GB" - see rclone documentation: https://rclone.org/commands/rclone_check/
+        min_size: (str | None) = None,
+        max_size: (str | None) = None,
         diff_option: DiffOption = DiffOption.COMBINED,
         fast_list: bool = True,
         size_only: bool | None = None,
@@ -501,11 +491,11 @@ class Rclone:
 
     def copy_file_s3_resumable(
         self,
-        src: str,  # src:/Bucket/path/myfile.large.zst
-        dst: str,  # dst:/Bucket/path/myfile.large.zst
+        src: str,
+        dst: str,
         part_infos: list[PartInfo] | None = None,
-        upload_threads: int = 8,  # Number of reader and writer threads to use
-        merge_threads: int = 4,  # Number of threads to use for merging the parts
+        upload_threads: int = 8,
+        merge_threads: int = 4,
     ) -> Exception | None:
         """
         Copy a large file to S3 with resumable upload capability.
@@ -875,7 +865,7 @@ class Rclone:
         Returns:
             CompletedProcess with the result of the copy operation
         """
-        # convert src to str, also dst
+
         return self.impl.copy_dir(src=src, dst=dst, args=args)
 
     def copy_remote(
@@ -901,7 +891,7 @@ class Rclone:
         src: Remote | Dir | str,
         outdir: Path,
         allow_writes: bool | None = False,
-        transfers: int | None = None,  # number of writes to perform in parallel
+        transfers: int | None = None,
         use_links: bool | None = None,
         vfs_cache_mode: str | None = None,
         verbose: bool | None = None,
@@ -975,7 +965,7 @@ class Rclone:
         self,
         src: str,
         files: list[str],
-        fast_list: bool = False,  # Recommend that this is False
+        fast_list: bool = False,
         other_args: list[str] | None = None,
         check: bool | None = False,
         verbose: bool | None = None,
@@ -1021,42 +1011,37 @@ class Rclone:
         return self.impl.size_file(src=src)
 
 
-# Export public API components
 __all__ = [
-    # Data classes and enums
-    "CompletedProcess",  # Process result
-    "Config",  # Configuration handling
-    "DiffItem",  # Difference item
-    "DiffOption",  # Difference options
-    "DiffType",  # Difference type
-    "Dir",  # Directory representation
-    "DirListing",  # Directory listing
-    "FSPath",  # File object backed by a real or remote filesystem
-    "File",  # File representation
-    "FileItem",  # File item
-    "FileList",  # File list
+    "CompletedProcess",
+    "Config",
+    "DiffItem",
+    "DiffOption",
+    "DiffType",
+    "Dir",
+    "DirListing",
+    "FSPath",
+    "File",
+    "FileItem",
+    "FileList",
     "FilesStream",
-    "HttpFetcher",  # HTTP fetcher
-    "HttpServer",  # HTTP server
-    "ListingOption",  # Listing options
-    "MultiUploadResult",  # S3 upload result
-    "Order",  # Sorting order
-    "Parsed",  # Parsed configuration
-    "PartInfo",  # Part information for uploads
-    "Process",  # Process management
-    "RPath",  # Remote path utilities
-    "Range",  # HTTP range
-    # Main classes
-    "Rclone",  # Primary interface
-    "RealFS",  # Real filesystem
-    "Remote",  # Remote storage
-    "RemoteFS",  # Remote filesystem
-    "Section",  # Configuration section
-    "SizeResult",  # Size result
-    "SizeSuffix",  # Size with suffix
-    # Utilities
-    "configure_logging",  # Logging configuration
-    "log",  # Logging utilities
-    # Functions
-    "rclone_verbose",  # Verbosity control
+    "HttpFetcher",
+    "HttpServer",
+    "ListingOption",
+    "MultiUploadResult",
+    "Order",
+    "Parsed",
+    "PartInfo",
+    "Process",
+    "RPath",
+    "Range",
+    "Rclone",
+    "RealFS",
+    "Remote",
+    "RemoteFS",
+    "Section",
+    "SizeResult",
+    "SizeSuffix",
+    "configure_logging",
+    "log",
+    "rclone_verbose",
 ]

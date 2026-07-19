@@ -23,6 +23,7 @@ import logging
 import subprocess
 import sys
 import threading
+from importlib import import_module
 from importlib.metadata import EntryPoint, entry_points
 from pathlib import Path
 
@@ -70,7 +71,7 @@ def _import_rclone_kit_without_side_effects() -> None:
     threads_before = _live_thread_count()
     children_before = _child_process_count()
 
-    import rclone_kit  # noqa: F401
+    import_module("rclone_kit")
 
     _assert_unchanged(
         handlers_before, _root_logging_handler_count(), "the root logger's handler count"

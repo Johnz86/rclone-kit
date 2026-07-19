@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from html.parser import HTMLParser
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from threading import Semaphore
+from threading import Event, Semaphore
 from typing import Any, Self
 from urllib.parse import quote
 
@@ -20,8 +20,8 @@ from rclone_kit.file_part import FilePart
 from rclone_kit.process import Process
 from rclone_kit.types import Range, SizeSuffix, get_chunk_tmpdir
 
-_TIMEOUT = 10 * 60  # 10 minutes
-_PUT_WARNED = False
+_TIMEOUT = 10 * 60
+_PUT_WARNING_EMITTED = Event()
 
 logger = logging.getLogger(__name__)
 
@@ -159,9 +159,8 @@ class HttpServer:
 
     def put(self, path: str, data: bytes) -> Exception | None:
         """Put bytes to the server."""
-        global _PUT_WARNED  # noqa: PLW0603 -- one-time warning flag, simplest form here
-        if not _PUT_WARNED:
-            _PUT_WARNED = True
+        if not _PUT_WARNING_EMITTED.is_set():
+            _PUT_WARNING_EMITTED.set()
             warnings.warn(
                 "PUT method not implemented on the rclone binary as of 1.69", stacklevel=2
             )
@@ -188,8 +187,6 @@ class HttpServer:
         except Exception as e:
             warnings.warn(f"Failed to remove {path} from {self.url}: {e}", stacklevel=2)
             return e
-
-        # curl "http://localhost:5572/?list"
 
     def list(self, path: str) -> tuple[list[str], list[str]] | Exception:
         """List files on the server."""
@@ -322,7 +319,6 @@ class HttpServer:
                     for f in finished:
                         logger.info(f"Appending {f} to {dst_path}")
                         with open(f, "rb") as part:
-                            # chunk = part.read(8192 * 4)
                             while chunk := part.read(8192 * 4):
                                 if not chunk:
                                     break
@@ -360,8 +356,7 @@ class HttpFetcher:
         self.path = path
         self.executor = ThreadPoolExecutor(max_workers=n_threads)
         self._closed = False
-        # Semaphore throttles the number of concurrent fetches
-        # TODO this is kind of a hack.
+
         self.semaphore = Semaphore(n_threads)
 
     def bytes_fetcher(

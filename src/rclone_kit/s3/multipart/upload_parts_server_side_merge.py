@@ -28,7 +28,7 @@ from rclone_kit.s3.multipart.merge_state import MergeState, Part
 from rclone_kit.types import EndOfStream
 from rclone_kit.util import locked_print
 
-DEFAULT_MAX_WORKERS = 5  # Backblaze can do 10 with exponential backoff, so let's try 5
+DEFAULT_MAX_WORKERS = 5
 
 _TIMEOUT_READ = 900
 _TIMEOUT_CONNECTION = 900
@@ -57,9 +57,8 @@ def _upload_part_copy_task(
     """
     copy_source = {"Bucket": source_bucket, "Key": source_key}
 
-    # from botocore.exceptions import NoSuchKey
     default_retries = 9
-    retries = default_retries + 1  # Add one for the initial attempt
+    retries = default_retries + 1
     for retry in range(retries):
         params: dict = {}
         try:
@@ -70,7 +69,6 @@ def _upload_part_copy_task(
                 f"Copying part {part_number} for {state.dst_key} from {source_bucket}/{source_key}"
             )
 
-            # Prepare the upload_part_copy parameters
             params = {
                 "Bucket": state.bucket,
                 "CopySource": copy_source,
@@ -79,10 +77,8 @@ def _upload_part_copy_task(
                 "UploadId": state.upload_id,
             }
 
-            # Execute the copy operation
             part = s3_client.upload_part_copy(**params)
 
-            # Extract ETag from the response
             etag = part["CopyPartResult"]["ETag"]
             out = FinishedPiece(etag=etag, part_number=part_number)
             locked_print(f"Finished part {part_number} for {state.dst_key}")
@@ -97,7 +93,7 @@ def _upload_part_copy_task(
                 return e
             else:
                 locked_print(f"{msg}, retrying")
-                # sleep
+
                 sleep_time = 2**retry
                 locked_print(f"Sleeping for {sleep_time} seconds")
                 continue
@@ -118,7 +114,7 @@ def _complete_multipart_upload_from_parts(
     Returns:
         The URL of the completed object
     """
-    # Sort parts by part number to ensure correct order
+
     finished_parts.sort(key=lambda x: x.part_number)
     multipart_parts = FinishedPiece.to_json_array(finished_parts)
     multipart_upload: dict = {
@@ -126,7 +122,6 @@ def _complete_multipart_upload_from_parts(
     }
     response: Any = None
     try:
-        # Complete the multipart upload
         response = s3_client.complete_multipart_upload(
             Bucket=state.bucket,
             Key=state.dst_key,
@@ -175,7 +170,7 @@ def _do_upload_task(
                 )
                 if isinstance(out, Exception):
                     return out
-                # merge_state.on_finished(out)
+
                 on_finished(out)
                 return out
 
@@ -202,7 +197,6 @@ def _do_upload_task(
             return ValueError(f"Finished parts mismatch: {len(finished_parts)} != {len(parts)}")
 
         try:
-            # Complete the multipart upload
             _complete_multipart_upload_from_parts(
                 s3_client=s3_client, state=merge_state, finished_parts=finished_parts
             )
@@ -235,7 +229,6 @@ def _begin_upload(
         The upload id of the multipart upload
     """
 
-    # Initiate multipart upload
     if verbose:
         locked_print(
             f"Creating multipart upload for {bucket}/{dst_key} from {len(parts)} source objects"
@@ -268,11 +261,10 @@ class WriteMergeStateThread(Thread):
         item = self.queue.get()
         if isinstance(item, EndOfStream):
             return item
-        # see if there are more items in the queue, only write the last one
+
         while not self.queue.empty():
             item = self.queue.get()
             if isinstance(item, EndOfStream):
-                # put it back in for next time
                 self.queue.put(item)
                 return item
         return item
@@ -289,8 +281,7 @@ class WriteMergeStateThread(Thread):
                 break
 
             assert isinstance(item, FinishedPiece)
-            # piece: FinishedPiece = item
-            # at this point just write out the whole json str
+
             json_str = self.merge_state.to_json_str()
             err = self.rclone_impl.write_text(self.merge_path, json_str)
             if isinstance(err, Exception):
@@ -349,7 +340,6 @@ def _begin_or_resume_merge(
         merge_path = _get_merge_path(info_path=info.src_info)
         merge_json_text = rclone.read_text(merge_path)
         if isinstance(merge_json_text, str):
-            # Attempt to do a resume
             merge_data = json.loads(merge_json_text)
             merge_state = MergeState.from_json(rclone_impl=rclone, json=merge_data)
             if isinstance(merge_state, MergeState):

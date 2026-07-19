@@ -85,16 +85,11 @@ _LINUX_AMD64_ARCHIVE_STEM = f"rclone-{RCLONE_RELEASE_TAG}-linux-amd64"
 _WINDOWS_AMD64_ARCHIVE_FILENAME = f"{_WINDOWS_AMD64_ARCHIVE_STEM}.zip"
 _LINUX_AMD64_ARCHIVE_FILENAME = f"{_LINUX_AMD64_ARCHIVE_STEM}.zip"
 
-# Expected digests copied verbatim from the signed upstream checksum document
-# at https://downloads.rclone.org/v1.74.4/SHA256SUMS and independently
-# reproduced by hashing both downloaded release archives.
+
 WINDOWS_AMD64_SHA256_DIGEST = "ef097ef9de37a57feb7d9f9c7afb34148ad3c65be8025f1d8f7f521554a701ea"
 LINUX_AMD64_SHA256_DIGEST = "fe435e0c36228e7c2f116a8701f01127bb1f694005fc11d1f27186c8bca4115d"
 
-# Expected digests of the *extracted executable* (not the archive),
-# independently reproduced by hashing the `rclone`/`rclone.exe` file staged by
-# `scripts/prepare_rclone_artifact.py` from a freshly verified download of the
-# corresponding archive above.
+
 WINDOWS_AMD64_EXECUTABLE_SHA256_DIGEST = (
     "492648a3867dbc620188a305e05ff3216aecbf4622bf1a6b5b978ed9c939e18c"
 )

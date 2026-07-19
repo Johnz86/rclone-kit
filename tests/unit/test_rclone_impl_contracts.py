@@ -1,11 +1,11 @@
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
 
 import pytest
 
 from rclone_kit import rclone_impl as rclone_impl_module
+from rclone_kit.process import Process
 from rclone_kit.rclone_impl import RcloneImpl
 from rclone_kit.types import SizeResult
 
@@ -24,14 +24,14 @@ def test_size_files_empty_input_returns_empty_result() -> None:
 
 def test_copy_files_empty_input_does_not_execute_rclone() -> None:
     rclone = _bare_rclone_impl()
-    rclone._run = lambda *_args, **_kwargs: pytest.fail("rclone must not run")  # type: ignore[method-assign]
+    rclone._run = lambda *_args, **_kwargs: pytest.fail("rclone must not run")
 
     assert rclone.copy_files("src:bucket", "dst:bucket", []) == []
 
 
 def test_delete_files_empty_input_does_not_execute_rclone() -> None:
     rclone = _bare_rclone_impl()
-    rclone._run = lambda *_args, **_kwargs: pytest.fail("rclone must not run")  # type: ignore[method-assign]
+    rclone._run = lambda *_args, **_kwargs: pytest.fail("rclone must not run")
 
     result = rclone.delete_files([])
 
@@ -43,11 +43,16 @@ def test_copy_files_does_not_mutate_caller_arguments() -> None:
     rclone = _bare_rclone_impl()
     commands: list[list[str]] = []
 
-    def run(command: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
-        commands.append(command)
-        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+    def run(
+        cmd: list[str],
+        check: bool = False,
+        capture: bool | Path | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        del check, capture
+        commands.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
-    rclone._run = run  # type: ignore[method-assign]
+    rclone._run = run
     other_args = ["--metadata"]
 
     result = rclone.copy_files("src:bucket", "dst:bucket", ["folder/file"], other_args=other_args)
@@ -71,12 +76,16 @@ def test_mount_respects_explicit_false_for_links(
     rclone = _bare_rclone_impl()
     commands: list[list[str]] = []
 
-    def launch(command: list[str], log: Path | None = None) -> object:
-        del log
-        commands.append(command)
-        return object()
+    def launch(
+        cmd: list[str],
+        capture: bool | None = None,
+        log: Path | None = None,
+    ) -> Process:
+        del capture, log
+        commands.append(cmd)
+        return object.__new__(Process)
 
-    rclone._launch_process = launch  # type: ignore[method-assign]
+    rclone._launch_process = launch
 
     rclone.mount(
         "remote:bucket",

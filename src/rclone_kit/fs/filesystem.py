@@ -13,10 +13,6 @@ logger = logging.getLogger(__name__)
 
 
 class FS(abc.ABC):
-    # Concrete no-op constructor, not abstract: subclasses call super().__init__().
-    def __init__(self) -> None:  # noqa: B027
-        pass
-
     @abc.abstractmethod
     def copy(self, src: Path | str, dst: Path | str) -> None:
         pass
@@ -170,20 +166,19 @@ class RemoteFS(FS):
         from rclone_kit.completed_process import CompletedProcess
 
         src = src if isinstance(src, Path) else Path(src)
-        # if not src.is_file():
-        #     raise FileNotFoundError(f"File not found: {src}")
+
         dst_remote_path = self._to_remote_path(dst)
 
         is_s3 = self.rclone.is_s3(dst_remote_path)
         if is_s3:
             filesize = src.stat().st_size
-            if filesize < 1024 * 1024 * 1024:  # 1GB
+            if filesize < 1024 * 1024 * 1024:
                 logger.info(f"S3 OPTIMIZED: Copying {src} -> {dst_remote_path}")
                 err = self.rclone.copy_file_s3(src, dst_remote_path)
                 if isinstance(err, Exception):
                     raise FileNotFoundError(f"File not found: {src}, specified by {err}")
                 return
-        # Fallback.
+
         logging.info(f"Copying {src} -> {dst}")
         src_path = src.as_posix()
         dst = dst if isinstance(dst, str) else dst.as_posix()
@@ -200,7 +195,7 @@ class RemoteFS(FS):
 
     def write_binary(self, path: Path | str, data: bytes) -> None:
         path = self._to_str(path)
-        self.rclone.write_bytes(data, path)  # Already optimized for s3.
+        self.rclone.write_bytes(data, path)
 
     def exists(self, path: Path | str) -> bool:
         from rclone_kit.http_server import HttpServer
@@ -211,7 +206,7 @@ class RemoteFS(FS):
         return self.server.exists(dst_rel)
 
     def mkdir(self, path: str, parents=True, exist_ok=True) -> None:
-        # Ignore mkdir for remote backend, it will be made when file is written.
+
         import warnings
 
         warnings.warn("mkdir is not supported for remote backend", stacklevel=2)
@@ -230,7 +225,7 @@ class RemoteFS(FS):
         assert isinstance(self.server, HttpServer)
         path = self._to_remote_path(path)
         err = self.server.list(path)
-        # Make faster.
+
         return isinstance(err, Exception) and self.exists(path)
 
     def ls(self, path: Path | str) -> tuple[list[str], list[str]]:
@@ -249,16 +244,13 @@ class RemoteFS(FS):
     def remove(self, path: Path | str) -> Exception | None:
         """Remove a file or symbolic link."""
 
-        # remove this
-        # path = self._to_remote_path(path)
         path = path if isinstance(path, str) else path.as_posix()
         err = self.rclone.delete_files(path)
         if isinstance(err, Exception):
             return FileNotFoundError(f"File not found: {path}, because of {err}")
         if isinstance(path, Path):
             path = path.as_posix()
-        # assert isinstance(self.server, HttpServer)
-        # self.server.delete(path)
+
         return None
 
     def get_path(self, path: str) -> "FSPath":
@@ -360,8 +352,7 @@ class FSPath:
 
     def move_to(self, dst: "FSPath") -> None:
         """Move a file or directory."""
-        # assert self.exists(), f"Path does not exist: {self.path}"
-        # assert not dst.exists(), f"Destination path already exists: {dst.path}"
+
         self.fs.copy(self.path, dst.path)
         self.fs.remove(self.path)
 
@@ -372,18 +363,13 @@ class FSPath:
         self_exists = self.exists()
         if not ignore_errors:
             assert self_exists, f"Path does not exist: {self.path}"
-        # check fs is RealFS
-        # assert isinstance(self.fs, RealFS)
-        # shutil.rmtree(self.path, ignore_errors=ignore_errors)
+
         if isinstance(self.fs, RealFS):
             shutil.rmtree(self.path, ignore_errors=ignore_errors)
             return
         assert isinstance(self.fs, RemoteFS)
-        # walk the directory
+
         for root, _, filenames in self.walk():
-            # for dirname in dirnames:
-            #     path = root / dirname
-            #     path.remove()
             for filename in filenames:
                 path = root / filename
                 path.remove()
@@ -429,7 +415,6 @@ class FSPath:
         new_path = Path(self.path) / other
         return FSPath(self.fs, new_path.as_posix())
 
-    # hashable
     def __hash__(self) -> int:
         out = hash(f"{self.fs!r}:{self.path}")
         return out

@@ -23,10 +23,8 @@ def _suffix_clean_bad_parts(suffix: list[str]) -> list[str]:
         if part in ["", ""]:
             continue
         if " " in part:
-            # split on spaces
             continue
         if "--" in part:
-            # split on --
             parts = part.split("--")
             parts = [x.strip() for x in parts if x.strip()]
             out.extend(parts)
@@ -41,7 +39,7 @@ def _suffix_clean_bad_parts(suffix: list[str]) -> list[str]:
 
 
 def _get_suffix(name: str, chop_compressed_suffixes: bool = True) -> str:
-    # name.sql.gz -> sql.gz
+
     try:
         parts = name.split(".")
         if len(parts) == 1:
@@ -59,7 +57,6 @@ def _get_suffix(name: str, chop_compressed_suffixes: bool = True) -> str:
         return suffix
 
 
-# File is too complex, this is a simple dataclass that can be streamed out.
 @dataclass
 class FileItem:
     """Remote file dataclass."""
@@ -128,7 +125,6 @@ class FileItem:
             warnings.warn(f"Invalid JSON data: {data}", stacklevel=2)
             return None
 
-    # hasher for set membership
     def __hash__(self) -> int:
         return hash(self.path_no_remote)
 
@@ -177,7 +173,7 @@ class File:
 
     def to_string(self, include_remote: bool = True) -> str:
         """Convert the File to a string."""
-        # out = str(self.path)
+
         remote = self.path.remote
         rest = self.path.path
         if include_remote:

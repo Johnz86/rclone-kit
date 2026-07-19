@@ -9,10 +9,10 @@ from rclone_kit.process import Process
 
 class DiffType(Enum):
     EQUAL = "="
-    MISSING_ON_SRC = "-"  # means path was missing on the source, so only in the destination
-    MISSING_ON_DST = "+"  # means path was missing on the destination, so only in the source
-    DIFFERENT = "*"  # means path was present in source and destination but different.
-    ERROR = "!"  # means there was an error
+    MISSING_ON_SRC = "-"
+    MISSING_ON_DST = "+"
+    DIFFERENT = "*"
+    ERROR = "!"
 
 
 class DiffOption(Enum):
@@ -49,7 +49,6 @@ class DiffItem:
 
 def _parse_missing_on_src_dst(line: str) -> str | None:
     if line.endswith("does-not-exist"):
-        # 2025/02/17 14:43:38 ERROR : zachs_video/breaking_ai_mind.mp4: file not in S3 bucket rclone-kit-unit-test path does-not-exist
         parts = line.split(" : ", 1)
         if len(parts) < 1:
             return None
@@ -109,16 +108,15 @@ def _async_diff_stream_from_running_process(
                 line_str = line.decode("utf-8").strip()
                 if len(first_few_lines) < n_max:
                     first_few_lines.append(line_str)
-                # _classify_line_type
+
                 diff_item: DiffItem | None = _classify_diff(
                     line_str, src_slug, dst_slug, diff_option
                 )
                 if diff_item is None:
-                    # Some other output that we don't care about, debug print etc.
                     continue
                 output.put(diff_item)
                 count += 1
-                # print(f"unhandled: {line_str}")
+
             except UnicodeDecodeError:
                 print("UnicodeDecodeError")
                 continue
@@ -143,7 +141,6 @@ def diff_stream_from_running_process(
     diff_option: DiffOption,
 ) -> Generator[DiffItem]:
     output: Queue[DiffItem | None] = Queue()
-    # process_output_to_diff_stream(running_process, src_slug, dst_slug, output)
 
     def _task() -> None:
         _async_diff_stream_from_running_process(

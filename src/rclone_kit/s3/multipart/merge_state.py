@@ -58,7 +58,7 @@ class MergeState:
     ) -> None:
         self.rclone_impl: RcloneImpl = rclone_impl
         self.merge_path: str = merge_path
-        self.merge_parts_path: str = f"{merge_path}/merge"  # future use?
+        self.merge_parts_path: str = f"{merge_path}/merge"
         self.upload_id: str = upload_id
         self.bucket: str = bucket
         self.dst_key: str = dst_key

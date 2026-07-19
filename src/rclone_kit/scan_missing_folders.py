@@ -26,7 +26,6 @@ def _reorder_inplace(data: list, order: Order) -> None:
         raise ValueError(f"Invalid order: {order}")
 
 
-# ONLY Works from src -> dst diffing.
 def _async_diff_dir_walk_task(
     src: Dir, dst: Dir, max_depth: int, out_queue: Queue[Dir | None], order: Order
 ) -> None:
@@ -69,14 +68,13 @@ def _async_diff_dir_walk_task(
             while dirlisting := queue_dir_listing.get():
                 if dirlisting is None:
                     break
-                # print(f"dirlisting: {dirlisting}")
+
                 for d in dirlisting.dirs:
                     out_queue.put(d)
         else:
             matching_dirs.append(src_dir)
 
     for matching_dir in matching_dirs:
-        # print(f"matching dir: {matching_dir}")
         if next_depth > 0 or next_depth == -1:
             src_next = src / matching_dir
             dst_next = dst / matching_dir

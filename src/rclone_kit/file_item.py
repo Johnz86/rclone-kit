@@ -10,7 +10,6 @@ def _intern(s: str) -> str:
     return _STRING_INTERNER.setdefault(s, s)
 
 
-# File is too complex, this is a simple dataclass that can be streamed out.
 @dataclass
 class FileItem:
     """Remote file dataclass."""

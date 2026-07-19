@@ -11,7 +11,6 @@ from rclone_kit.s3.multipart.upload_info import UploadInfo
 from rclone_kit.types import EndOfStream, SizeSuffix
 from rclone_kit.util import locked_print
 
-# _MIN_UPLOAD_CHUNK_SIZE = 5 * 1024 * 1024  # 5MB
 _SAVE_STATE_LOCK = Lock()
 
 
@@ -37,7 +36,7 @@ class UploadState:
     def fingerprint(self) -> str:
         return self.upload_info.fingerprint()
 
-    def count(self) -> tuple[int, int]:  # count, num_chunks
+    def count(self) -> tuple[int, int]:
         num_chunks = self.upload_info.total_chunks()
         count = 0
         for p in self.parts:
@@ -65,7 +64,6 @@ class UploadState:
         from rclone_kit.types import get_chunk_tmpdir
 
         if self.peristant is None:
-            # upload_id = self.upload_info.upload_id
             object_name = self.upload_info.object_name
             chunk_size = self.upload_info.chunk_size
             parent = get_chunk_tmpdir()
@@ -88,7 +86,7 @@ class UploadState:
             except Exception as e:
                 locked_print(f"Error loading state: {e}")
                 last_upload_state = None
-            # now check that the fingerprint is the same
+
             if last_upload_state is not None:
                 curr_fingerprint = self.fingerprint()
                 if curr_fingerprint != last_upload_state.fingerprint():
@@ -106,8 +104,7 @@ class UploadState:
             return UploadState.from_json(s3_client, path)
 
     def to_json(self) -> dict:
-        # queue -> list
-        # parts: list[dict] = [f.to_json() for f in self.parts]
+
         parts: list[FinishedPiece | EndOfStream] = list(self.parts)
 
         parts_json = FinishedPiece.to_json_array(parts)
@@ -126,7 +123,6 @@ class UploadState:
         total_finished: SizeSuffix = SizeSuffix(total_finished_size_bytes)
         total_remaining: SizeSuffix = SizeSuffix(file_size_bytes - total_finished_size_bytes)
 
-        # parts.sort(key=lambda x: x.part_number)  # Some backends need this.
         out_json = {
             "upload_info": self.upload_info.to_json(),
             "finished_parts": parts_json,
@@ -139,8 +135,6 @@ class UploadState:
             "completed": f"{(finished_count / total) * 100:.2f}%",
         }
 
-        # check that we can sererialize
-        # json.dumps(out_json)
         return out_json
 
     def to_json_str(self) -> str:

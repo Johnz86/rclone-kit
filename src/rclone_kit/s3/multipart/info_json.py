@@ -29,7 +29,6 @@ def _get_info_json(self: RcloneImpl, src: str | None, src_info: str) -> dict:
     data: dict
     text: str
     if src is None:
-        # just try to load the file
         text_or_err = self.read_text(src_info)
         if isinstance(text_or_err, Exception):
             raise FileNotFoundError(f"Could not load {src_info}: {text_or_err}")
@@ -40,7 +39,6 @@ def _get_info_json(self: RcloneImpl, src: str | None, src_info: str) -> dict:
 
     src_stat: File | Exception = self.stat(src)
     if isinstance(src_stat, Exception):
-        # just try to load the file
         raise FileNotFoundError(f"Failed to stat {src}: {src_stat}")
 
     now: datetime = datetime.now()
@@ -79,7 +77,6 @@ def _get_info_json(self: RcloneImpl, src: str | None, src_info: str) -> dict:
 def _save_info_json(self: RcloneImpl, src: str, data: dict) -> None:
     data = data.copy()
     data["new"] = False
-    # hash
 
     h = hashlib.md5()
     tmp = [
@@ -143,8 +140,7 @@ class InfoJson:
         return os.path.basename(self.dst)
 
     def compute_all_parts(self) -> list[PartInfo] | Exception:
-        # full_part_infos: list[PartInfo] | Exception = PartInfo.split_parts(
-        # src_size, SizeSuffix("96MB")
+
         try:
             src_size = self.size
             chunk_size = self.chunksize
@@ -207,20 +203,21 @@ class InfoJson:
     def size(self) -> SizeSuffix:
         return SizeSuffix(self.data["size"])
 
-    def _get_first_part(self) -> int | None:
+    @property
+    def first_part(self) -> int | None:
         return self.data.get("first_part")
 
-    def _set_first_part(self, value: int) -> None:
+    @first_part.setter
+    def first_part(self, value: int) -> None:
         self.data["first_part"] = value
 
-    def _get_last_part(self) -> int | None:
+    @property
+    def last_part(self) -> int | None:
         return self.data.get("last_part")
 
-    def _set_last_part(self, value: int) -> None:
+    @last_part.setter
+    def last_part(self, value: int) -> None:
         self.data["last_part"] = value
-
-    first_part: int | None = property(_get_first_part, _set_first_part)  # type: ignore
-    last_part: int | None = property(_get_last_part, _set_last_part)  # type: ignore
 
     @property
     def hash(self) -> str | None:

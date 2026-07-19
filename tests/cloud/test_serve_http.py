@@ -25,7 +25,6 @@ _CLEANUP: list[Path] = []
 def _cleanup() -> None:
     for p in _CLEANUP:
         if p.exists():
-            # p.unlink()
             if p.is_dir():
                 shutil.rmtree(p, ignore_errors=True)
             else:
@@ -36,7 +35,7 @@ atexit.register(_cleanup)
 
 
 def _generate_rclone_config() -> Config:
-    # Load environment variables
+
     BUCKET_KEY_SECRET = os.getenv("BUCKET_KEY_SECRET")
     BUCKET_KEY_PUBLIC = os.getenv("BUCKET_KEY_PUBLIC")
     BUCKET_URL = "sfo3.digitaloceanspaces.com"
@@ -95,7 +94,6 @@ class RcloneServeHttpTester(unittest.TestCase):
         except subprocess.CalledProcessError as e:
             self.fail(f"Mount operation failed: {e!s}")
         finally:
-            # Cleanup will happen in tearDown
             pass
 
     def test_list(self) -> None:
@@ -114,7 +112,6 @@ class RcloneServeHttpTester(unittest.TestCase):
         except subprocess.CalledProcessError as e:
             self.fail(f"Mount operation failed: {e!s}")
         finally:
-            # Cleanup will happen in tearDown
             pass
 
     @unittest.skip("Skip for now")
@@ -138,7 +135,6 @@ class RcloneServeHttpTester(unittest.TestCase):
 
                 _CLEANUP.extend([Path("zachs_video"), dst1, dst2])
 
-                # out1 = http_server.copy_chunked(resource_url, dst1).result()
                 start = time.time()
                 out1 = http_server.download(resource_url, dst1)
                 print(f"(1) Time taken: {time.time() - start}")
@@ -156,7 +152,6 @@ class RcloneServeHttpTester(unittest.TestCase):
                 print(f"Size of {dst2}: {dst2.stat().st_size}")
 
                 if s1 != s2:
-                    # find the first index where there is a difference
                     with open(dst1, "rb") as f1, open(dst2, "rb") as f2:
                         bad_index = 0
                         while (chunk1 := f1.read(1)) and (chunk2 := f2.read(1)):
@@ -169,7 +164,6 @@ class RcloneServeHttpTester(unittest.TestCase):
                 self.assertIsInstance(out2, Path)
                 assert isinstance(out2, Path)
 
-                # print(f"Bytes written: {out1.stat().st_size}")
                 print(f"Bytes written: {out2.stat().st_size}")
 
                 hash1 = hash_bytes(dst1)
@@ -184,7 +178,6 @@ class RcloneServeHttpTester(unittest.TestCase):
         except subprocess.CalledProcessError as e:
             self.fail(f"Mount operation failed: {e!s}")
         finally:
-            # Cleanup will happen in tearDown
             pass
 
     @unittest.skip("Skip for now")
@@ -207,7 +200,6 @@ class RcloneServeHttpTester(unittest.TestCase):
                 _CLEANUP.extend([Path("zachs_video"), dst1, dst2])
                 range: Range = Range(0, 1000)
 
-                # out1 = http_server.copy_chunked(resource_url, dst1).result()
                 start = time.time()
                 out1 = http_server.download(resource_url, dst1, range=range)
                 print(f"(1) Time taken: {time.time() - start}")
@@ -225,7 +217,6 @@ class RcloneServeHttpTester(unittest.TestCase):
                 print(f"Size of {dst2}: {dst2.stat().st_size}")
 
                 if s1 != s2:
-                    # find the first index where there is a difference
                     with open(dst1, "rb") as f1, open(dst2, "rb") as f2:
                         bad_index = 0
                         while (chunk1 := f1.read(1)) and (chunk2 := f2.read(1)):
@@ -238,7 +229,6 @@ class RcloneServeHttpTester(unittest.TestCase):
                 self.assertIsInstance(out2, Path)
                 assert isinstance(out2, Path)
 
-                # print(f"Bytes written: {out1.stat().st_size}")
                 print(f"Bytes written: {out2.stat().st_size}")
 
                 def hash_bytes(fp: Path) -> str:
@@ -262,7 +252,6 @@ class RcloneServeHttpTester(unittest.TestCase):
         except subprocess.CalledProcessError as e:
             self.fail(f"Mount operation failed: {e!s}")
         finally:
-            # Cleanup will happen in tearDown
             pass
 
 

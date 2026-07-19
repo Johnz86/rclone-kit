@@ -51,7 +51,7 @@ pass = d4IbQLV9W0JhI2tm5Zp88hpMtEg
 url = http://localhost:{port}
 vendor = rclone
 """
-    # _CONFIG_PATH.write_text(config_text, encoding="utf-8")
+
     return config_text
 
 
@@ -92,7 +92,6 @@ class RcloneCopyResumableFileToS3(unittest.TestCase):
             )
             assert not isinstance(err, Exception)
 
-            # Second time should go fast.
             rclone.copy_file_s3_resumable(
                 src=src_file,
                 dst=dst,

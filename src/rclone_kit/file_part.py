@@ -10,11 +10,11 @@ _TMP_DIR_ACCESS_LOCK = Lock()
 
 
 def _clean_old_files(out: Path) -> None:
-    # clean up files older than 1 day
+
     from rclone_kit.util import locked_print
 
     now = time.time()
-    # Erase all stale files and then purge empty directories.
+
     for root, _dirs, files in os.walk(out):
         for name in files:
             f = Path(root) / name
@@ -37,10 +37,9 @@ def get_chunk_tmpdir() -> Path:
     with _TMP_DIR_ACCESS_LOCK:
         dat = get_chunk_tmpdir.__dict__
         if "out" in dat:
-            return dat["out"]  # Folder already validated.
+            return dat["out"]
         out = Path("chunk_store")
         if out.exists():
-            # first access, clean up directory
             _clean_old_files(out)
         out.mkdir(exist_ok=True, parents=True)
         dat["out"] = out
@@ -89,13 +88,9 @@ def run_debug_parts():
         print("\nAlive file parts:")
         for part in _FILEPARTS:
             print(part)
-            # print(part.stacktrace)
+
         print("\n\n")
         time.sleep(60)
-
-
-# dbg_thread = threading.Thread(target=run_debug_parts)
-# dbg_thread.start()
 
 
 class FilePart:
@@ -107,7 +102,7 @@ class FilePart:
         stacktrace = traceback.format_stack()
         stacktrace_str = "".join(stacktrace)
         self.stacktrace = stacktrace_str
-        # _FILEPARTS.append(self)
+
         _add_filepart(self)
 
         self.extra = extra
@@ -165,7 +160,7 @@ class FilePart:
         return isinstance(self.payload, Exception)
 
     def dispose(self) -> None:
-        # _FILEPARTS.remove(self)
+
         _remove_filepart(self)
         print("Disposing file part")
         with self._lock:

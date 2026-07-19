@@ -9,7 +9,7 @@ from rclone_kit.file_part import FilePart
 
 
 class S3Provider(Enum):
-    S3 = "s3"  # generic S3
+    S3 = "s3"
     BACKBLAZE = "b2"
     DIGITAL_OCEAN = "DigitalOcean"
 
@@ -56,9 +56,7 @@ class S3MutliPartUploadConfig:
     resume_path_json: Path
     max_write_threads: int
     max_chunks_before_suspension: int | None = None
-    mount_path: Path | None = (
-        None  # If set this will be used to mount the src file, otherwise it's one is chosen automatically
-    )
+    mount_path: Path | None = None
 
 
 class MultiUploadResult(Enum):

@@ -28,7 +28,7 @@ class _ShouldStopChecker:
                 f"Stopping file chunker after {self.count} chunks because it exceeded max_chunks {self.max_chunks}"
             )
             return True
-        # self.count += 1
+
         return False
 
     def increment(self):
@@ -37,7 +37,7 @@ class _ShouldStopChecker:
 
 class _PartNumberTracker:
     def __init__(self, start_part_value: int, last_part_value: int, done_parts: set[int]) -> None:
-        # self._num_parts = (last_part_value - start_part_value) + 1
+
         self._start_part_value = start_part_value
         self._last_part_value = last_part_value
         self._done_part_numbers: set[int] = done_parts
@@ -53,7 +53,7 @@ class _PartNumberTracker:
                 self._finished = True
                 return None
             curr_part_number = self._curr_part_number
-            self._curr_part_number += 1  # prevent a second thread from getting the same part number
+            self._curr_part_number += 1
             return curr_part_number
 
     def is_finished(self) -> bool:
@@ -94,11 +94,7 @@ class _OnCompleteHandler:
             logger.warning(f"Error reading file because of error: {fp.payload}")
             return
 
-        # done_part_numbers.add(part_number)
-        # queue_upload.put(fp)
-        self.part_number_tracker.add_finished_part_number(
-            part_number
-        )  # in memory database, not persistant to resume.json
+        self.part_number_tracker.add_finished_part_number(part_number)
         self.queue_upload.put(fp)
 
 
@@ -155,7 +151,7 @@ def file_chunker(
                 logger.error(
                     f"Empty data for part {curr_part_number} of {file_path}, is this the last chunk?"
                 )
-                # assert final_part_number == curr_part_number, f"Final part number is {final_part_number} but current part number is {curr_part_number}"
+
                 if final_part_number != curr_part_number:
                     raise ValueError(
                         f"This should have been the last part, but it is not: {final_part_number} != {curr_part_number}"
@@ -168,7 +164,7 @@ def file_chunker(
             )
             fut = fetcher(offset, fetch_size, S3FileInfo(upload_info.upload_id, curr_part_number))
             fut.add_done_callback(callback.on_complete)
-            # wait until the queue_upload queue can accept the next chunk
+
             qsize = queue_upload.qsize()
             print(f"queue_upload_size: {qsize}")
             while queue_upload.full():

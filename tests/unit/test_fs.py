@@ -29,15 +29,12 @@ class RcloneFSTester(unittest.TestCase):
         with TemporaryDirectory() as temp_dir:
             path = Path(temp_dir)
 
-            # create sub directories
             (path / "sub1").mkdir()
             (path / "sub2").mkdir()
 
-            # create files
             (path / "file1.txt").touch()
             (path / "file2.txt").touch()
 
-            # create sub files in sub1
             (path / "sub1" / "subfile1.txt").touch()
 
             cwd = RealFS.from_path(path)

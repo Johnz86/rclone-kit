@@ -7,7 +7,7 @@ or a bare `RcloneImpl` instance with a monkeypatched `config_paths` method.
 
 import subprocess
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -19,9 +19,16 @@ from rclone_kit.rclone_impl import _parse_paths as parse_all_config_paths
 
 def _make_bare_rclone_impl(config_paths_result: Any) -> RcloneImpl:
     instance = object.__new__(RcloneImpl)
-    instance.config_paths = (  # type: ignore[method-assign]
-        lambda _remote=None, _obscure=False, _no_obscure=False: config_paths_result
-    )
+
+    def config_paths(
+        remote: str | None = None,
+        obscure: bool = False,
+        no_obscure: bool = False,
+    ) -> Any:
+        del remote, obscure, no_obscure
+        return config_paths_result
+
+    instance.config_paths = config_paths
     return instance
 
 
@@ -77,7 +84,7 @@ def test_rejects_wrong_typed_rclone_argument(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.delenv("RCLONE_CONFIG", raising=False)
 
     with pytest.raises(TypeError):
-        find_conf_file(rclone="not-an-rclone-instance")  # type: ignore[arg-type]
+        find_conf_file(rclone=cast(Any, "not-an-rclone-instance"))
 
 
 def test_parse_config_paths_output_extracts_only_config_file_line() -> None:
@@ -113,16 +120,16 @@ def test_config_show_executes_show_command() -> None:
     commands: list[list[str]] = []
 
     def run(
-        command: list[str],
-        capture: bool,
-        check: bool,
+        cmd: list[str],
+        check: bool = False,
+        capture: bool | Path | None = None,
     ) -> subprocess.CompletedProcess[str]:
         assert capture is True
         assert check is True
-        commands.append(command)
-        return subprocess.CompletedProcess(command, 0, stdout="[remote]\ntype = s3\n", stderr="")
+        commands.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout="[remote]\ntype = s3\n", stderr="")
 
-    rclone_impl._run = run  # type: ignore[method-assign]
+    rclone_impl._run = run
 
     result = rclone_impl.config_show(remote="remote", obscure=True)
 

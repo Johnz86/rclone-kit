@@ -15,6 +15,7 @@ import pytest
 
 from rclone_kit import http_server as http_server_module
 from rclone_kit.http_server import FileList, HttpServer, _parse_files_and_dirs
+from rclone_kit.process import Process
 from rclone_kit.types import Range
 
 _TABLE_HEADER = """
@@ -32,6 +33,10 @@ _TABLE_FOOTER = """
 
 def _row(name: str) -> str:
     return f'<tr class="file"><td><span class="name"><a href="{name}">{name}</a></span></td></tr>'
+
+
+def _stub_process() -> Process:
+    return object.__new__(Process)
 
 
 @dataclass(frozen=True)
@@ -98,7 +103,7 @@ def test_parse_files_and_dirs(case: ParseCase) -> None:
 
 
 def test_file_url_escapes_remote_path_without_platform_conversion() -> None:
-    server = HttpServer("http://localhost:8080/", "", process=object())  # type: ignore[arg-type]
+    server = HttpServer("http://localhost:8080/", "", process=_stub_process())
 
     assert (
         server._get_file_url("folder/a file #1.txt")
@@ -107,7 +112,7 @@ def test_file_url_escapes_remote_path_without_platform_conversion() -> None:
 
 
 def test_get_returns_download_failure(monkeypatch: pytest.MonkeyPatch) -> None:
-    server = HttpServer("http://localhost:8080", "", process=object())  # type: ignore[arg-type]
+    server = HttpServer("http://localhost:8080", "", process=_stub_process())
     failure = OSError("download failed")
     monkeypatch.setattr(server, "download", lambda *_args, **_kwargs: failure)
 
@@ -137,7 +142,7 @@ class _ShortRangeResponse:
 def test_download_rejects_short_ranged_response(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    server = HttpServer("http://localhost:8080", "", process=object())  # type: ignore[arg-type]
+    server = HttpServer("http://localhost:8080", "", process=_stub_process())
     destination = tmp_path / "download"
     monkeypatch.setattr(
         http_server_module.httpx,
@@ -155,7 +160,7 @@ def test_download_rejects_short_ranged_response(
 
 
 def test_download_after_shutdown_returns_failure(tmp_path: Path) -> None:
-    server = HttpServer("http://localhost:8080", "", process=object())  # type: ignore[arg-type]
+    server = HttpServer("http://localhost:8080", "", process=_stub_process())
     server.process = None
 
     result = server.download("file.bin", tmp_path / "download")

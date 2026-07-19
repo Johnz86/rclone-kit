@@ -2,10 +2,21 @@ import argparse
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Protocol
 
 from rclone_kit import Rclone
 from rclone_kit.env_file import load_env_file
 from rclone_kit.util import register_signal_cleanup
+
+
+class SavesToDatabase(Protocol):
+    def save_to_db(
+        self,
+        src: str,
+        db_url: str,
+        max_depth: int = -1,
+        fast_list: bool = False,
+    ) -> None: ...
 
 
 def _db_url_from_env_or_raise() -> str:
@@ -28,7 +39,7 @@ class Args:
             raise FileNotFoundError(f"Config file not found: {self.config}")
 
 
-def fill_db(rclone: Rclone, path: str, db_url: str, fast_list: bool) -> None:
+def fill_db(rclone: SavesToDatabase, path: str, db_url: str, fast_list: bool) -> None:
     """List files in a remote path."""
     rclone.save_to_db(src=path, db_url=db_url, fast_list=fast_list)
 

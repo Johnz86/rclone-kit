@@ -26,7 +26,7 @@ def _log(msg: str) -> None:
         log_path = Path("log") / "s3_resumable_upload.log"
         with _LOCK:
             log_path.parent.mkdir(parents=True, exist_ok=True)
-            # log_path.write_text(msg, append=True)
+
             with open(log_path, mode="a", encoding="utf-8") as f:
                 f.write(msg)
                 f.write("\n")
@@ -37,7 +37,7 @@ def _log_completed_item(msg: str) -> None:
         log_path = Path("log") / "s3_resumable_upload_completed.log"
         with _LOCK:
             log_path.parent.mkdir(parents=True, exist_ok=True)
-            # log_path.write_text(msg, append=True)
+
             with open(log_path, mode="a", encoding="utf-8") as f:
                 f.write(msg)
                 f.write("\n")
@@ -73,7 +73,7 @@ def upload_task(self: RcloneImpl, upload_part: UploadPart) -> UploadPart:
     try:
         if upload_part.exception is not None:
             return upload_part
-        # print(f"Uploading {upload_part.chunk} to {upload_part.dst_part}")
+
         num_parts = upload_part.total_parts
         total_size = upload_part.total_size
         part_num = upload_part.part_num
@@ -160,10 +160,8 @@ def collapse_runs(numbers: list[int]) -> list[str]:
 
     for num in numbers[1:]:
         if num == prev + 1:
-            # Continue current run
             prev = num
         else:
-            # End current run
             if start == prev:
                 runs.append(str(start))
             else:
@@ -171,7 +169,6 @@ def collapse_runs(numbers: list[int]) -> list[str]:
             start = num
             prev = num
 
-    # Append the final run
     if start == prev:
         runs.append(str(start))
     else:
@@ -197,8 +194,8 @@ def _check_part_size(parts: list[PartInfo]) -> Exception | None:
 
 def upload_parts_resumable(
     self: RcloneImpl,
-    src: str,  # src:/Bucket/path/myfile.large.zst
-    dst_dir: str,  # dst:/Bucket/path/myfile.large.zst-parts/
+    src: str,
+    dst_dir: str,
     part_infos: list[PartInfo] | None = None,
     threads: int = 1,
     verbose: bool | None = None,
@@ -243,7 +240,6 @@ def upload_parts_resumable(
 
     if not info_json.load():
         verbose_print(f"New: {src_info_json}")
-        # info_json.save()
 
     all_numbers_already_done: set[int] = set(info_json.fetch_all_finished_part_numbers())
 
@@ -273,7 +269,6 @@ def upload_parts_resumable(
     info_json.last_part = last_part_number
     info_json.save()
 
-    # We are now validated
     info_json.load()
     info_json.print()
 
@@ -323,7 +318,6 @@ def upload_parts_resumable(
 
                 read_fut: Future[UploadPart] = read_executor.submit(_read_task)
 
-                # Releases the semaphore when the write task is done
                 def queue_upload_task(
                     read_fut=read_fut,
                 ) -> None:
@@ -331,13 +325,12 @@ def upload_parts_resumable(
                     upload_fut: Future[UploadPart] = upload_executor.submit(
                         upload_task, self, upload_part
                     )
-                    # SEMAPHORE RELEASE!!!
+
                     upload_fut.add_done_callback(lambda _: write_semaphore.release())
                     upload_fut.add_done_callback(lambda fut: finished_tasks.append(fut.result()))
 
                 read_fut.add_done_callback(queue_upload_task)
-                # SEMAPHORE ACQUIRE!!!
-                # If we are back filled on the writers, then we stall.
+
                 write_semaphore.acquire()
 
     exceptions: list[Exception] = [t.exception for t in finished_tasks if t.exception is not None]
@@ -354,8 +347,7 @@ def upload_parts_resumable(
 
     diff_set = set(all_part_numbers).symmetric_difference(set(finished_parts))
     all_part_numbers_done = len(diff_set) == 0
-    # print(f"all_part_numbers_done: {all_part_numbers_done}")
-    # msg = f"all_part_numbers_done: {all_part_numbers_done}"
+
     full_path = os.path.join(dst_dir, src_name)
     if all_part_numbers_done:
         msg = f"Upload completed: {full_path} ({len(finished_parts)}/{len(all_part_numbers)})"

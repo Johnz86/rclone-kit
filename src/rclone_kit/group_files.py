@@ -90,11 +90,10 @@ class TreeNode:
         return paths
 
     def __repr__(self, indent: int = 0) -> str:
-        # return f"{self.name}: {self.count}, {len(self.children)}"
+
         leftpad = " " * indent
         msg = f"{leftpad}{self.name}: {self.count}"
         if self.child_nodes:
-            # msg += f"\n   {len(self.children)} children"
             msg += "\n"
             for child in self.child_nodes.values():
                 if isinstance(child, TreeNode):
@@ -107,9 +106,8 @@ class TreeNode:
 def _merge(node: TreeNode, parent_path: str, out: dict[str, list[str]]) -> None:
     parent_path = parent_path + "/" + node.name
     if not node.child_nodes and not node.files:
-        return  # done
+        return
     if node.files:
-        # we saw files, to don't try to go any deeper.
         filelist = out.setdefault(parent_path, [])
         paths = node.get_child_subpaths()
         for path in paths:
@@ -155,10 +153,9 @@ def _make_tree(files: list[str]) -> dict[str, TreeNode]:
 def _fixup_rclone_paths(outpaths: dict[str, list[str]]) -> dict[str, list[str]]:
     out: dict[str, list[str]] = {}
     for path, files in outpaths.items():
-        # fixup path
         assert path.startswith("/"), "Path should start with /"
         fixed_path = path[1:]
-        # replace the first / with :
+
         fixed_path = fixed_path.replace("/", ":", 1)
         out[fixed_path] = files
     return out

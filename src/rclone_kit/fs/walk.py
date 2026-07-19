@@ -6,7 +6,7 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from rclone_kit.fs.filesystem import FSPath, logger
 
 _FS_WALK_THREAD_MAX_BACKLOG = int(os.getenv("FS_WALK_THREAD_MAX_BACKLOG", "16"))
-# module-wide executor
+
 _executor = ThreadPoolExecutor(max_workers=_FS_WALK_THREAD_MAX_BACKLOG)
 
 
@@ -29,29 +29,25 @@ def fs_walk_parallel(
     """
     root = self
 
-    # use an OrderedDict to remember submission order
     futures: OrderedDict = OrderedDict()
-    # submit the root first
+
     futures[_executor.submit(_list_dir, root)] = root
 
     while futures:
-        # wait until at least one of them finishes
         done, _ = wait(futures.keys(), return_when=FIRST_COMPLETED)
 
-        # iterate through our futures *in submission order*
         for fut in list(futures.keys()):
             if fut not in done:
                 continue
 
-            _ = futures.pop(fut)  # remove it in order
+            _ = futures.pop(fut)
             result = fut.result()
             if result is None:
-                continue  # error already logged
+                continue
 
             current_dir, dirnames, filenames = result
             yield current_dir, dirnames, filenames
 
-            # now schedule its children (they go at the end of our OrderedDict)
             for dirname in dirnames:
                 sub = current_dir / dirname
                 futures[_executor.submit(_list_dir, sub)] = sub

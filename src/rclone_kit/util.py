@@ -21,8 +21,6 @@ from rclone_kit.rpath import RPath
 from rclone_kit.runtime.rclone_binary import resolve_rclone_executable
 from rclone_kit.types import S3PathInfo
 
-# from .rclone import Rclone
-
 _PRINT_LOCK = Lock()
 
 _TMP_CONFIG_DIR_PREFIX = "rclone-kit-config-"
@@ -172,10 +170,8 @@ def to_path(item: Dir | Remote | str, rclone: Any) -> RPath:
     from rclone_kit.rclone_impl import RcloneImpl
 
     assert isinstance(rclone, RcloneImpl)
-    # if str then it will be remote:path
+
     if isinstance(item, str):
-        # return RPath(item)
-        # remote_name: str = item.split(":")[0]
         parts = item.split(":")
         remote_name = parts[0]
         path = ":".join(parts[1:])
@@ -212,14 +208,14 @@ def to_path(item: Dir | Remote | str, rclone: Any) -> RPath:
 def get_verbose(verbose: bool | None) -> bool:
     if verbose is not None:
         return verbose
-    # get it from the environment
+
     return bool(int(os.getenv("RCLONE_KIT_VERBOSE", "0")))
 
 
 def get_check(check: bool | None) -> bool:
     if check is not None:
         return check
-    # get it from the environment
+
     return bool(int(os.getenv("RCLONE_KIT_CHECK", "1")))
 
 
@@ -281,17 +277,15 @@ def rclone_execute(
     tmpfile: Path | None = None
     verbose = get_verbose(verbose)
 
-    # Handle the Path case for capture.
     output_file: Path | None = None
     if isinstance(capture, Path):
         output_file = capture
-        capture = False  # When redirecting to file, don't capture to memory.
+        capture = False
     else:
         capture = capture if isinstance(capture, bool) else True
 
     file_handle = None
     try:
-        # Create a temporary config file if needed.
         if isinstance(rclone_conf, Config):
             tmpfile = make_temp_config_file()
             tmpfile.write_text(rclone_conf.text, encoding="utf-8")
@@ -305,27 +299,19 @@ def rclone_execute(
             cmd_str = format_command(full_cmd)
             print(f"\nRunning: {cmd_str}")
 
-        # Prepare subprocess parameters.
         proc_kwargs: dict[str, Any] = {
             "encoding": "utf-8",
             "shell": False,
             "stderr": subprocess.PIPE,
         }
         if output_file:
-            # The handle must outlive this `if` block for the lifetime of the
-            # subprocess, so it cannot be scoped to a `with` statement here;
-            # the outer `finally` below closes it deterministically on every
-            # exit path, including an exception raised by `Popen` itself.
             file_handle = output_file.open("w", encoding="utf-8")
             proc_kwargs["stdout"] = file_handle
         else:
             proc_kwargs["stdout"] = subprocess.PIPE if capture else None
 
-        # Start the process.
         process = subprocess.Popen(full_cmd, **proc_kwargs)
 
-        # Register an atexit callback that kills the process tree if the
-        # interpreter exits while `process` is still running.
         proc_ref = weakref.ref(process)
 
         def cleanup() -> None:
@@ -336,7 +322,6 @@ def rclone_execute(
 
         atexit.register(cleanup)
 
-        # Wait for the process to complete.
         out, err = process.communicate()
 
         cp: subprocess.CompletedProcess = subprocess.CompletedProcess(
@@ -346,7 +331,6 @@ def rclone_execute(
             stderr=err,
         )
 
-        # Warn or raise if return code is non-zero.
         if cp.returncode != 0:
             cmd_str = format_command(full_cmd)
             warnings.warn(

@@ -45,7 +45,7 @@ class RcloneSizeFilesTester(unittest.TestCase):
 
     def test_size(self) -> None:
         rclone = Rclone(_generate_rclone_config())
-        # rclone.walk
+
         dirlisting: DirListing
         is_first = True
         files: list[str] = []

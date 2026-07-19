@@ -58,8 +58,7 @@ def walk_runner_depth_first(
             if order == Order.RANDOM:
                 random.shuffle(dirlisting.dirs)
             if depth != 0:
-                for subdir in dirlisting.dirs:  # Process deeper directories first
-                    # stack.append((child, depth - 1 if depth > 0 else depth))
+                for subdir in dirlisting.dirs:
                     next_depth = depth - 1 if depth > 0 else depth
                     walk_runner_depth_first(subdir, next_depth, out_queue, order=order)
             out_queue.put(dirlisting)
@@ -87,7 +86,6 @@ def walk(
         DirListing: Directory listing for each directory encountered
     """
     try:
-        # Convert Remote to Dir if needed
         if isinstance(dir, Remote):
             dir = Dir(dir)
         out_queue: Queue[DirListing | None] = Queue(maxsize=_MAX_OUT_QUEUE_SIZE)
@@ -98,7 +96,6 @@ def walk(
             else:
                 walk_runner_depth_first(dir, max_depth, out_queue, order)
 
-        # Start worker thread
         worker = Thread(
             target=_task,
             daemon=True,

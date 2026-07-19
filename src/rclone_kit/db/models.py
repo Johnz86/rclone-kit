@@ -3,21 +3,20 @@ Database models for rclone_kit.
 """
 
 from abc import ABC, abstractmethod
+from typing import Any, cast
 
 from sqlalchemy import BigInteger, Column
 from sqlmodel import Field, SQLModel
 
 
-# Meta table that indexes all repositories
 class RepositoryMeta(SQLModel, table=True):
     """Repository metadata table."""
 
     id: int | None = Field(default=None, primary_key=True)
     repo_name: str
-    file_table_name: str  # The dedicated table name for file entries
+    file_table_name: str
 
 
-# Base FileEntry model that will be extended
 class FileEntry(SQLModel, ABC):
     """Base file entry model with common fields."""
 
@@ -35,7 +34,6 @@ class FileEntry(SQLModel, ABC):
         """Return the table name for this file entry model."""
 
 
-# Factory to dynamically create a FileEntry model with a given table name
 def create_file_entry_model(_table_name: str) -> type[FileEntry]:
     """Create a file entry model with a given table name.
 
@@ -47,7 +45,7 @@ def create_file_entry_model(_table_name: str) -> type[FileEntry]:
     """
 
     class FileEntryConcrete(FileEntry, table=True):
-        __tablename__ = _table_name  # type: ignore # dynamically set table name
+        __tablename__ = cast(Any, _table_name)
 
         def table_name(self) -> str:
             return _table_name

@@ -10,8 +10,7 @@ class FinishedPiece:
     etag: str
 
     def to_json(self) -> dict:
-        # return {"part_number": self.part_number, "etag": self.etag}
-        # amazon s3 style dict
+
         tag = self.etag
         if not tag.startswith('"'):
             tag = f'"{tag}"'
@@ -28,13 +27,12 @@ class FinishedPiece:
     ) -> list[dict]:
         non_none: list[FinishedPiece] = [p for p in parts if not isinstance(p, EndOfStream)]
         non_none.sort(key=lambda x: x.part_number)
-        # all_nones: list[None] = [None for p in parts if p is None]
-        # assert len(all_nones) <= 1, "Only one None should be present"
+
         count_eos = 0
         for p in parts:
             if p is EndOfStream:
                 count_eos += 1
-        # assert count_eos <= 1, "Only one EndOfStream should be present"
+
         if count_eos > 1:
             warnings.warn(
                 f"Only one EndOfStream should be present, found {count_eos}", stacklevel=2
@@ -49,7 +47,7 @@ class FinishedPiece:
         part_number = json.get("PartNumber") or json.get("part_number")
         etag = json.get("ETag") or json.get("etag")
         assert isinstance(etag, str)
-        # handle the double quotes around the etag
+
         etag = etag.replace('"', "")
         assert isinstance(part_number, int)
         assert isinstance(etag, str)

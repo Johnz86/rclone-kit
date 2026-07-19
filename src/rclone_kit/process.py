@@ -37,15 +37,14 @@ class Process:
         self.tempfile: Path | None = None
         rclone_conf: Path | None = None
         verbose = get_verbose(args.verbose)
-        # Create a temporary config file if needed.
+
         if isinstance(args.rclone_conf, Config):
             self.tempfile = make_temp_config_file()
             self.tempfile.write_text(args.rclone_conf.text, encoding="utf-8")
             rclone_conf = self.tempfile
         else:
             rclone_conf = args.rclone_conf
-        # assert rclone_conf.exists(), f"rclone config not found: {rclone_conf}"
-        # Build the command.
+
         self.cmd = [str(args.rclone_exe.resolve())]
         if rclone_conf:
             self.cmd += ["--config", str(rclone_conf.resolve())]
@@ -61,9 +60,8 @@ class Process:
             kwargs["stdout"] = subprocess.PIPE
             kwargs["stderr"] = subprocess.STDOUT
 
-        self.process = subprocess.Popen(self.cmd, **kwargs)  # type: ignore
+        self.process = subprocess.Popen(self.cmd, **kwargs)
 
-        # Register an atexit callback using a weak reference to avoid keeping the Process instance alive.
         self_ref = weakref.ref(self)
 
         def exit_cleanup():
@@ -105,7 +103,7 @@ class Process:
         This method is registered via atexit and uses psutil to clean up the process tree.
         It runs in a daemon thread so that termination happens without blocking interpreter shutdown.
         """
-        if self.process.poll() is None:  # Process is still running.
+        if self.process.poll() is None:
 
             def terminate_sequence():
                 self._kill_process_tree()

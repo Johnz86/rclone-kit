@@ -29,13 +29,13 @@ class UploadInfo:
         self._total_chunks = self.total_chunks()
 
     def fingerprint(self) -> str:
-        # hash the attributes that are used to identify the upload
+
         hasher = hashlib.sha256()
-        # first is file size
+
         hasher.update(str(self.file_size).encode("utf-8"))
-        # next is chunk size
+
         hasher.update(str(self.chunk_size).encode("utf-8"))
-        # next is the number of parts
+
         hasher.update(str(self._total_chunks).encode("utf-8"))
         return hasher.hexdigest()
 
@@ -43,7 +43,7 @@ class UploadInfo:
         json_dict = {}
         for f in fields(self):
             value = getattr(self, f.name)
-            # Convert non-serializable objects (like s3_client) to a string representation.
+
             if f.name == "s3_client":
                 continue
             else:
@@ -55,7 +55,7 @@ class UploadInfo:
 
     @staticmethod
     def from_json(s3_client: BaseClient, json_dict: dict) -> "UploadInfo":
-        # json_dict.pop("s3_client")  # Remove the placeholder string
+
         if "s3_client" in json_dict:
             json_dict.pop("s3_client")
 

@@ -22,7 +22,7 @@ from rclone_kit.s3.types import MultiUploadResult
 from rclone_kit.types import EndOfStream
 from rclone_kit.util import locked_print
 
-_MIN_UPLOAD_CHUNK_SIZE = 5 * 1024 * 1024  # 5MB
+_MIN_UPLOAD_CHUNK_SIZE = 5 * 1024 * 1024
 
 
 def upload_task(
@@ -36,7 +36,7 @@ def upload_task(
         raise file_or_err
     file: Path = file_or_err
     size = os.path.getsize(file)
-    retries = retries + 1  # Add one for the initial attempt
+    retries = retries + 1
     for retry in range(retries):
         try:
             if retry > 0:
@@ -105,7 +105,6 @@ def prepare_upload_file_multipart(
 ) -> UploadInfo:
     """Upload a file to the bucket using multipart upload with customizable chunk size."""
 
-    # Initiate multipart upload
     locked_print(f"Creating multipart upload for {file_path} to {bucket_name}/{object_name}")
     mpu = s3_client.create_multipart_upload(Bucket=bucket_name, Key=object_name)
     upload_id = mpu["UploadId"]
@@ -144,7 +143,7 @@ def upload_runner(
     queue_upload: Queue[FilePart | EndOfStream],
     cancel_chunker_event: Event,
 ) -> None:
-    # import semaphre
+
     import threading
 
     semaphore = threading.Semaphore(upload_threads)
@@ -168,7 +167,7 @@ def upload_runner(
                     if isinstance(result, Exception):
                         warnings.warn(f"Error uploading part: {result}, skipping", stacklevel=2)
                         return
-                    # upload_state.finished_parts.put(result)
+
                     upload_state.add_finished(result)
 
                 fut.add_done_callback(done_cb)
@@ -186,7 +185,7 @@ def upload_file_multipart(
     file_size: int | None,
     object_name: str,
     resumable_info_path: Path | None,
-    chunk_size: int = 16 * 1024 * 1024,  # Default chunk size is 16MB; can be overridden
+    chunk_size: int = 16 * 1024 * 1024,
     upload_threads: int = 16,
     retries: int = 20,
     max_chunks_before_suspension: int | None = None,
@@ -236,7 +235,7 @@ def upload_file_multipart(
 
     if loaded_state is None:
         upload_state = new_state
-    # if the file size has changed, we cannot resume
+
     elif loaded_state.upload_info.fingerprint() != new_state.upload_info.fingerprint():
         locked_print(f"Cannot resume upload: file size changed, starting over for {file_path}")
         _abort_previous_upload(loaded_state)
@@ -297,7 +296,7 @@ def upload_file_multipart(
             queue_upload=queue_upload,
             cancel_chunker_event=cancel_chunker_event,
         )
-        # upload_state.finished_parts.put(None)  # Signal the end of the queue
+
         upload_state.add_finished(EndOfStream())
         thread_chunker.join()
 
@@ -306,8 +305,7 @@ def upload_file_multipart(
         if not upload_state.is_done():
             upload_state.save()
             return MultiUploadResult.SUSPENDED
-        ######################## COMPLETE UPLOAD #######################
-        # Final part now is to complete the upload
+
         msg = "\n########################################"
         msg += f"# Upload complete, sorting {len(upload_state.parts)} parts to complete upload"
         msg += "########################################\n"
@@ -316,7 +314,7 @@ def upload_file_multipart(
             p for p in upload_state.parts if not isinstance(p, EndOfStream)
         ]
         locked_print(f"Upload complete, sorting {len(parts)} parts to complete upload")
-        parts.sort(key=lambda x: x.part_number)  # Some backends need this.
+        parts.sort(key=lambda x: x.part_number)
         parts_s3: list[dict] = [{"ETag": p.etag, "PartNumber": p.part_number} for p in parts]
         locked_print(f"Sending multi part completion message for {file_path}")
         s3_client.complete_multipart_upload(

@@ -81,14 +81,13 @@ def _to_size_suffix(size: int) -> str:
 
     val, unit = _convert(size)
     out = _fmt(val, unit)
-    # Now round trip the value to fix floating point issues via rounding.
+
     int_val = _from_size_suffix(out)
     val, unit = _convert(int_val)
     out = _fmt(val, unit)
     return out
 
 
-# Update regex to allow decimals (e.g., 16.5MB)
 _PATTERN_SIZE_SUFFIX = re.compile(r"^(\d+(?:\.\d+)?)([A-Za-z]+)$")
 
 
@@ -107,7 +106,7 @@ def _from_size_suffix(size: str) -> int:
         raise ValueError(f"Invalid size suffix: {size}")
     num_str, suffix = pair
     n = float(num_str)
-    # Determine the unit from the first letter (e.g., "M" from "MB")
+
     unit = suffix[0].upper()
     if unit == "B":
         return int(n)
@@ -167,7 +166,6 @@ class SizeSuffix:
         other_int = SizeSuffix(other)
         return SizeSuffix(self._size * other_int._size)
 
-    # multiply when int is on the left
     def __rmul__(self, other: "int | SizeSuffix") -> "SizeSuffix":
         return self.__mul__(other)
 
@@ -190,29 +188,28 @@ class SizeSuffix:
         other_int = SizeSuffix(other)
         if other_int._size == 0:
             raise ZeroDivisionError("Division by zero is undefined")
-        # Use floor division to maintain integer arithmetic.
+
         return SizeSuffix(self._size // other_int._size)
 
     def __rtruediv__(self, other: "int | SizeSuffix") -> "SizeSuffix":
         other_int = SizeSuffix(other)
         if self._size == 0:
             raise ZeroDivisionError("Division by zero is undefined")
-        # Use floor division to maintain integer arithmetic.
+
         return SizeSuffix(other_int._size // self._size)
 
-    # support / division
     def __floordiv__(self, other: "int | SizeSuffix") -> "SizeSuffix":
         other_int = SizeSuffix(other)
         if other_int._size == 0:
             raise ZeroDivisionError("Division by zero is undefined")
-        # Use floor division to maintain integer arithmetic.
+
         return SizeSuffix(self._size // other_int._size)
 
     def __rfloordiv__(self, other: "int | SizeSuffix") -> "SizeSuffix":
         other_int = SizeSuffix(other)
         if self._size == 0:
             raise ZeroDivisionError("Division by zero is undefined")
-        # Use floor division to maintain integer arithmetic.
+
         return SizeSuffix(other_int._size // self._size)
 
     def __eq__(self, other: object) -> bool:
@@ -224,9 +221,7 @@ class SizeSuffix:
         return not self.__eq__(other)
 
     def __lt__(self, other: "int | SizeSuffix") -> bool:
-        # if not isinstance(other, SizeSuffix):
-        #     return False
-        # return self._size < other._size
+
         return self._size < SizeSuffix(other)._size
 
     def __le__(self, other: "int | SizeSuffix") -> bool:
@@ -255,11 +250,11 @@ _TMP_DIR_ACCESS_LOCK = Lock()
 
 
 def _clean_old_files(out: Path) -> None:
-    # clean up files older than 1 day
+
     from rclone_kit.util import locked_print
 
     now = time.time()
-    # Erase all stale files and then purge empty directories.
+
     for root, _dirs, files in os.walk(out):
         for name in files:
             f = Path(root) / name
@@ -282,10 +277,9 @@ def get_chunk_tmpdir() -> Path:
     with _TMP_DIR_ACCESS_LOCK:
         dat = get_chunk_tmpdir.__dict__
         if "out" in dat:
-            return dat["out"]  # Folder already validated.
+            return dat["out"]
         out = Path("chunk_store")
         if out.exists():
-            # first access, clean up directory
             _clean_old_files(out)
         out.mkdir(exist_ok=True, parents=True)
         dat["out"] = out

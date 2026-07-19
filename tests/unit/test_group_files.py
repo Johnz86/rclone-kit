@@ -24,7 +24,7 @@ class GroupFilestest(unittest.TestCase):
         ]
         groups: dict[str, list[str]] = group_files(files)
         self.assertEqual(len(groups), 1)
-        # Bucket/subdir should be the key
+
         self.assertIn("Bucket/subdir", groups)
         self.assertEqual(len(groups["Bucket/subdir"]), 2)
         expected_files = [
@@ -42,7 +42,7 @@ class GroupFilestest(unittest.TestCase):
         ]
         groups: dict[str, list[str]] = group_files(files)
         self.assertEqual(len(groups), 1)
-        # Bucket/subdir should be the key
+
         self.assertIn("", groups)
         self.assertEqual(len(groups[""]), 2)
         expected_files = [
@@ -60,14 +60,14 @@ class GroupFilestest(unittest.TestCase):
         ]
         groups: dict[str, list[str]] = group_files(files)
         self.assertEqual(len(groups), 2)
-        # Bucket/subdir should be the key
+
         self.assertIn("Bucket/subdir", groups)
         self.assertEqual(len(groups["Bucket/subdir"]), 1)
         expected_files = [
             "file1.txt",
         ]
         self.assertIn(expected_files[0], groups["Bucket/subdir"])
-        # Bucket/subdir2 should be the key
+
         self.assertIn("Bucket/subdir2", groups)
         self.assertEqual(len(groups["Bucket/subdir2"]), 1)
 
@@ -81,7 +81,7 @@ class GroupFilestest(unittest.TestCase):
 
         groups: dict[str, list[str]] = group_files(files)
         self.assertEqual(len(groups), 2)
-        # Bucket/subdir should be the key
+
         self.assertIn("Bucket/subdir", groups)
         self.assertEqual(len(groups["Bucket/subdir"]), 2)
         expected_files = [
@@ -90,7 +90,7 @@ class GroupFilestest(unittest.TestCase):
         ]
         self.assertIn(expected_files[0], groups["Bucket/subdir"])
         self.assertIn(expected_files[1], groups["Bucket/subdir"])
-        # Bucket/subdir2 should be the key
+
         self.assertIn("Bucket/subdir2", groups)
         self.assertEqual(len(groups["Bucket/subdir2"]), 2)
         expected_files = [
@@ -109,10 +109,10 @@ class GroupFilestest(unittest.TestCase):
             "TorrentBooks/libgenrs_nonfiction/208002/155fe185bc03048b003a8e145ed097c8",
             "TorrentBooks/libgenrs_nonfiction/2080054/155fe185bc03048b003a8e145ed097c4",
         ]
-        # expect that this all goes under the same parent
+
         groups: dict[str, list[str]] = group_files(files)
         self.assertEqual(len(groups), 1)
-        # Bucket/subdir should be the key
+
         self.assertIn("TorrentBooks/libgenrs_nonfiction", groups)
         self.assertEqual(len(groups["TorrentBooks/libgenrs_nonfiction"]), 5)
         expected_files = [
@@ -125,10 +125,10 @@ class GroupFilestest(unittest.TestCase):
         files = [
             "dst:TorrentBooks/libgenrs_nonfiction/204000/a2b20b2c89240ce81dec16091e18113e",
         ]
-        # expect that this all goes under the same parent
+
         groups: dict[str, list[str]] = group_files(files, fully_qualified=True)
         self.assertEqual(len(groups), 1)
-        # Bucket/subdir should be the key
+
         self.assertIn("dst:TorrentBooks/libgenrs_nonfiction/204000", groups)
         self.assertEqual(len(groups["dst:TorrentBooks/libgenrs_nonfiction/204000"]), 1)
         expected_files = [

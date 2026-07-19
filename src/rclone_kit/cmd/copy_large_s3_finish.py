@@ -11,7 +11,7 @@ from rclone_kit.s3.multipart.upload_parts_server_side_merge import (
 @dataclass
 class Args:
     config_path: Path
-    src: str  # like dst:TorrentBooks/aa_misc_data/aa_misc_data/world_lending_library_2024_11.tar.zst-parts/ (info.json will be located here)
+    src: str
     verbose: bool
 
     def __repr__(self):

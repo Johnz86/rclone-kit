@@ -56,7 +56,6 @@ class RPath:
             data["MimeType"],
             data["ModTime"],
             data["IsDir"],
-            # data["IsBucket"],
         )
 
     @staticmethod
@@ -88,7 +87,6 @@ class RPath:
             "MimeType": self.mime_type,
             "ModTime": self.mod_time,
             "IsDir": self.is_dir,
-            # "IsBucket": self.is_bucket,
         }
 
     def __str__(self) -> str:

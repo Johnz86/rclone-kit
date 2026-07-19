@@ -50,7 +50,7 @@ class Section:
         raise KeyError("No access key found")
 
     def secret_access_key(self) -> str:
-        # return self.data["secret_access_key"]
+
         if "secret_access_key" in self.data:
             return self.data["secret_access_key"]
         elif "key" in self.data:
@@ -63,7 +63,6 @@ class Section:
 
 @dataclass
 class Parsed:
-    # sections: List[ParsedSection]
     sections: dict[str, Section]
 
     @staticmethod
@@ -74,7 +73,6 @@ class Parsed:
 class Config:
     """Rclone configuration dataclass."""
 
-    # text: str
     def __init__(self, text: str | dict | None) -> None:
         self.text: str
         if text is None:
@@ -207,16 +205,15 @@ def parse_rclone_config(content: str) -> Parsed:
     lines = content.splitlines()
     for raw_line in lines:
         line = raw_line.strip()
-        # Skip empty lines and comments (assumed to start with '#' or ';')
+
         if not line or line.startswith(("#", ";")):
             continue
-        # New section header detected
+
         if line.startswith("[") and line.endswith("]"):
             section_name = line[1:-1].strip()
             current_section = Section(name=section_name)
             sections.append(current_section)
         elif "=" in line and current_section is not None:
-            # Parse key and value, splitting only on the first '=' found
             key, value = line.split("=", 1)
             current_section.add(key.strip(), value.strip())
 
@@ -224,17 +221,6 @@ def parse_rclone_config(content: str) -> Parsed:
     for section in sections:
         data[section.name] = section
     return Parsed(sections=data)
-
-
-# JSON_DATA = {
-#     "dst": {
-#         "type": "s3",
-#         "bucket": "bucket",
-#         "endpoint": "https://s3.amazonaws.com",
-#         "access_key_id": "access key",
-#         "access_secret_key": "access secret key",
-#     }
-# }
 
 
 def _json_to_rclone_config_str_or_raise(json_data: dict | str) -> str:

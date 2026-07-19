@@ -57,9 +57,9 @@ class RcloneRemoteControlTests(unittest.TestCase):
         proc = rclone.launch_server(addr="localhost:8889")
         try:
             self.assertTrue(proc.returncode is None)
-            # test the server
+
             cp = rclone.remote_control(addr="localhost:8889")
-            # print(cp)
+
             print(cp.stdout)
             print("done")
         finally:

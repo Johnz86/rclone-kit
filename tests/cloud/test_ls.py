@@ -66,17 +66,14 @@ class RcloneLsTests(unittest.TestCase):
         rclone = Rclone(_generate_rclone_config())
         listing: DirListing = rclone.ls(f"dst:{BUCKET_NAME}", max_depth=-1)
 
-        # Verify we got a valid listing
         self.assertIsInstance(listing, DirListing)
         self.assertGreater(len(listing.dirs), 0)
         self.assertGreater(len(listing.files), 0)
 
-        # Verify dirs are properly typed
         for dir in listing.dirs:
             self.assertIsInstance(dir, Dir)
             print(dir)
 
-        # Verify files are properly typed
         for file in listing.files:
             self.assertIsInstance(file, File)
             print(file)
@@ -96,9 +93,9 @@ class RcloneLsTests(unittest.TestCase):
         self.assertGreater(len(listing.files), 0)
         for file in listing.files:
             self.assertIsInstance(file, File)
-            # test that it ends with .png
+
             self.assertTrue(file.name.endswith(".png"))
-        # there should be no directories with this glob
+
         self.assertEqual(len(listing.dirs), 0)
 
 

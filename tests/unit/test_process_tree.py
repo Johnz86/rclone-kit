@@ -37,15 +37,17 @@ class FakeProcess:
 
 def _fake_wait_procs_all_gone(
     processes: list[FakeProcess],
-    timeout: float,  # noqa: ARG001 -- keyword name must match psutil.wait_procs
+    timeout: float,
 ) -> tuple[list[FakeProcess], list[FakeProcess]]:
+    _ = timeout
     return list(processes), []
 
 
 def _fake_wait_procs_all_alive(
     processes: list[FakeProcess],
-    timeout: float,  # noqa: ARG001 -- keyword name must match psutil.wait_procs
+    timeout: float,
 ) -> tuple[list[FakeProcess], list[FakeProcess]]:
+    _ = timeout
     return [], list(processes)
 
 
@@ -96,8 +98,9 @@ def test_already_stopped_parent_with_no_children_never_calls_wait_procs(
 
     def fail_if_called(
         _processes: list[FakeProcess],
-        timeout: float,  # noqa: ARG001 -- keyword name must match psutil.wait_procs
+        timeout: float,
     ) -> tuple[list[FakeProcess], list[FakeProcess]]:
+        _ = timeout
         raise AssertionError("wait_procs must not run when nothing needs to be terminated")
 
     monkeypatch.setattr(process_tree.psutil, "wait_procs", fail_if_called)

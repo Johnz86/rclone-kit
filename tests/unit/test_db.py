@@ -22,11 +22,10 @@ class RcloneDBTests(unittest.TestCase):
         """Set up the test."""
         sql_url = "sqlite:///" + str(DB_PATH)
         self.db = DB(sql_url)
-        # self.db = DB()
 
     def tearDown(self) -> None:
         """Clean up after the test."""
-        # Remove the database file
+
         self.db.close()
         if DB_PATH.exists():
             DB_PATH.unlink()
@@ -37,12 +36,12 @@ class RcloneDBTests(unittest.TestCase):
 
     def test_table(self) -> None:
         """Test table section functionality."""
-        # Create a table section
+
         repo = self.db.get_or_create_repo("dst:TorrentBooks")
 
         new_files = [
             DBFile(
-                remote="dst:TorrentBooks",  # ignored in db
+                remote="dst:TorrentBooks",
                 parent="",
                 name="book1.pdf",
                 size=2048,
@@ -50,7 +49,7 @@ class RcloneDBTests(unittest.TestCase):
                 mod_time="2025-03-03T12:00:00",
             ),
             DBFile(
-                remote="dst:TorrentBooks",  # ignored in db
+                remote="dst:TorrentBooks",
                 parent="",
                 name="book2.epub",
                 size=1024,
@@ -60,13 +59,11 @@ class RcloneDBTests(unittest.TestCase):
         ]
 
         repo.insert_files(new_files)
-        # what happens when we do it again?
+
         repo.insert_files(new_files)
 
-        # Query the data
         out_file_entries: list[DBFile] = repo.get_all_files()
 
-        # Assert that two file entries exist
         self.assertEqual(
             len(out_file_entries),
             2,

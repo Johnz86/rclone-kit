@@ -50,7 +50,7 @@ class RcloneDiffTests(unittest.TestCase):
         item: DiffItem
         all: list[DiffItem] = []
         for item in rclone.diff(CLOUD_TEST_REMOTE_ROOT, CLOUD_TEST_REMOTE_ROOT):
-            self.assertEqual(item.type, DiffType.EQUAL)  # should be equal because same repo
+            self.assertEqual(item.type, DiffType.EQUAL)
             all.append(item)
         self.assertGreater(len(all), 10)
         msg = "\n".join([str(item) for item in all])
@@ -82,9 +82,7 @@ class RcloneDiffTests(unittest.TestCase):
             f"{CLOUD_TEST_REMOTE_ROOT}/does-not-exist",
             diff_option=DiffOption.MISSING_ON_DST,
         ):
-            self.assertEqual(
-                item.type, DiffType.MISSING_ON_DST
-            )  # should be equal because same repo
+            self.assertEqual(item.type, DiffType.MISSING_ON_DST)
             all.append(item)
         self.assertGreaterEqual(len(all), 46)
         msg = "\n".join([str(item) for item in all])
