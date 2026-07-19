@@ -7,7 +7,7 @@ import unittest
 
 import pytest
 
-from helpers import CLOUD_TEST_REMOTE_ROOT, DIGITAL_OCEAN_SPACES_ENV_VARS, skip_if_missing_cloud_env
+from helpers import CLOUD_TEST_REMOTE_ROOT
 from rclone_kit import Config, Rclone
 from rclone_kit.diff import DiffItem, DiffOption, DiffType
 from rclone_kit.env_file import load_env_file
@@ -17,36 +17,20 @@ load_env_file()
 BUCKET_NAME = os.getenv("BUCKET_NAME")
 
 
-def _generate_rclone_config() -> Config:
-    BUCKET_KEY_SECRET = os.getenv("BUCKET_KEY_SECRET")
-    BUCKET_KEY_PUBLIC = os.getenv("BUCKET_KEY_PUBLIC")
-    BUCKET_URL = "sfo3.digitaloceanspaces.com"
-
-    config_text = f"""
-[dst]
-type = s3
-provider = DigitalOcean
-access_key_id = {BUCKET_KEY_PUBLIC}
-secret_access_key = {BUCKET_KEY_SECRET}
-endpoint = {BUCKET_URL}
-"""
-
-    out = Config(config_text)
-    return out
-
-
 @pytest.mark.cloud
 class RcloneDiffTests(unittest.TestCase):
     """Test rclone functionality."""
 
+    @pytest.fixture(autouse=True)
+    def _inject_do_spaces_config(self, do_spaces_config: Config) -> None:
+        self.config = do_spaces_config
+
     def setUp(self) -> None:
-        """Check if all required environment variables are set before running tests."""
-        skip_if_missing_cloud_env(self, DIGITAL_OCEAN_SPACES_ENV_VARS)
         os.environ["RCLONE_KIT_VERBOSE"] = "1"
 
     def test_diff(self) -> None:
         """Test copying a single file to remote storage."""
-        rclone = Rclone(_generate_rclone_config())
+        rclone = Rclone(self.config)
         item: DiffItem
         all: list[DiffItem] = []
         for item in rclone.diff(CLOUD_TEST_REMOTE_ROOT, CLOUD_TEST_REMOTE_ROOT):
@@ -57,7 +41,7 @@ class RcloneDiffTests(unittest.TestCase):
         print(msg)
 
     def test_min_max_size(self) -> None:
-        rclone = Rclone(_generate_rclone_config())
+        rclone = Rclone(self.config)
         item: DiffItem
         all: list[DiffItem] = list(
             rclone.diff(CLOUD_TEST_REMOTE_ROOT, CLOUD_TEST_REMOTE_ROOT, min_size="70M")
@@ -74,7 +58,7 @@ class RcloneDiffTests(unittest.TestCase):
                 self.fail("internaly_ai_alignment.mp4 not filtered")
 
     def test_diff_missing_on_dst(self) -> None:
-        rclone = Rclone(_generate_rclone_config())
+        rclone = Rclone(self.config)
         item: DiffItem
         all: list[DiffItem] = []
         for item in rclone.diff(
@@ -89,7 +73,7 @@ class RcloneDiffTests(unittest.TestCase):
         print(msg)
 
     def test_diff_missing_on_src(self) -> None:
-        rclone = Rclone(_generate_rclone_config())
+        rclone = Rclone(self.config)
         item: DiffItem
         all: list[DiffItem] = []
         for item in rclone.diff(

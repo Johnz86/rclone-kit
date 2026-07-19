@@ -9,28 +9,10 @@ from pathlib import Path
 
 import pytest
 
-from helpers import DIGITAL_OCEAN_SPACES_ENV_VARS, skip_if_missing_cloud_env
 from rclone_kit import Config, Process, Rclone
 from rclone_kit.env_file import load_env_file
 
 load_env_file()
-
-
-def _generate_rclone_config() -> Config:
-
-    BUCKET_KEY_SECRET = os.getenv("BUCKET_KEY_SECRET")
-    BUCKET_KEY_PUBLIC = os.getenv("BUCKET_KEY_PUBLIC")
-    BUCKET_URL = "sfo3.digitaloceanspaces.com"
-
-    config_text = f"""
-[dst]
-type = s3
-provider = DigitalOcean
-access_key_id = {BUCKET_KEY_PUBLIC}
-secret_access_key = {BUCKET_KEY_SECRET}
-endpoint = {BUCKET_URL}
-"""
-    return Config(config_text)
 
 
 @pytest.mark.cloud
@@ -38,10 +20,11 @@ endpoint = {BUCKET_URL}
 class RcloneMountTests(unittest.TestCase):
     """Test rclone mount functionality."""
 
-    def setUp(self) -> None:
-        """Check if all required environment variables are set before running tests."""
-        skip_if_missing_cloud_env(self, DIGITAL_OCEAN_SPACES_ENV_VARS)
+    @pytest.fixture(autouse=True)
+    def _inject_do_spaces_config(self, do_spaces_config: Config) -> None:
+        self.config = do_spaces_config
 
+    def setUp(self) -> None:
         self.bucket_name = os.getenv("BUCKET_NAME")
         self.mount_point = Path("test_mount")
 
@@ -50,7 +33,7 @@ class RcloneMountTests(unittest.TestCase):
             parent.mkdir(parents=True)
 
         os.environ["RCLONE_KIT_VERBOSE"] = "1"
-        self.rclone = Rclone(_generate_rclone_config())
+        self.rclone = Rclone(self.config)
 
     @unittest.skip("Skipping test_mount")
     def test_mount(self) -> None:

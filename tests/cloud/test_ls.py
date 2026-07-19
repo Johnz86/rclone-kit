@@ -7,7 +7,6 @@ import unittest
 
 import pytest
 
-from helpers import DIGITAL_OCEAN_SPACES_ENV_VARS, skip_if_missing_cloud_env
 from rclone_kit import Config, Dir, DirListing, File, Rclone, Remote
 from rclone_kit.env_file import load_env_file
 
@@ -16,36 +15,19 @@ load_env_file()
 BUCKET_NAME = os.getenv("BUCKET_NAME")
 
 
-def _generate_rclone_config() -> Config:
-    BUCKET_KEY_SECRET = os.getenv("BUCKET_KEY_SECRET")
-    BUCKET_KEY_PUBLIC = os.getenv("BUCKET_KEY_PUBLIC")
-    BUCKET_URL = "sfo3.digitaloceanspaces.com"
-
-    config_text = f"""
-[dst]
-type = s3
-provider = DigitalOcean
-access_key_id = {BUCKET_KEY_PUBLIC}
-secret_access_key = {BUCKET_KEY_SECRET}
-endpoint = {BUCKET_URL}
-bucket = {BUCKET_NAME}
-"""
-
-    out = Config(config_text)
-    return out
-
-
 @pytest.mark.cloud
 class RcloneLsTests(unittest.TestCase):
     """Test rclone functionality."""
 
+    @pytest.fixture(autouse=True)
+    def _inject_do_spaces_config(self, do_spaces_config: Config) -> None:
+        self.config = do_spaces_config
+
     def setUp(self) -> None:
-        """Check if all required environment variables are set before running tests."""
-        skip_if_missing_cloud_env(self, DIGITAL_OCEAN_SPACES_ENV_VARS)
         os.environ["RCLONE_KIT_VERBOSE"] = "1"
 
     def test_list_remotes(self) -> None:
-        rclone = Rclone(_generate_rclone_config())
+        rclone = Rclone(self.config)
 
         remotes: list[Remote] = rclone.listremotes()
         self.assertGreater(len(remotes), 0)
@@ -63,7 +45,7 @@ class RcloneLsTests(unittest.TestCase):
         3. Get both directories and files as proper types
         """
         self.assertIsNotNone(BUCKET_NAME)
-        rclone = Rclone(_generate_rclone_config())
+        rclone = Rclone(self.config)
         listing: DirListing = rclone.ls(f"dst:{BUCKET_NAME}", max_depth=-1)
 
         self.assertIsInstance(listing, DirListing)
@@ -81,13 +63,13 @@ class RcloneLsTests(unittest.TestCase):
         print("done")
 
     def test_ls_subdir(self) -> None:
-        rclone = Rclone(_generate_rclone_config())
+        rclone = Rclone(self.config)
         path = f"dst:{BUCKET_NAME}/zachs_video"
         listing: DirListing = rclone.ls(path)
         print(listing)
 
     def test_ls_glob_png(self) -> None:
-        rclone = Rclone(_generate_rclone_config())
+        rclone = Rclone(self.config)
         path = f"dst:{BUCKET_NAME}/zachs_video"
         listing: DirListing = rclone.ls(path, glob="*.png")
         self.assertGreater(len(listing.files), 0)
