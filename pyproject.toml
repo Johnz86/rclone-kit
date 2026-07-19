@@ -1,0 +1,240 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "_build_backend"
+backend-path = ["."]
+
+[project]
+name = "rclone-kit"
+readme = "README.md"
+description = "rclone api in python"
+requires-python = ">=3.13"
+keywords = ["rclone", "api", "python", "fast", "sftp", "s3", "backblaze"]
+license = "MIT"
+license-files = ["LICENSE"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.13",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+]
+dependencies = [
+    "python-dotenv>=1.0.0",
+    "certifi>=2025.1.31",
+    "psutil",
+    "sqlmodel>=0.0.23",
+    "psycopg2-binary>=2.9.10",
+    "httpx>=0.28.1",
+    "platformdirs>=4",
+    "beautifulsoup4>=4.13.3",
+    "boto3>=1.28.23",
+]
+
+# Change this with the version number bump.
+version = "1.0.0"
+
+[project.urls]
+Homepage = "https://github.com/Johnz86/rclone-kit"
+Repository = "https://github.com/Johnz86/rclone-kit"
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "pytest-xdist",
+    "pyright",
+    "ruff",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+rclone_kit = ["assets/*", "assets/**/*"]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+src = ["src", "tests", "scripts"]
+
+[tool.ruff.lint]
+select = [
+    "A",
+    "ANN",
+    "ARG",
+    "B",
+    "C4",
+    "DTZ",
+    "E",
+    "F",
+    "FA",
+    "FBT",
+    "I",
+    "N",
+    "PERF",
+    "PIE",
+    "PL",
+    "PTH",
+    "PYI",
+    "RUF",
+    "S",
+    "SIM",
+    "T20",
+    "TRY",
+    "UP",
+    "W",
+]
+
+# Suppressions below are narrow, documented exceptions to the curated select
+# list above. Each one covers a family of PRE-EXISTING findings across a
+# legacy codebase that predates this Ruff rollout, not new code. They are a
+# starting point for incremental cleanup, not a permanent opt-out: shrink
+# this list as each family gets addressed by a dedicated, reviewable change.
+#
+#   ANN                        - Legacy modules were written before the project
+#                                 required type annotations; completing coverage
+#                                 is a dedicated typing pass, not a formatting
+#                                 change.
+#   TRY                        - Exception-handling findings (message wording,
+#                                 raise-from-within-try, vanilla exception
+#                                 classes) need per-call-site judgment about the
+#                                 right exception type and message; triaged in a
+#                                 follow-up change.
+#   FBT001, FBT002, FBT003     - Positional boolean parameters are concentrated
+#                                 in the public API surface (rclone_impl.py,
+#                                 __init__.py). Replacing them with enums is a
+#                                 breaking API change that needs a deprecation
+#                                 path, not a lint-tooling migration.
+#   A001, A002                 - Parameter/variable names such as `type`,
+#                                 `range`, `dir` shadow builtins across public
+#                                 signatures. Renaming a keyword-visible
+#                                 parameter is a breaking change; deferred
+#                                 alongside the FBT API cleanup above.
+#   PLC0415                    - This codebase relies on function-local imports
+#                                 throughout to avoid circular imports and to
+#                                 keep optional/heavy dependencies (boto3,
+#                                 sqlmodel, psycopg2) lazy, per the project's
+#                                 lazy-optional-dependency requirement. Moving
+#                                 them to module scope would reintroduce import
+#                                 cycles and eager-import optional extras.
+#   PLR0911, PLR0912, PLR0913,
+#   PLR0915                    - Function complexity metrics (too many
+#                                 arguments/branches/statements/returns) flag
+#                                 functions that need decomposition. Refactoring
+#                                 signatures and control flow is a design change
+#                                 outside a lint-tooling migration.
+#   PLR2004                    - Magic-value comparisons need a per-site
+#                                 decision about the right constant name;
+#                                 deferred.
+#   S101                       - `assert` is used pervasively as an internal
+#                                 invariant check throughout `src`, not only in
+#                                 tests. The subprocess/filesystem-
+#                                 boundary audit replaced the runtime-facing
+#                                 asserts it found in process.py, mount.py, and
+#                                 http_server.py with raised exceptions;
+#                                 completing the remaining, broader assert-to-
+#                                 exception migration across the rest of `src`
+#                                 is separate follow-up work, not a formatting
+#                                 change.
+#   S603                       - Every `subprocess.run`/`Popen` call in `src`
+#                                 uses a `list[str]` argument vector with
+#                                 `shell=False` (verified by the
+#                                 subprocess/filesystem-boundary audit); this
+#                                 rule flags any subprocess invocation for
+#                                 manual review regardless of that mitigation,
+#                                 so it stays a permanent, reviewed acceptance
+#                                 rather than a deferred item.
+#   S324                       - The single remaining finding is an `md5`
+#                                 content-fingerprint hash in
+#                                 `s3/multipart/info_json.py`'s resumable-
+#                                 upload state, unrelated to the
+#                                 subprocess/filesystem-boundary audit; left
+#                                 for whichever change owns that feature.
+#   PTH                        - A full `os.path`-to-`pathlib` migration
+#                                 across all of `src` is a broad, separate
+#                                 cleanup; the subprocess/filesystem-
+#                                 boundary audit converted the call sites it
+#                                 touched (config.py, mount_util.py, util.py,
+#                                 http_server.py) but did not sweep the rest
+#                                 of the codebase.
+#   T201                       - The package ships console scripts
+#                                 (`rclone-kit-*`) whose purpose is to print
+#                                 human-readable output, and many tests use
+#                                 `print` for interactive debugging. Migrating
+#                                 to structured logging is a separate effort.
+#   E501                       - Ruff's formatter enforces the line-length
+#                                 budget for all reformattable code; the
+#                                 stragglers are long string literals (error
+#                                 messages, f-strings, URLs) the formatter
+#                                 intentionally leaves alone.
+#   DTZ005                     - The single finding is a naive
+#                                 `datetime.now()` used to stamp a persisted
+#                                 multipart-upload `info.json` resume file.
+#                                 Changing its serialized format is a runtime
+#                                 behavior change for the resumable-upload
+#                                 feature, out of scope for a lint-tooling
+#                                 migration.
+#   ARG002                     - The remaining findings are parameters required
+#                                 by an abstract base class signature (`FS`) or
+#                                 reserved for a documented public API
+#                                 (`config_paths(no_obscure=...)`); unused by
+#                                 design.
+ignore = [
+    "ANN",
+    "TRY",
+    "FBT001",
+    "FBT002",
+    "FBT003",
+    "A001",
+    "A002",
+    "PLC0415",
+    "PLR0911",
+    "PLR0912",
+    "PLR0913",
+    "PLR0915",
+    "PLR2004",
+    "S101",
+    "S324",
+    "S603",
+    "PTH",
+    "T201",
+    "E501",
+    "DTZ005",
+    "ARG002",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Test files load remote credentials/config into UPPERCASE locals to mirror
+# production constant style, even though the scope is a function.
+"tests/**/*.py" = ["N806"]
+
+[tool.ruff.format]
+docstring-code-format = true
+line-ending = "lf"
+quote-style = "double"
+
+[tool.pyright]
+# `scripts/` is a sibling of `tests/`, not an ancestor of any test file, so
+# Pyright's default implicit-namespace-package directory walk (which is why
+# `tests/**/*.py` can already do a bare `from helpers import ...`) does not
+# reach it. Declaring it here lets `tests/unit/test_verify_distribution.py`
+# do a bare `import verify_distribution`, mirroring the `pythonpath`
+# entry pytest itself uses for the same import at test-run time.
+extraPaths = ["scripts"]
+
+[tool.pytest.ini_options]
+addopts = "-ra --strict-markers"
+testpaths = ["tests"]
+pythonpath = ["tests", "scripts"]
+markers = [
+    "cloud: requires external cloud credentials",
+    "mount: requires operating-system mount support",
+    "network: requires non-loopback network access",
+]
+
+[project.scripts]
+rclone-kit-listfiles = "rclone_kit.cmd.list_files:main"
+rclone-kit-copylarge-s3 = "rclone_kit.cmd.copy_large_s3:main"
+rclone-kit-save-to-db = "rclone_kit.cmd.save_to_db:main"
+rclone-kit-install-bins = "rclone_kit.cmd.install_rclone:main"

@@ -1,0 +1,6 @@
+# Ruff's [tool.ruff.format] line-ending = "lf" setting only holds if git
+# stops normalizing checkouts to CRLF on Windows. Without this file, a
+# developer or CI runner with the common `core.autocrlf=true` setting gets
+# CRLF line endings on checkout, and `ruff format --check .` fails on a
+# freshly cloned repository even though no one edited a file.
+* text=auto eol=lf

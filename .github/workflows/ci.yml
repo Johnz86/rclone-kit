@@ -1,0 +1,216 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+env:
+  # Single source of truth for the pinned uv release and the target Python
+  # version. Update both together and let every job below reference them.
+  UV_VERSION: "0.11.29"
+  PYTHON_VERSION: "3.13"
+
+jobs:
+  quality:
+    name: Quality
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.3.2
+        with:
+          version: ${{ env.UV_VERSION }}
+
+      - name: Install Python ${{ env.PYTHON_VERSION }}
+        run: uv python install ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: uv sync --locked --all-groups
+
+      - name: Check formatting
+        run: uv run ruff format --check .
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Type check
+        run: uv run pyright src tests scripts
+
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    defaults:
+      run:
+        # pwsh is available on both GitHub-hosted ubuntu-latest and
+        # windows-latest runners, so no step here needs Git Bash.
+        shell: pwsh
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.3.2
+        with:
+          version: ${{ env.UV_VERSION }}
+
+      - name: Install Python ${{ env.PYTHON_VERSION }}
+        run: uv python install ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: uv sync --locked --all-groups
+
+      - name: Run unit tests
+        run: uv run pytest tests/unit
+
+      - name: Run integration tests
+        run: uv run pytest tests/integration
+
+  package:
+    name: Package (${{ matrix.target_os }}-${{ matrix.target_arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # `target_os`/`target_arch` select the certified build target for
+        # scripts/prepare_rclone_artifact.py (see
+        # src/rclone_kit/runtime/platform.py for the full platform model).
+        # scripts/verify_distribution.py derives everything else it needs
+        # (the package-data subdirectory, expected executable name, and
+        # foreign-platform executables to reject) from that same module, so
+        # this matrix no longer duplicates any of it.
+        include:
+          - runner: windows-latest
+            target_os: windows
+            target_arch: amd64
+          - runner: ubuntu-latest
+            target_os: linux
+            target_arch: amd64
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.3.2
+        with:
+          version: ${{ env.UV_VERSION }}
+
+      - name: Install Python ${{ env.PYTHON_VERSION }}
+        run: uv python install ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: uv sync --locked --all-groups
+
+      - name: Build source distribution
+        # Built before the rclone artifact is staged below: an sdist must
+        # stay platform-independent, and scripts/verify_distribution.py's
+        # `check_sdist_has_no_staged_platform_executables` fails the build if
+        # a platform-specific executable ends up inside it. `uv build` cannot
+        # otherwise be trusted to exclude package-data files that merely
+        # happen to be present on disk at build time (see the wheel step
+        # below, which needs the opposite: staged assets present).
+        run: uv build --sdist
+
+      - name: Stage verified rclone artifact
+        # CI-only, ephemeral staging: copies the build-time-generated
+        # artifact directory into the tracked package-data location that
+        # rclone_kit.runtime.rclone_binary.default_packaged_assets_root()
+        # expects (<package_root>/assets/rclone/<wheel_platform_tag>/...).
+        # Nothing under src/rclone_kit/assets/rclone/ is ever committed;
+        # .gitignore excludes it and this job never runs `git add`/`git
+        # commit`.
+        run: |
+          uv run python scripts/prepare_rclone_artifact.py ${{ matrix.target_os }} ${{ matrix.target_arch }} --out-dir build/rclone-artifacts
+          New-Item -ItemType Directory -Force -Path src/rclone_kit/assets/rclone | Out-Null
+          Copy-Item -Path build/rclone-artifacts/rclone/* -Destination src/rclone_kit/assets/rclone -Recurse -Force
+
+      - name: Build wheel
+        run: uv build --wheel
+
+      - name: Verify wheel matches this matrix entry's target platform
+        # scripts/verify_distribution.py verifies a wheel's *internal*
+        # consistency (platform tag vs. bundled executable, licenses,
+        # hashes, entry points, metadata) generically, for any wheel. It has
+        # no way to know which platform *this specific CI matrix entry* was
+        # supposed to produce, so that one matrix-specific assertion stays
+        # here rather than moving into the generic script.
+        run: |
+          $wheel = Get-ChildItem dist/*.whl | Select-Object -First 1
+          Write-Host "Built wheel: $($wheel.Name)"
+          $expectedFragment = if ($IsWindows) { "win_amd64" } else { "linux" }
+          if ($wheel.Name -notmatch $expectedFragment) {
+            Write-Error "Wheel '$($wheel.Name)' does not contain the expected platform tag fragment '$expectedFragment'."
+            exit 1
+          }
+
+      - name: Verify distribution
+        run: uv run python scripts/verify_distribution.py dist
+
+      - name: Create clean smoke-test environment
+        run: uv venv --python ${{ env.PYTHON_VERSION }} smoke-env
+
+      - name: Install built wheel only (no dev dependency group)
+        run: |
+          $wheelPath = (Get-ChildItem dist/*.whl | Select-Object -First 1).FullName
+          $pythonExe = if ($IsWindows) { "smoke-env/Scripts/python.exe" } else { "smoke-env/bin/python" }
+          uv pip install --python $pythonExe $wheelPath
+
+      - name: Smoke test the installed wheel
+        # Best-effort network isolation: GitHub-hosted runners cannot be
+        # fully firewalled from user-mode steps, so this poisons the proxy
+        # environment variables instead. Any smoke-test code path that
+        # unexpectedly makes an HTTP(S) call fails fast rather than
+        # silently succeeding through real network access. This is a
+        # partial guarantee, not a full network-isolation guarantee.
+        env:
+          HTTP_PROXY: "http://127.0.0.1:1"
+          HTTPS_PROXY: "http://127.0.0.1:1"
+          NO_PROXY: ""
+        run: |
+          $pythonExe = if ($IsWindows) { "smoke-env/Scripts/python.exe" } else { "smoke-env/bin/python" }
+          $scriptsDir = if ($IsWindows) { "smoke-env/Scripts" } else { "smoke-env/bin" }
+
+          $smokeTest = @'
+          import subprocess
+          import sys
+          from importlib.metadata import entry_points
+
+          import rclone_kit  # noqa: F401
+          from rclone_kit.runtime.rclone_binary import resolve_rclone_executable
+
+          resolved = resolve_rclone_executable()
+          print(f"Resolved bundled rclone executable: {resolved}")
+
+          result = subprocess.run([str(resolved), "version"], capture_output=True, text=True, check=True)
+          print(result.stdout.splitlines()[0])
+
+          scripts_dir = sys.argv[1]
+          console_scripts = entry_points(group="console_scripts")
+          names = sorted(ep.name for ep in console_scripts if ep.module.startswith("rclone_kit"))
+          if not names:
+              raise SystemExit("No rclone_kit console_scripts entry points were found")
+
+          for name in names:
+              executable = f"{scripts_dir}/{name}"
+              completed = subprocess.run([executable, "--help"], capture_output=True, text=True)
+              if completed.returncode != 0:
+                  raise SystemExit(f"{name} --help exited {completed.returncode}: {completed.stderr}")
+              print(f"{name} --help exited 0")
+          '@
+
+          $smokeTest | & $pythonExe - $scriptsDir
+
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: wheel-${{ matrix.target_os }}-${{ matrix.target_arch }}
+          path: dist/*.whl
+          if-no-files-found: error
