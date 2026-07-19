@@ -1,50 +1,13 @@
 import atexit
-import os
-import time
+import logging
 import warnings
 from pathlib import Path
 from threading import Lock
 from typing import Any
 
-_TMP_DIR_ACCESS_LOCK = Lock()
+from rclone_kit.types import get_chunk_tmpdir
 
-
-def _clean_old_files(out: Path) -> None:
-
-    from rclone_kit.util import locked_print
-
-    now = time.time()
-
-    for root, _dirs, files in os.walk(out):
-        for name in files:
-            f = Path(root) / name
-            filemod = f.stat().st_mtime
-            diff_secs = now - filemod
-            diff_days = diff_secs / (60 * 60 * 24)
-            if diff_days > 1:
-                locked_print(f"Removing old file: {f}")
-                f.unlink()
-
-    for root, dirs, _ in os.walk(out):
-        for dir in dirs:
-            d = Path(root) / dir
-            if not list(d.iterdir()):
-                locked_print(f"Removing empty directory: {d}")
-                d.rmdir()
-
-
-def get_chunk_tmpdir() -> Path:
-    with _TMP_DIR_ACCESS_LOCK:
-        dat = get_chunk_tmpdir.__dict__
-        if "out" in dat:
-            return dat["out"]
-        out = Path("chunk_store")
-        if out.exists():
-            _clean_old_files(out)
-        out.mkdir(exist_ok=True, parents=True)
-        dat["out"] = out
-        return out
-
+logger = logging.getLogger(__name__)
 
 _CLEANUP_LIST: list[Path] = []
 
@@ -66,44 +29,9 @@ def _on_exit_cleanup() -> None:
 atexit.register(_on_exit_cleanup)
 
 
-_FILEPARTS: list["FilePart"] = []
-
-_FILEPARTS_LOCK = Lock()
-
-
-def _add_filepart(part: "FilePart") -> None:
-    with _FILEPARTS_LOCK:
-        if part not in _FILEPARTS:
-            _FILEPARTS.append(part)
-
-
-def _remove_filepart(part: "FilePart") -> None:
-    with _FILEPARTS_LOCK:
-        if part in _FILEPARTS:
-            _FILEPARTS.remove(part)
-
-
-def run_debug_parts():
-    while True:
-        print("\nAlive file parts:")
-        for part in _FILEPARTS:
-            print(part)
-
-        print("\n\n")
-        time.sleep(60)
-
-
 class FilePart:
     def __init__(self, payload: Path | bytes | Exception, extra: Any) -> None:
-        import traceback
-
         from rclone_kit.util import random_str
-
-        stacktrace = traceback.format_stack()
-        stacktrace_str = "".join(stacktrace)
-        self.stacktrace = stacktrace_str
-
-        _add_filepart(self)
 
         self.extra = extra
         self._lock = Lock()
@@ -112,15 +40,12 @@ class FilePart:
             self.payload = payload
             return
         if isinstance(payload, bytes):
-            print(f"Creating file part with payload: {len(payload)}")
+            logger.debug("Creating file part with payload: %d bytes", len(payload))
             self.payload = get_chunk_tmpdir() / f"{random_str(12)}.chunk"
-            with _TMP_DIR_ACCESS_LOCK:
-                if not self.payload.parent.exists():
-                    self.payload.parent.mkdir(parents=True, exist_ok=True)
-                self.payload.write_bytes(payload)
+            self.payload.write_bytes(payload)
             _add_for_cleanup(self.payload)
         if isinstance(payload, Path):
-            print("Adopting payload: ", payload)
+            logger.debug("Adopting payload: %s", payload)
             self.payload = payload
             _add_for_cleanup(self.payload)
 
@@ -135,10 +60,7 @@ class FilePart:
             return -1
 
     def n_bytes(self) -> int:
-        with self._lock:
-            if isinstance(self.payload, Path):
-                return self.payload.stat().st_size
-            return -1
+        return self.size
 
     def load(self) -> bytes:
         with self._lock:
@@ -147,36 +69,22 @@ class FilePart:
                     return f.read()
             raise ValueError("Cannot load from error")
 
-    def __post_init__(self):
-        if isinstance(self.payload, Path):
-            assert self.payload.exists(), f"File part {self.payload} does not exist"
-            assert self.payload.is_file(), f"File part {self.payload} is not a file"
-            assert self.payload.stat().st_size > 0, f"File part {self.payload} is empty"
-        elif isinstance(self.payload, Exception):
-            warnings.warn(f"File part error: {self.payload}", stacklevel=2)
-        print(f"File part created with payload: {self.payload}")
-
     def is_error(self) -> bool:
         return isinstance(self.payload, Exception)
 
     def dispose(self) -> None:
-
-        _remove_filepart(self)
-        print("Disposing file part")
+        logger.debug("Disposing file part")
         with self._lock:
             if isinstance(self.payload, Exception):
                 warnings.warn(
                     f"Cannot close file part because the payload represents an error: {self.payload}",
                     stacklevel=2,
                 )
-                print("Cannot close file part because the payload represents an error")
                 return
             if self.payload.exists():
-                print(f"File part {self.payload} exists")
                 try:
-                    print(f"Unlinking file part {self.payload}")
                     self.payload.unlink()
-                    print(f"File part {self.payload} deleted")
+                    logger.debug("File part %s deleted", self.payload)
                 except Exception as e:
                     warnings.warn(f"Cannot close file part because of error: {e}", stacklevel=2)
             else:
