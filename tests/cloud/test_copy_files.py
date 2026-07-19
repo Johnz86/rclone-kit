@@ -6,7 +6,6 @@ import os
 import unittest
 
 import pytest
-from dotenv import load_dotenv
 
 from helpers import CLOUD_TEST_KEY_PREFIX, DIGITAL_OCEAN_SPACES_ENV_VARS, skip_if_missing_cloud_env
 from rclone_kit import (
@@ -17,8 +16,9 @@ from rclone_kit import (
     Rclone,
     rclone_verbose,
 )
+from rclone_kit.env_file import load_env_file
 
-load_dotenv()
+load_env_file()
 rclone_verbose(True)
 
 BUCKET_NAME = os.getenv("BUCKET_NAME")

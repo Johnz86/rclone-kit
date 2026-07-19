@@ -8,12 +8,12 @@ import unittest
 from pathlib import Path
 
 import pytest
-from dotenv import load_dotenv
 
 from helpers import DIGITAL_OCEAN_SPACES_ENV_VARS, skip_if_missing_cloud_env
 from rclone_kit import Config, Rclone
+from rclone_kit.env_file import load_env_file
 
-load_dotenv()
+load_env_file()
 
 BUCKET_NAME = os.getenv("BUCKET_NAME")
 

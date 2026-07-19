@@ -3,16 +3,16 @@ import unittest
 from pathlib import Path
 
 import pytest
-from dotenv import load_dotenv
 
 from helpers import CLOUD_TEST_REMOTE_ROOT, DIGITAL_OCEAN_SPACES_ENV_VARS, skip_if_missing_cloud_env
 from rclone_kit import PartInfo, Rclone, SizeSuffix
+from rclone_kit.env_file import load_env_file
 
 _HERE = Path(__file__).parent
 _PROJECT_ROOT = _HERE.parent
 _CONFIG_PATH = _PROJECT_ROOT / "rclone-mounted-ranged-download.conf"
 
-load_dotenv()
+load_env_file()
 
 BUCKET_NAME = os.getenv("BUCKET_NAME")
 

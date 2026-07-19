@@ -6,13 +6,13 @@ import os
 import unittest
 
 import pytest
-from dotenv import load_dotenv
 
 from helpers import DIGITAL_OCEAN_SPACES_ENV_VARS, skip_if_missing_cloud_env
 from rclone_kit import Config, Rclone, Remote
 from rclone_kit.cmd.list_files import list_files
+from rclone_kit.env_file import load_env_file
 
-load_dotenv()
+load_env_file()
 
 BUCKET_NAME = os.getenv("BUCKET_NAME")
 

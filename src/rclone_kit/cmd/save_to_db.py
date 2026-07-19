@@ -3,21 +3,13 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from dotenv import load_dotenv
-
 from rclone_kit import Rclone
+from rclone_kit.env_file import load_env_file
 from rclone_kit.util import register_signal_cleanup
-
-# load_dotenv()
-
-
-# DB_URL = "sqlite:///data.db"
-
-# os.environ["DB_URL"] = "sqlite:///data.db"
 
 
 def _db_url_from_env_or_raise() -> str:
-    load_dotenv(Path(".env"))
+    load_env_file(Path(".env"))
     db_url = os.getenv("DB_URL")
     if db_url is None:
         raise ValueError("DB_URL not set")
