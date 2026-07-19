@@ -27,7 +27,12 @@ jobs:
         run: uv python install ${{ env.PYTHON_VERSION }}
 
       - name: Install dependencies
-        run: uv sync --locked --all-groups
+        # --all-extras pulls in boto3/sqlmodel/psycopg2-binary so the S3 and
+        # database code paths (and their tests) are actually type-checked
+        # and exercised here, instead of being silently skipped due to
+        # missing imports. The package job below intentionally omits this:
+        # it proves the default, minimal, extras-free install still works.
+        run: uv sync --locked --all-groups --all-extras
 
       - name: Check formatting
         run: uv run ruff format --check .
@@ -63,7 +68,8 @@ jobs:
         run: uv python install ${{ env.PYTHON_VERSION }}
 
       - name: Install dependencies
-        run: uv sync --locked --all-groups
+        # --all-extras: see the same flag in the quality job above.
+        run: uv sync --locked --all-groups --all-extras
 
       - name: Run unit tests
         run: uv run pytest tests/unit

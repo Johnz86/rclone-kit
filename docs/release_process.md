@@ -11,7 +11,7 @@ target platform (currently Windows AMD64 and Linux AMD64 — see
 `src/rclone_kit/runtime/platform.py`'s `SUPPORTED_ARTIFACTS`):
 
 ```powershell
-uv sync --locked --all-groups
+uv sync --locked --all-groups --all-extras
 uv run ruff format --check .
 uv run ruff check .
 uv run pyright src tests scripts
@@ -73,8 +73,8 @@ CHANGELOG entry, or equivalent — capturing:
       `SUPPORTED_ARTIFACTS`, e.g. `win_amd64`, `manylinux2014_x86_64`)
 - [ ] Python version requirement (`requires-python` in `pyproject.toml`)
 - [ ] Direct dependency changes since the previous release (diff
-      `[project.dependencies]` and `[dependency-groups]` against the prior
-      tag)
+      `[project.dependencies]`, `[project.optional-dependencies]`, and
+      `[dependency-groups]` against the prior tag)
 - [ ] SHA-256 digests for every published file (`dist/*.whl`, `dist/*.tar.gz`
       — `uv publish` prints these; `sha256sum dist/*` reproduces them)
 - [ ] Known external mount prerequisites (WinFsp on Windows, FUSE plus a
