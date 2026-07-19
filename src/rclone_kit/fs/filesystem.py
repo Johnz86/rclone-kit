@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Self
 
 from rclone_kit.config import Config
-from rclone_kit.exceptions import FilesystemError
+from rclone_kit.exceptions import FilesystemError, HttpFetchError
 from rclone_kit.fs.walk_threaded_walker import FSWalker
 
 logger = logging.getLogger(__name__)
@@ -219,27 +219,32 @@ class RemoteFS(FS):
 
         assert isinstance(self.server, HttpServer)
         path = self._to_remote_path(path)
-        err = self.server.list(path)
-        return isinstance(err, list)
+        try:
+            self.server.list(path)
+        except HttpFetchError:
+            return False
+        return True
 
     def is_file(self, path: Path | str) -> bool:
         from rclone_kit.http_server import HttpServer
 
         assert isinstance(self.server, HttpServer)
-        path = self._to_remote_path(path)
-        err = self.server.list(path)
-
-        return isinstance(err, Exception) and self.exists(path)
+        remote_path = self._to_remote_path(path)
+        try:
+            self.server.list(remote_path)
+        except HttpFetchError:
+            return self.exists(path)
+        return False
 
     def ls(self, path: Path | str) -> tuple[list[str], list[str]]:
         from rclone_kit.http_server import HttpServer
 
         assert isinstance(self.server, HttpServer)
-        path = self._to_remote_path(path)
-        err = self.server.list(path)
-        if isinstance(err, Exception):
-            raise FileNotFoundError(f"File not found: {path}, because of {err}")
-        return err
+        remote_path = self._to_remote_path(path)
+        try:
+            return self.server.list(remote_path)
+        except HttpFetchError as error:
+            raise FileNotFoundError(f"File not found: {path}, because of {error}") from error
 
     def unlink(self, path: Path | str) -> None:
         self.remove(path)

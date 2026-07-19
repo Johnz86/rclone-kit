@@ -14,6 +14,7 @@ from urllib.parse import quote
 
 import httpx
 
+from rclone_kit.exceptions import HttpFetchError
 from rclone_kit.file_part import FilePart
 from rclone_kit.process import Process
 from rclone_kit.s3.multipart.file_info import S3FileInfo
@@ -21,6 +22,9 @@ from rclone_kit.types import Range, SizeSuffix, get_chunk_tmpdir
 
 _TIMEOUT = 10 * 60
 _PUT_WARNING_EMITTED = Event()
+_DOWNLOAD_RETRIES = 3
+_DOWNLOAD_RETRY_DELAY_SECONDS = 10
+_CHUNK_READ_SIZE = 8192 * 4
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +107,20 @@ def _parse_files_and_dirs(html: str) -> FileList:
     return FileList(dirs=parser.dirs, files=parser.files)
 
 
+def _concatenate_chunks(chunk_files: list[Path], dst_path: Path) -> None:
+    """Append each downloaded chunk file to `dst_path` in order, removing it after."""
+    if not dst_path.parent.exists():
+        dst_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(dst_path, "wb") as file:
+        for chunk_file in chunk_files:
+            logger.info(f"Appending {chunk_file} to {dst_path}")
+            with open(chunk_file, "rb") as part:
+                while chunk := part.read(_CHUNK_READ_SIZE):
+                    file.write(chunk)
+            logger.info(f"Removing {chunk_file}")
+            chunk_file.unlink()
+
+
 class HttpServer:
     """HTTP server configuration."""
 
@@ -123,13 +141,14 @@ class HttpServer:
     def get_fetcher(self, path: str, n_threads: int = 16) -> "HttpFetcher":
         return HttpFetcher(self, path, n_threads=n_threads)
 
-    def get(self, path: str, range: Range | None = None) -> bytes | Exception:
-        """Get bytes from the server."""
+    def get(self, path: str, range: Range | None = None) -> bytes:
+        """Get bytes from the server.
+
+        Raises `HttpFetchError` on failure.
+        """
         with TemporaryDirectory() as tmpdir:
             destination = Path(tmpdir) / "download"
-            result = self.download(path, destination, range)
-            if isinstance(result, Exception):
-                return result
+            self.download(path, destination, range)
             return destination.read_bytes()
 
     def exists(self, path: str) -> bool:
@@ -143,75 +162,81 @@ class HttpServer:
             warnings.warn(f"Failed to check if {self.url}/{path} exists: {e}", stacklevel=2)
             return False
 
-    def size(self, path: str) -> int | Exception:
-        """Get size of the file from the server."""
+    def size(self, path: str) -> int:
+        """Get size of the file from the server.
+
+        Raises `HttpFetchError` on failure.
+        """
+        self._ensure_running()
+        url = self._get_file_url(path)
         try:
-            self._ensure_running()
-            url = self._get_file_url(path)
             response = httpx.head(url)
             response.raise_for_status()
-            size = int(response.headers["Content-Length"])
-            return size
-        except Exception as e:
-            warnings.warn(f"Failed to get size of {self.url}/{path}: {e}", stacklevel=2)
-            return e
+            return int(response.headers["Content-Length"])
+        except (httpx.HTTPError, KeyError, ValueError) as e:
+            raise HttpFetchError(path, e) from e
 
-    def put(self, path: str, data: bytes) -> Exception | None:
-        """Put bytes to the server."""
+    def put(self, path: str, data: bytes) -> None:
+        """Put bytes to the server.
+
+        Raises `HttpFetchError` on failure.
+        """
         if not _PUT_WARNING_EMITTED.is_set():
             _PUT_WARNING_EMITTED.set()
             warnings.warn(
                 "PUT method not implemented on the rclone binary as of 1.69", stacklevel=2
             )
+        self._ensure_running()
+        url = self._get_file_url(path)
+        headers = {"Content-Type": "application/octet-stream"}
         try:
-            self._ensure_running()
-            url = self._get_file_url(path)
-            headers = {"Content-Type": "application/octet-stream"}
             response = httpx.post(url, content=data, timeout=_TIMEOUT, headers=headers)
             logger.info(f"Allowed methods: {response.headers.get('Allow')}")
             response.raise_for_status()
-            return None
-        except Exception as e:
-            warnings.warn(f"Failed to put {path} to {self.url}: {e}", stacklevel=2)
-            return e
+        except httpx.HTTPError as e:
+            raise HttpFetchError(path, e) from e
 
-    def delete(self, path: str) -> Exception | None:
-        """Remove file from the server."""
+    def delete(self, path: str) -> None:
+        """Remove file from the server.
+
+        Raises `HttpFetchError` on failure.
+        """
+        self._ensure_running()
+        url = self._get_file_url(path)
         try:
-            self._ensure_running()
-            url = self._get_file_url(path)
             response = httpx.delete(url)
             response.raise_for_status()
-            return None
-        except Exception as e:
-            warnings.warn(f"Failed to remove {path} from {self.url}: {e}", stacklevel=2)
-            return e
+        except httpx.HTTPError as e:
+            raise HttpFetchError(path, e) from e
 
-    def list(self, path: str) -> tuple[list[str], list[str]] | Exception:
-        """List files on the server."""
+    def list(self, path: str) -> tuple[list[str], list[str]]:
+        """List files on the server.
 
+        Raises `HttpFetchError` on failure.
+        """
+        self._ensure_running()
+        url = self.url
+        if path:
+            url += f"/{path}"
+        url += "/?list"
         try:
-            self._ensure_running()
-            url = self.url
-            if path:
-                url += f"/{path}"
-            url += "/?list"
             response = httpx.get(url, timeout=_TIMEOUT)
             response.raise_for_status()
-            files_and_dirs = _parse_files_and_dirs(response.content.decode())
-            return files_and_dirs.files, files_and_dirs.dirs
-        except Exception as e:
-            warnings.warn(f"Failed to list files on {self.url}: {e}", stacklevel=2)
-            return e
+        except httpx.HTTPError as e:
+            raise HttpFetchError(path, e) from e
+        files_and_dirs = _parse_files_and_dirs(response.content.decode())
+        return files_and_dirs.files, files_and_dirs.dirs
 
-    def download(self, path: str, dst: Path, range: Range | None = None) -> Path | Exception:
-        """Get bytes from the server."""
-        try:
-            self._ensure_running()
-        except RuntimeError as error:
-            return error
+    def download(self, path: str, dst: Path, range: Range | None = None) -> Path:
+        """Get bytes from the server, retrying transient failures.
 
-        def task() -> Path | Exception:
+        Raises `HttpFetchError` when every attempt fails; raises
+        `RuntimeError` immediately, without retrying, when the server has
+        already been shut down.
+        """
+        self._ensure_running()
+
+        def attempt() -> Path:
             if not dst.parent.exists():
                 dst.parent.mkdir(parents=True, exist_ok=True)
             headers: dict[str, str] = {}
@@ -244,19 +269,21 @@ class HttpServer:
                     return dst
             except Exception as e:
                 dst.unlink(missing_ok=True)
-                warnings.warn(f"Failed to download {url} to {dst}: {e}", stacklevel=2)
-                return e
+                raise HttpFetchError(path, e) from e
 
-        retries = 3
-        for i in _range(retries):
-            out = task()
-            if not isinstance(out, Exception):
-                return out
-            warnings.warn(
-                f"Failed to download {path} to {dst}: {out}, retrying ({i})", stacklevel=2
-            )
-            time.sleep(10)
-        return Exception(f"Failed to download {path} to {dst}")
+        last_error: HttpFetchError | None = None
+        for attempt_number in _range(_DOWNLOAD_RETRIES):
+            try:
+                return attempt()
+            except HttpFetchError as error:
+                last_error = error
+                warnings.warn(
+                    f"Failed to download {path} to {dst}: {error}, retrying ({attempt_number})",
+                    stacklevel=2,
+                )
+                time.sleep(_DOWNLOAD_RETRY_DELAY_SECONDS)
+        assert last_error is not None
+        raise last_error
 
     def download_multi_threaded(
         self,
@@ -265,76 +292,52 @@ class HttpServer:
         chunk_size: int = 32 * 1024 * 1024,
         n_threads: int = 16,
         range: Range | None = None,
-    ) -> Path | Exception:
-        """Copy file from src to dst."""
+    ) -> Path:
+        """Copy file from src to dst, fetching chunks in parallel.
 
+        Raises `HttpFetchError` if any chunk fails to download; downloaded
+        chunk files are cleaned up before re-raising.
+        """
         finished: list[Path] = []
-        errors: list[Exception] = []
 
         if range is None:
-            sz = self.size(src_path)
-            if isinstance(sz, Exception):
-                return sz
-            range = Range(0, sz)
+            range = Range(0, self.size(src_path))
 
-        with ThreadPoolExecutor(max_workers=n_threads) as executor:
-            try:
-                futures: list[Future[Path | Exception]] = []
+        try:
+            with ThreadPoolExecutor(max_workers=n_threads) as executor:
+                futures: list[Future[Path]] = []
                 start: int
                 for start in _range(range.start.as_int(), range.end.as_int(), chunk_size):
                     end = min(SizeSuffix(start + chunk_size).as_int(), range.end.as_int())
                     r = Range(start=start, end=end)
 
-                    def task(r: Range = r) -> Path | Exception:
+                    def task(r: Range = r) -> Path:
                         dst = dst_path.with_suffix(f".{r.start}")
-                        out = self.download(src_path, dst, r)
-                        if isinstance(out, Exception):
-                            warnings.warn(f"Failed to download chunked: {out}", stacklevel=2)
-                        return out
+                        return self.download(src_path, dst, r)
 
-                    fut = executor.submit(task, r)
-                    futures.append(fut)
+                    futures.append(executor.submit(task, r))
+
+                errors: list[Exception] = []
                 for fut in futures:
-                    result = fut.result()
-                    if isinstance(result, Exception):
-                        errors.append(result)
-                    else:
-                        finished.append(result)
-                if errors:
-                    for finished_file in finished:
-                        try:
-                            finished_file.unlink()
-                        except Exception as e:
-                            warnings.warn(
-                                f"Failed to delete file {finished_file}: {e}", stacklevel=2
-                            )
-                    return Exception(f"Failed to download chunked: {errors}")
-
-                if not dst_path.parent.exists():
-                    dst_path.parent.mkdir(parents=True, exist_ok=True)
-
-                count = 0
-                with open(dst_path, "wb") as file:
-                    for f in finished:
-                        logger.info(f"Appending {f} to {dst_path}")
-                        with open(f, "rb") as part:
-                            while chunk := part.read(8192 * 4):
-                                if not chunk:
-                                    break
-                                count += len(chunk)
-                                file.write(chunk)
-                        logger.info(f"Removing {f}")
-                        f.unlink()
-                return dst_path
-            except Exception as e:
-                warnings.warn(f"Failed to copy chunked: {e}", stacklevel=2)
-                for f in finished:
                     try:
-                        if f.exists():
-                            f.unlink()
-                    except Exception as ee:
-                        warnings.warn(f"Failed to delete file {f}: {ee}", stacklevel=2)
-                return e
+                        finished.append(fut.result())
+                    except Exception as e:
+                        errors.append(e)
+
+                if errors:
+                    warnings.warn(f"Failed to download chunked: {errors}", stacklevel=2)
+                    raise HttpFetchError(src_path, errors[0]) from errors[0]
+
+                _concatenate_chunks(finished, dst_path)
+                return dst_path
+        except Exception:
+            for f in finished:
+                try:
+                    if f.exists():
+                        f.unlink()
+                except OSError as ee:
+                    warnings.warn(f"Failed to delete file {f}: {ee}", stacklevel=2)
+            raise
 
     def __enter__(self) -> Self:
         return self
@@ -372,9 +375,7 @@ class HttpFetcher:
             try:
                 range = Range(offset, offset + size)
                 dst = get_chunk_tmpdir() / f"{random_str(12)}.chunk"
-                out = self.server.download(self.path, dst, range)
-                if isinstance(out, Exception):
-                    raise out
+                self.server.download(self.path, dst, range)
                 return FilePart(payload=dst, extra=extra)
             finally:
                 self.semaphore.release()

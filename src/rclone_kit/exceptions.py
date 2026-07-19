@@ -49,3 +49,16 @@ class RcloneCommandError(RcloneKitError):
         self.stderr = stderr
         self.cause = cause
         super().__init__(f"rclone {command} failed: {stderr or cause}")
+
+
+class HttpFetchError(RcloneKitError):
+    """Raised when a request to rclone's `serve http` fails: a non-2xx
+    response, a transport-level error, or an incomplete ranged download.
+
+    Carries the remote path and the underlying failure as `__cause__`.
+    """
+
+    def __init__(self, path: str, cause: Exception) -> None:
+        self.path = path
+        self.cause = cause
+        super().__init__(f"HTTP fetch failed for {path!r}: {cause}")

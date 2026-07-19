@@ -14,6 +14,7 @@ from typing import Self
 import pytest
 
 from rclone_kit import http_server as http_server_module
+from rclone_kit.exceptions import HttpFetchError
 from rclone_kit.http_server import FileList, HttpServer, _parse_files_and_dirs
 from rclone_kit.process import Process
 from rclone_kit.types import Range
@@ -111,12 +112,17 @@ def test_file_url_escapes_remote_path_without_platform_conversion() -> None:
     )
 
 
-def test_get_returns_download_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_get_raises_on_download_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     server = HttpServer("http://localhost:8080", "", process=_stub_process())
-    failure = OSError("download failed")
-    monkeypatch.setattr(server, "download", lambda *_args, **_kwargs: failure)
+    failure = HttpFetchError("missing.txt", OSError("download failed"))
 
-    assert server.get("missing.txt") is failure
+    def _raise_failure(*_args: object, **_kwargs: object) -> None:
+        raise failure
+
+    monkeypatch.setattr(server, "download", _raise_failure)
+
+    with pytest.raises(HttpFetchError):
+        server.get("missing.txt")
 
 
 class _ShortRangeResponse:
@@ -152,17 +158,15 @@ def test_download_rejects_short_ranged_response(
     monkeypatch.setattr(http_server_module, "_range", lambda _count: iter((0,)))
     monkeypatch.setattr(http_server_module.time, "sleep", lambda _seconds: None)
 
-    with pytest.warns(UserWarning):
-        result = server.download("file.bin", destination, Range(0, 4))
+    with pytest.warns(UserWarning), pytest.raises(HttpFetchError):
+        server.download("file.bin", destination, Range(0, 4))
 
-    assert isinstance(result, Exception)
     assert not destination.exists()
 
 
-def test_download_after_shutdown_returns_failure(tmp_path: Path) -> None:
+def test_download_after_shutdown_raises_runtime_error(tmp_path: Path) -> None:
     server = HttpServer("http://localhost:8080", "", process=_stub_process())
     server.process = None
 
-    result = server.download("file.bin", tmp_path / "download")
-
-    assert isinstance(result, RuntimeError)
+    with pytest.raises(RuntimeError):
+        server.download("file.bin", tmp_path / "download")

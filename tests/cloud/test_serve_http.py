@@ -15,6 +15,7 @@ import pytest
 from helpers import DIGITAL_OCEAN_SPACES_ENV_VARS, skip_if_missing_cloud_env
 from rclone_kit import Config, Rclone
 from rclone_kit.env_file import load_env_file
+from rclone_kit.exceptions import HttpFetchError
 from rclone_kit.http_server import HttpServer, Range
 
 load_env_file()
@@ -105,9 +106,10 @@ class RcloneServeHttpTester(unittest.TestCase):
                 remote_path,
             ) as http_server:
                 resource_url = "zachs_video"
-                out = http_server.list(resource_url)
-                if isinstance(out, Exception):
-                    self.fail(f"List operation failed: {out!s}")
+                try:
+                    http_server.list(resource_url)
+                except HttpFetchError as e:
+                    self.fail(f"List operation failed: {e!s}")
 
         except subprocess.CalledProcessError as e:
             self.fail(f"Mount operation failed: {e!s}")
@@ -142,9 +144,6 @@ class RcloneServeHttpTester(unittest.TestCase):
                 out2 = http_server.download_multi_threaded(resource_url, dst2)
                 print(f"(2) Time taken: {time.time() - start}")
 
-                assert not isinstance(out1, Exception)
-                assert not isinstance(out2, Exception)
-
                 s1 = dst1.stat().st_size
                 s2 = dst2.stat().st_size
 
@@ -162,7 +161,6 @@ class RcloneServeHttpTester(unittest.TestCase):
 
                 self.assertIsInstance(out1, Path)
                 self.assertIsInstance(out2, Path)
-                assert isinstance(out2, Path)
 
                 print(f"Bytes written: {out2.stat().st_size}")
 
@@ -207,9 +205,6 @@ class RcloneServeHttpTester(unittest.TestCase):
                 out2 = http_server.download_multi_threaded(resource_url, dst2, range=range)
                 print(f"(2) Time taken: {time.time() - start}")
 
-                assert not isinstance(out1, Exception)
-                assert not isinstance(out2, Exception)
-
                 s1 = dst1.stat().st_size
                 s2 = dst2.stat().st_size
 
@@ -227,7 +222,6 @@ class RcloneServeHttpTester(unittest.TestCase):
 
                 self.assertIsInstance(out1, Path)
                 self.assertIsInstance(out2, Path)
-                assert isinstance(out2, Path)
 
                 print(f"Bytes written: {out2.stat().st_size}")
 

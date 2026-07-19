@@ -113,22 +113,11 @@ def read_task(
     range = Range(offset.as_int(), (offset + length).as_int())
 
     try:
-        err = http_server.download(
+        http_server.download(
             path=src_name,
             range=range,
             dst=outchunk,
         )
-        if isinstance(err, Exception):
-            out = UploadPart(
-                chunk=outchunk,
-                dst_part="",
-                part_num=-1,
-                total_parts=total_parts,
-                total_size=SizeSuffix(0),
-                exception=err,
-            )
-            out.dispose()
-            return out
         return UploadPart(
             chunk=outchunk,
             dst_part=part_dst,
