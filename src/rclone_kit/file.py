@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from rclone_kit.rpath import RPath
+from rclone_kit.rpath import RcloneJsonEntry, RPath
 
 _STRING_INTERNER: dict[str, str] = {}
 
@@ -167,7 +167,7 @@ class File:
         result = self.path.rclone._run(["cat", self.path.path], check=True)
         return result.stdout
 
-    def to_json(self) -> dict:
+    def to_json(self) -> RcloneJsonEntry:
         """Convert the File to a JSON serializable dictionary."""
         return self.path.to_json()
 

@@ -1,7 +1,7 @@
 import json
 import warnings
 
-from rclone_kit.rpath import RPath
+from rclone_kit.rpath import RcloneJsonEntry, RPath
 
 
 def _dedupe(items: list[RPath]) -> list[RPath]:
@@ -47,8 +47,8 @@ class DirListing:
         return msg
 
     def __repr__(self) -> str:
-        dirs: list = [d.path.to_json() for d in self.dirs]
-        files: list = [f.path.to_json() for f in self.files]
+        dirs: list[RcloneJsonEntry] = [d.path.to_json() for d in self.dirs]
+        files: list[RcloneJsonEntry] = [f.path.to_json() for f in self.files]
         json_obj = {
             "dirs": dirs,
             "files": files,

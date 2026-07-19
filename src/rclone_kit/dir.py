@@ -4,7 +4,7 @@ from pathlib import Path
 
 from rclone_kit.dir_listing import DirListing
 from rclone_kit.remote import Remote
-from rclone_kit.rpath import RPath
+from rclone_kit.rpath import RcloneJsonEntry, RPath
 from rclone_kit.types import ListingOption, Order
 
 
@@ -74,7 +74,7 @@ class Dir:
         assert self.path.rclone is not None
         return walk(self, breadth_first=breadth_first, max_depth=max_depth)
 
-    def to_json(self) -> dict:
+    def to_json(self) -> RcloneJsonEntry:
         """Convert the Dir to a JSON serializable dictionary."""
         return self.path.to_json()
 

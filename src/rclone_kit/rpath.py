@@ -1,8 +1,24 @@
+from __future__ import annotations
+
 import json
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, TypedDict, cast
 
 from rclone_kit.remote import Remote
+
+if TYPE_CHECKING:
+    from rclone_kit.rclone_impl import RcloneImpl
+
+
+class RcloneJsonEntry(TypedDict):
+    """Shape of one `rclone lsjson` entry."""
+
+    Path: str
+    Name: str
+    Size: int
+    MimeType: str
+    ModTime: str
+    IsDir: bool
 
 
 class RPath:
@@ -18,8 +34,6 @@ class RPath:
         mod_time: str,
         is_dir: bool,
     ) -> None:
-        from rclone_kit.rclone_impl import RcloneImpl
-
         if path.endswith("/"):
             path = path[:-1]
         self.remote = remote
@@ -35,15 +49,12 @@ class RPath:
         """Return the modification time as a datetime object."""
         return datetime.fromisoformat(self.mod_time)
 
-    def set_rclone(self, rclone: Any) -> None:
+    def set_rclone(self, rclone: RcloneImpl | None) -> None:
         """Set the rclone object."""
-        from rclone_kit.rclone_impl import RcloneImpl
-
-        assert isinstance(rclone, RcloneImpl)
         self.rclone = rclone
 
     @staticmethod
-    def from_dict(data: dict, remote: Remote, parent_path: str | None = None) -> "RPath":
+    def from_dict(data: RcloneJsonEntry, remote: Remote, parent_path: str | None = None) -> RPath:
         """Create a File from a dictionary."""
         path = data["Path"]
         if parent_path is not None:
@@ -60,8 +71,8 @@ class RPath:
 
     @staticmethod
     def from_array(
-        data: list[dict], remote: Remote, parent_path: str | None = None
-    ) -> list["RPath"]:
+        data: list[RcloneJsonEntry], remote: Remote, parent_path: str | None = None
+    ) -> list[RPath]:
         """Create a File from a dictionary."""
         out: list[RPath] = []
         for d in data:
@@ -70,16 +81,14 @@ class RPath:
         return out
 
     @staticmethod
-    def from_json_str(
-        json_str: str, remote: Remote, parent_path: str | None = None
-    ) -> list["RPath"]:
+    def from_json_str(json_str: str, remote: Remote, parent_path: str | None = None) -> list[RPath]:
         """Create a File from a JSON string."""
         json_obj = json.loads(json_str)
         if isinstance(json_obj, dict):
-            return [RPath.from_dict(json_obj, remote, parent_path)]
-        return RPath.from_array(json_obj, remote, parent_path)
+            return [RPath.from_dict(cast(RcloneJsonEntry, json_obj), remote, parent_path)]
+        return RPath.from_array(cast(list[RcloneJsonEntry], json_obj), remote, parent_path)
 
-    def to_json(self) -> dict:
+    def to_json(self) -> RcloneJsonEntry:
         return {
             "Path": self.path,
             "Name": self.name,
@@ -93,6 +102,5 @@ class RPath:
         return f"{self.remote.name}:{self.path}"
 
     def __repr__(self):
-        data = self.to_json()
-        data["Remote"] = self.remote.name
+        data: dict[str, object] = {**self.to_json(), "Remote": self.remote.name}
         return json.dumps(data)
