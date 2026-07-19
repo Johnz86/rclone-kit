@@ -59,6 +59,16 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+FLAG_CHECKERS = "--checkers"
+FLAG_FAST_LIST = "--fast-list"
+FLAG_FILES_FROM = "--files-from"
+FLAG_LOW_LEVEL_RETRIES = "--low-level-retries"
+FLAG_MULTI_THREAD_STREAMS = "--multi-thread-streams"
+FLAG_PROGRESS = "--progress"
+FLAG_S3_NO_CHECK_BUCKET = "--s3-no-check-bucket"
+FLAG_TRANSFERS = "--transfers"
+FLAG_VFS_CACHE_MODE = "--vfs-cache-mode"
+
 
 def rclone_verbose(verbose: bool | None) -> bool:
     if verbose is not None:
@@ -207,7 +217,7 @@ class RcloneImpl:
             if max_depth > 1:
                 cmd += ["--max-depth", str(max_depth)]
         if fast_list:
-            cmd.append("--fast-list")
+            cmd.append(FLAG_FAST_LIST)
         streamer = FilesStream(src, self._launch_process(cmd, capture=True))
         return streamer
 
@@ -373,7 +383,7 @@ class RcloneImpl:
             "check",
             src,
             dst,
-            "--checkers",
+            FLAG_CHECKERS,
             str(checkers),
             "--log-level",
             "INFO",
@@ -388,7 +398,7 @@ class RcloneImpl:
         if size_only:
             cmd += ["--size-only"]
         if fast_list:
-            cmd += ["--fast-list"]
+            cmd += [FLAG_FAST_LIST]
         if min_size:
             cmd += ["--min-size", min_size]
         if max_size:
@@ -503,7 +513,7 @@ class RcloneImpl:
             "copyto",
             src,
             dst,
-            "--s3-no-check-bucket",
+            FLAG_S3_NO_CHECK_BUCKET,
             "--no-traverse",
         ]
         if other_args is not None:
@@ -539,7 +549,7 @@ class RcloneImpl:
         max_partition_workers = 1 if max_partition_workers is None else max_partition_workers
         low_level_retries = 10 if low_level_retries is None else low_level_retries
         retries = 3 if retries is None else retries
-        command_args = [*(other_args or ()), "--s3-no-check-bucket"]
+        command_args = [*(other_args or ()), FLAG_S3_NO_CHECK_BUCKET]
         checkers = 1000 if checkers is None else checkers
         transfers = 32 if transfers is None else transfers
         verbose = get_verbose(verbose)
@@ -557,7 +567,7 @@ class RcloneImpl:
                     f"Invalid file path, contains a remote, which is not allowed for copy_files: {p}"
                 )
 
-        using_fast_list = "--fast-list" in command_args
+        using_fast_list = FLAG_FAST_LIST in command_args
         if using_fast_list:
             warnings.warn(
                 "It's not recommended to use --fast-list with copy_files as this will perform poorly on large repositories since the entire repository has to be scanned.",
@@ -634,14 +644,14 @@ class RcloneImpl:
                             cmd_list += ["--max-backlog", str(max_backlog)]
                         if multi_thread_streams is not None:
                             cmd_list += [
-                                "--multi-thread-streams",
+                                FLAG_MULTI_THREAD_STREAMS,
                                 str(multi_thread_streams),
                             ]
                         if verbose:
                             if not any("-v" in x for x in command_args):
                                 cmd_list.append("-vvvv")
-                            if not any("--progress" in x for x in command_args):
-                                cmd_list.append("--progress")
+                            if not any(FLAG_PROGRESS in x for x in command_args):
+                                cmd_list.append(FLAG_PROGRESS)
                         cmd_list += command_args
                         out = self._run(cmd_list, capture=not verbose)
                         return out
@@ -686,12 +696,12 @@ class RcloneImpl:
         low_level_retries = low_level_retries or 10
         retries = retries or 3
         cmd_list: list[str] = ["copy", src_dir, dst_dir]
-        cmd_list += ["--checkers", str(checkers)]
-        cmd_list += ["--transfers", str(transfers)]
-        cmd_list += ["--low-level-retries", str(low_level_retries)]
-        cmd_list.append("--s3-no-check-bucket")
+        cmd_list += [FLAG_CHECKERS, str(checkers)]
+        cmd_list += [FLAG_TRANSFERS, str(transfers)]
+        cmd_list += [FLAG_LOW_LEVEL_RETRIES, str(low_level_retries)]
+        cmd_list.append(FLAG_S3_NO_CHECK_BUCKET)
         if multi_thread_streams is not None:
-            cmd_list += ["--multi-thread-streams", str(multi_thread_streams)]
+            cmd_list += [FLAG_MULTI_THREAD_STREAMS, str(multi_thread_streams)]
         if other_args:
             cmd_list += other_args
         cp = self._run(cmd_list, check=check, capture=False)
@@ -747,11 +757,11 @@ class RcloneImpl:
                         cmd_list: list[str] = [
                             "delete",
                             remote,
-                            "--files-from",
+                            FLAG_FILES_FROM,
                             str(include_files_txt),
-                            "--checkers",
+                            FLAG_CHECKERS,
                             "1000",
-                            "--transfers",
+                            FLAG_TRANSFERS,
                             "1000",
                         ]
                         if verbose:
@@ -1046,7 +1056,7 @@ class RcloneImpl:
 
         src = convert_to_str(src)
         dst = convert_to_str(dst)
-        cmd_list: list[str] = ["copy", src, dst, "--s3-no-check-bucket"]
+        cmd_list: list[str] = ["copy", src, dst, FLAG_S3_NO_CHECK_BUCKET]
         if args is not None:
             cmd_list += args
         cp = self._run(cmd_list)
@@ -1056,7 +1066,7 @@ class RcloneImpl:
         self, src: Remote, dst: Remote, args: list[str] | None = None
     ) -> CompletedProcess:
         """Copy a remote to another remote."""
-        cmd_list: list[str] = ["copy", str(src), str(dst), "--s3-no-check-bucket"]
+        cmd_list: list[str] = ["copy", str(src), str(dst), FLAG_S3_NO_CHECK_BUCKET]
         if args is not None:
             cmd_list += args
 
@@ -1109,13 +1119,13 @@ class RcloneImpl:
         if use_links:
             cmd_list.append("--links")
         if vfs_cache_mode:
-            cmd_list.append("--vfs-cache-mode")
+            cmd_list.append(FLAG_VFS_CACHE_MODE)
             cmd_list.append(vfs_cache_mode)
         if cache_dir:
             cmd_list.append("--cache-dir")
             cmd_list.append(str(cache_dir.absolute()))
         if transfers is not None:
-            cmd_list.append("--transfers")
+            cmd_list.append(FLAG_TRANSFERS)
             cmd_list.append(str(transfers))
         if debug_fuse:
             cmd_list.append("--debug-fuse")
@@ -1162,9 +1172,9 @@ class RcloneImpl:
         if modtime_strategy is not None:
             other_args.append(f"--{modtime_strategy.value}")
         if (vfs_cache_mode in {"full", "writes"}) and (
-            transfers is not None and "--transfers" not in other_args
+            transfers is not None and FLAG_TRANSFERS not in other_args
         ):
-            other_args.append("--transfers")
+            other_args.append(FLAG_TRANSFERS)
             other_args.append(str(transfers))
         if dir_cache_time is not None and "--dir-cache-time" not in other_args:
             other_args.append("--dir-cache-time")
@@ -1260,7 +1270,7 @@ class RcloneImpl:
 
         if cache_mode:
             cmd_list += [
-                "--vfs-cache-mode",
+                FLAG_VFS_CACHE_MODE,
                 cache_mode,
             ]
         if serve_http_log:
@@ -1346,7 +1356,7 @@ class RcloneImpl:
             return SizeResult(
                 prefix=src, total_size=tmp.as_int(), file_sizes={files[0]: tmp.as_int()}
             )
-        if fast_list or (other_args and "--fast-list" in other_args):
+        if fast_list or (other_args and FLAG_FAST_LIST in other_args):
             warnings.warn(
                 "It's not recommended to use --fast-list with size_files as this will perform poorly on large repositories since the entire repository has to be scanned.",
                 stacklevel=2,
@@ -1358,9 +1368,9 @@ class RcloneImpl:
         with TemporaryDirectory() as tmpdir:
             include_files_txt = Path(tmpdir) / "include_files.txt"
             include_files_txt.write_text("\n".join(files), encoding="utf-8")
-            cmd += ["--files-from", str(include_files_txt)]
+            cmd += [FLAG_FILES_FROM, str(include_files_txt)]
             if fast_list:
-                cmd.append("--fast-list")
+                cmd.append(FLAG_FAST_LIST)
             if other_args:
                 cmd += other_args
             cp = self._run(cmd, check=check)
