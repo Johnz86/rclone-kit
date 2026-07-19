@@ -7,6 +7,12 @@ from rclone_kit.fs.filesystem import FSPath, logger
 
 _FS_WALK_THREAD_MAX_BACKLOG = int(os.getenv("FS_WALK_THREAD_MAX_BACKLOG", "16"))
 
+# Deliberately a process-lifetime singleton shared by every fs_walk call,
+# not an owned/closeable resource: concurrent.futures.thread registers its
+# own atexit hook that waits for outstanding work items before interpreter
+# shutdown, so this pool cannot leak a blocked or orphaned thread the way a
+# hand-rolled one could. Sized once at import time from
+# FS_WALK_THREAD_MAX_BACKLOG; changing the env var afterward has no effect.
 _executor = ThreadPoolExecutor(max_workers=_FS_WALK_THREAD_MAX_BACKLOG)
 
 
