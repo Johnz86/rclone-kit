@@ -1,0 +1,174 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  UV_VERSION: "0.11.29"
+
+jobs:
+  quality:
+    name: Quality and release metadata
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990
+        with:
+          version: ${{ env.UV_VERSION }}
+
+      - name: Verify tag matches package version
+        shell: bash
+        run: |
+          package_version="$(uv version --short)"
+          if [[ "${GITHUB_REF_NAME}" != "v${package_version}" ]]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match package version ${package_version}"
+            exit 1
+          fi
+
+      - name: Install Python
+        run: uv python install
+
+      - name: Install dependencies
+        run: uv sync --locked --all-groups --all-extras
+
+      - name: Check formatting
+        run: uv run ruff format --check .
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Type check
+        run: uv run pyright _build_backend.py src tests scripts
+
+  build-wheels:
+    name: Build and test (${{ matrix.target }})
+    needs: quality
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: windows-amd64
+            os: windows-latest
+            cache-path: ~\AppData\Local\rclone-kit\archives
+          - target: linux-amd64
+            os: ubuntu-latest
+            cache-path: ~/.cache/rclone-kit/archives
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990
+        with:
+          version: ${{ env.UV_VERSION }}
+
+      - name: Install Python
+        run: uv python install
+
+      - name: Install dependencies
+        run: uv sync --locked --all-groups --all-extras
+
+      - name: Run unit tests
+        run: uv run pytest tests/unit
+
+      - name: Run integration tests
+        run: uv run pytest tests/integration
+
+      - name: Cache rclone release archive
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ${{ matrix.cache-path }}
+          key: rclone-archive-${{ matrix.target }}-${{ hashFiles('src/rclone_kit/runtime/platform.py') }}
+
+      - name: Build, verify, and smoke-test wheel
+        run: uv run python scripts/build_distribution.py --target ${{ matrix.target }} --out-dir dist
+
+      - name: Upload wheel
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: wheel-${{ matrix.target }}
+          path: dist/*.whl
+          if-no-files-found: error
+          retention-days: 7
+
+  assemble:
+    name: Assemble and verify release
+    needs: build-wheels
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990
+        with:
+          version: ${{ env.UV_VERSION }}
+
+      - name: Install Python
+        run: uv python install
+
+      - name: Install dependencies
+        run: uv sync --locked --all-groups
+
+      - name: Download wheels
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          pattern: wheel-*
+          path: dist
+          merge-multiple: true
+
+      - name: Verify complete release set
+        run: uv run python scripts/verify_distribution.py dist --require-complete-release-set
+
+      - name: Print release digests
+        run: sha256sum dist/*.whl
+
+      - name: Upload verified release
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: release-dist
+          path: dist/*.whl
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish to PyPI
+    needs: assemble
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: pypi-release
+      url: https://pypi.org/project/rclone-kit/
+    permissions:
+      actions: read
+      id-token: write
+    steps:
+      - name: Install uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990
+        with:
+          version: ${{ env.UV_VERSION }}
+
+      - name: Download verified release
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: release-dist
+          path: dist
+
+      - name: Publish with PyPI trusted publishing
+        run: uv publish --trusted-publishing always --check-url https://pypi.org/simple dist/*.whl

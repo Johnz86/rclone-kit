@@ -25,7 +25,7 @@ Two details matter when actually executing it:
 
 - **One canonical command replaces the manual staging/build/verify/smoke-test
   sequence.** `scripts/build_distribution.py` (see
-  `docs/build_pipeline_improvements.md`) stages the certified rclone
+  `docs/implementation_and_build_pipeline.md`) stages the certified rclone
   artifact into an isolated temporary copy of the source tree, verifies the
   extracted executable's digest, builds exactly one wheel, runs every
   `scripts/verify_distribution.py` check, installs the wheel into a clean
@@ -36,9 +36,9 @@ Two details matter when actually executing it:
   succeeds or fails. `--out-dir` must be empty or nonexistent; omit it to
   let the script create a fresh temporary directory itself.
 
-- **No source distribution is built or published.** Per
-  `docs/build_pipeline_improvements.md`'s recommended short-term sdist
-  policy, a normal `pip wheel` build from an sdist has no staging step and
+- **No source distribution is built or published.** Per the distribution
+  policy in `docs/implementation_and_build_pipeline.md`, a normal `pip wheel`
+  build from an sdist has no staging step and
   would silently produce a wheel without rclone. `rclone-kit` therefore
   publishes platform wheels only, until sdist-to-wheel builds are made
   complete and tested.
@@ -79,8 +79,8 @@ CHANGELOG entry, or equivalent — capturing:
 - [ ] Direct dependency changes since the previous release (diff
       `[project.dependencies]`, `[project.optional-dependencies]`, and
       `[dependency-groups]` against the prior tag)
-- [ ] SHA-256 digests for every published file (`dist/*.whl`, `dist/*.tar.gz`
-      — `uv publish` prints these; `sha256sum dist/*` reproduces them)
+- [ ] SHA-256 digests for every published wheel (`dist/*.whl` — `uv
+      publish` prints these; `sha256sum dist/*` reproduces them)
 - [ ] Known external mount prerequisites (WinFsp on Windows, FUSE plus a
       usable unmount command on Linux — see `rclone_kit.mount_util`'s
       availability checks)
@@ -92,9 +92,8 @@ a repository secret. Use
 [PyPI trusted publishing](https://docs.pypi.org/trusted-publishers/) instead:
 
 1. On PyPI, register a trusted publisher for the `rclone-kit` project
-   pointing at this repository, the workflow file that will run `uv
-   publish`, and a specific GitHub Environment name (for example
-   `pypi-release`).
+   pointing at this repository, `.github/workflows/release.yaml`, and the
+   `pypi-release` GitHub Environment.
 2. In this repository's GitHub settings, create that environment and add
    required reviewers (or another protection rule) so publishing needs
    explicit approval.
@@ -103,8 +102,8 @@ a repository secret. Use
    exchanges it for upload authorization. No `PYPI_API_TOKEN` (or
    equivalent) secret is ever stored in the repository or its environments.
 
-This repository does not yet include a `release.yml` workflow that performs
-the publish step; that was a deliberate choice rather than something added
-speculatively. The sequence above is the one a maintainer runs by hand (or
-wires into such a workflow later) until trusted publishing is registered on
-PyPI's side for this project.
+`.github/workflows/release.yaml` runs for version tags matching `v*`, rejects
+a tag whose value does not equal `v` plus the version in `pyproject.toml`,
+repeats the quality and platform test gates, builds and verifies both
+certified wheels, and publishes only the assembled `release-dist` artifact.
+The `pypi-release` environment should require explicit maintainer approval.
