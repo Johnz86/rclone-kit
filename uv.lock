@@ -454,22 +454,22 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "boto3", marker = "extra == 's3'", specifier = ">=1.28.23" },
+    { name = "boto3", marker = "extra == 's3'", specifier = ">=1.43.51" },
     { name = "httpx", specifier = ">=0.28.1" },
-    { name = "psutil" },
-    { name = "psycopg2-binary", marker = "extra == 'postgres'", specifier = ">=2.9.10" },
+    { name = "psutil", specifier = ">=7.2.2" },
+    { name = "psycopg2-binary", marker = "extra == 'postgres'", specifier = ">=2.9.12" },
     { name = "rclone-kit", extras = ["database"], marker = "extra == 'postgres'" },
     { name = "rclone-kit", extras = ["s3", "database", "postgres"], marker = "extra == 'full'" },
-    { name = "sqlmodel", marker = "extra == 'database'", specifier = ">=0.0.23" },
+    { name = "sqlmodel", marker = "extra == 'database'", specifier = ">=0.0.39" },
 ]
 provides-extras = ["s3", "database", "postgres", "full"]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "pyright" },
-    { name = "pytest" },
-    { name = "pytest-xdist" },
-    { name = "ruff" },
+    { name = "pyright", specifier = ">=1.1.411" },
+    { name = "pytest", specifier = ">=9.1.1" },
+    { name = "pytest-xdist", specifier = ">=3.8.0" },
+    { name = "ruff", specifier = ">=0.15.22" },
 ]
 
 [[package]]

@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=77"]
+requires = ["setuptools>=83.0.0"]
 build-backend = "_build_backend"
 backend-path = ["."]
 
@@ -18,7 +18,7 @@ classifiers = [
     "Operating System :: POSIX :: Linux",
 ]
 dependencies = [
-    "psutil",
+    "psutil>=7.2.2",
     "httpx>=0.28.1",
 ]
 
@@ -26,9 +26,9 @@ dependencies = [
 version = "1.0.0"
 
 [project.optional-dependencies]
-s3 = ["boto3>=1.28.23"]
-database = ["sqlmodel>=0.0.23"]
-postgres = ["rclone-kit[database]", "psycopg2-binary>=2.9.10"]
+s3 = ["boto3>=1.43.51"]
+database = ["sqlmodel>=0.0.39"]
+postgres = ["rclone-kit[database]", "psycopg2-binary>=2.9.12"]
 full = ["rclone-kit[s3,database,postgres]"]
 
 [project.urls]
@@ -37,10 +37,10 @@ Repository = "https://github.com/Johnz86/rclone-kit"
 
 [dependency-groups]
 dev = [
-    "pytest",
-    "pytest-xdist",
-    "pyright",
-    "ruff",
+    "pytest>=9.1.1",
+    "pytest-xdist>=3.8.0",
+    "pyright>=1.1.411",
+    "ruff>=0.15.22",
 ]
 
 [tool.setuptools]
