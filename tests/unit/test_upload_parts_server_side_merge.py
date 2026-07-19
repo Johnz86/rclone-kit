@@ -174,6 +174,31 @@ def test_merge_closes_write_thread_on_success(monkeypatch: pytest.MonkeyPatch) -
     assert not merger.write_thread.is_alive()
 
 
+def test_merge_closes_write_thread_after_retry_exhaustion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Exercises the exact scenario the write-thread ownership fix targets:
+    a part copy exhausts its retries, `_do_upload_task` cancels the
+    not-yet-started EOS-sending future via `executor.shutdown(...,
+    cancel_futures=True)`, and `merge()` must still close the write thread
+    itself rather than leaving it blocked on `queue.get()` forever.
+    """
+    monkeypatch.setattr(
+        "rclone_kit.s3.multipart.upload_parts_server_side_merge.time.sleep", lambda _s: None
+    )
+    monkeypatch.setattr(
+        "rclone_kit.s3.multipart.upload_parts_server_side_merge._DEFAULT_PART_COPY_RETRIES", 0
+    )
+    merger = _stub_merger()
+    merger.client = cast(Any, _FailingS3Client())
+
+    with pytest.raises(RuntimeError, match="copy failed"):
+        merger.merge()
+
+    assert merger.write_thread is not None
+    assert not merger.write_thread.is_alive()
+
+
 def _fake_s3_credentials() -> S3Credentials:
     return S3Credentials(
         bucket_name="bucket",
