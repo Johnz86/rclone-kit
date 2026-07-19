@@ -15,9 +15,9 @@ from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from queue import Queue
 from threading import Semaphore, Thread
-from typing import Any, cast
+from typing import cast
 
-from rclone_kit.exceptions import MergeStateError
+from rclone_kit.exceptions import MergeStateError, S3MergeError
 from rclone_kit.rclone_impl import RcloneImpl
 from rclone_kit.s3.create import (
     BaseClient,
@@ -38,31 +38,24 @@ _TIMEOUT_READ = 900
 _TIMEOUT_CONNECTION = 900
 
 
+_DEFAULT_PART_COPY_RETRIES = 9
+
+
 def _upload_part_copy_task(
     s3_client: BaseClient,
     state: MergeState,
     source_bucket: str,
     source_key: str,
     part_number: int,
-) -> FinishedPiece | Exception:
-    """
-    Upload a part by copying from an existing S3 object.
+) -> FinishedPiece:
+    """Upload a part by copying from an existing S3 object, retrying transient failures.
 
-    Args:
-        info: Upload information
-        source_bucket: Source bucket name
-        source_key: Source object key
-        part_number: Part number (1-10000)
-        byte_range: Optional byte range in format 'bytes=start-end'
-        retries: Number of retry attempts
-
-    Returns:
-        FinishedPiece with ETag and part number
+    Raises the last encountered error once retries are exhausted.
     """
     copy_source = {"Bucket": source_bucket, "Key": source_key}
 
-    default_retries = 9
-    retries = default_retries + 1
+    retries = _DEFAULT_PART_COPY_RETRIES + 1
+    last_error: Exception | None = None
     for retry in range(retries):
         params: dict = {}
         try:
@@ -89,59 +82,42 @@ def _upload_part_copy_task(
             return out
 
         except Exception as e:
+            last_error = e
             msg = f"Error copying {copy_source} -> {state.dst_key}: {e}, params={params}"
             if "An error occurred (InternalError)" in str(e) or "NoSuchKey" in str(e):
                 locked_print(msg)
             if retry == retries - 1:
                 locked_print(msg)
-                return e
-            else:
-                locked_print(f"{msg}, retrying")
+                break
+            sleep_time = 2**retry
+            locked_print(f"{msg}, retrying in {sleep_time} seconds")
+            time.sleep(sleep_time)
 
-                sleep_time = 2**retry
-                locked_print(f"Sleeping for {sleep_time} seconds")
-                continue
-
-    return Exception("Should not reach here")
+    assert last_error is not None
+    raise last_error
 
 
 def _complete_multipart_upload_from_parts(
     s3_client: BaseClient, state: MergeState, finished_parts: list[FinishedPiece]
-) -> Exception | None:
+) -> None:
+    """Complete a multipart upload using the provided parts.
+
+    Raises `S3MergeError` if the S3 API call fails.
     """
-    Complete a multipart upload using the provided parts.
-
-    Args:
-        info: Upload information
-        parts: List of finished pieces with ETags
-
-    Returns:
-        The URL of the completed object
-    """
-
     finished_parts.sort(key=lambda x: x.part_number)
     multipart_parts = FinishedPiece.to_json_array(finished_parts)
     multipart_upload: dict = {
         "Parts": multipart_parts,
     }
-    response: Any = None
     try:
-        response = s3_client.complete_multipart_upload(
+        s3_client.complete_multipart_upload(
             Bucket=state.bucket,
             Key=state.dst_key,
             UploadId=state.upload_id,
             MultipartUpload=multipart_upload,
         )
     except Exception as e:
-        import traceback
-
-        stacktrace = traceback.format_exc()
-        warnings.warn(
-            f"Error completing multipart upload: {e}\n\n{response}\n\n{stacktrace}", stacklevel=2
-        )
-        return e
-
-    return None
+        raise S3MergeError(f"Failed to complete multipart upload for {state.dst_key}") from e
 
 
 def _do_upload_task(
@@ -149,8 +125,14 @@ def _do_upload_task(
     max_workers: int,
     merge_state: MergeState,
     on_finished: Callable[[FinishedPiece | EndOfStream], None],
-) -> Exception | None:
-    futures: list[Future[FinishedPiece | Exception]] = []
+) -> None:
+    """Copy every remaining part in parallel, then complete the multipart upload.
+
+    Raises the first part-copy failure encountered (cancelling the rest),
+    or `S3MergeError` if the finished-part count doesn't match, or if
+    completing the upload fails.
+    """
+    futures: list[Future[FinishedPiece]] = []
     parts = merge_state.remaining_parts()
     source_bucket = merge_state.bucket
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -164,7 +146,7 @@ def _do_upload_task(
                 source_bucket=source_bucket,
                 s3_key=s3_key,
                 part_number=part_number,
-            ):
+            ) -> FinishedPiece:
                 out = _upload_part_copy_task(
                     s3_client=s3_client,
                     state=state,
@@ -172,9 +154,6 @@ def _do_upload_task(
                     source_key=s3_key,
                     part_number=part_number,
                 )
-                if isinstance(out, Exception):
-                    return out
-
                 on_finished(out)
                 return out
 
@@ -187,27 +166,21 @@ def _do_upload_task(
 
         final_fut = executor.submit(lambda: on_finished(EndOfStream()))
 
-        for fut in futures:
-            finished_part = fut.result()
-            if isinstance(finished_part, Exception):
-                executor.shutdown(wait=True, cancel_futures=True)
-                return finished_part
+        try:
+            for fut in futures:
+                fut.result()
+        except Exception:
+            executor.shutdown(wait=True, cancel_futures=True)
+            raise
         final_fut.result()
 
         finished_parts = merge_state.finished
-        try:
-            assert len(finished_parts) == len(merge_state.all_parts)
-        except Exception:
-            return ValueError(f"Finished parts mismatch: {len(finished_parts)} != {len(parts)}")
+        if len(finished_parts) != len(merge_state.all_parts):
+            raise S3MergeError(f"Finished parts mismatch: {len(finished_parts)} != {len(parts)}")
 
-        try:
-            _complete_multipart_upload_from_parts(
-                s3_client=s3_client, state=merge_state, finished_parts=finished_parts
-            )
-        except Exception as e:
-            warnings.warn(f"Error completing multipart upload: {e}", stacklevel=2)
-            return e
-        return None
+        _complete_multipart_upload_from_parts(
+            s3_client=s3_client, state=merge_state, finished_parts=finished_parts
+        )
 
 
 def _begin_upload(
@@ -302,22 +275,22 @@ class WriteMergeStateThread(Thread):
         self.queue.put(EndOfStream())
 
 
-def _cleanup_merge(rclone: RcloneImpl, info: InfoJson) -> Exception | None:
+def _cleanup_merge(rclone: RcloneImpl, info: InfoJson) -> None:
+    """Verify the merged upload matches expectations, then purge temp parts."""
     size = info.size
     dst = info.dst
     parts_dir = info.parts_dir
     if not rclone.exists(dst):
-        return FileNotFoundError(f"Destination file not found: {dst}")
+        raise FileNotFoundError(f"Destination file not found: {dst}")
 
     write_size = rclone.size_file(dst)
     if write_size != size:
-        return ValueError(f"Size mismatch: {write_size} != {size}")
+        raise ValueError(f"Size mismatch: {write_size} != {size}")
 
     logger.info("Upload complete: %s", dst)
     cp = rclone.purge(parts_dir)
     if cp.failed():
-        return Exception(f"Failed to purge parts dir: {cp}")
-    return None
+        raise S3MergeError(f"Failed to purge parts dir: {cp}")
 
 
 def _get_merge_path(info_path: str) -> str:
@@ -331,81 +304,76 @@ def _begin_or_resume_merge(
     info: InfoJson,
     verbose: bool = False,
     max_workers: int = DEFAULT_MAX_WORKERS,
-) -> "S3MultiPartMerger | Exception":
+) -> "S3MultiPartMerger":
+    merger: S3MultiPartMerger = S3MultiPartMerger(
+        rclone_impl=rclone,
+        info=info,
+        verbose=verbose,
+        max_workers=max_workers,
+    )
+
+    s3_bucket = merger.bucket
+    is_done = info.fetch_is_done()
+    assert is_done, f"Upload is not done: {info}"
+
+    merge_path = _get_merge_path(info_path=info.src_info)
     try:
-        merger: S3MultiPartMerger = S3MultiPartMerger(
-            rclone_impl=rclone,
-            info=info,
-            verbose=verbose,
-            max_workers=max_workers,
-        )
+        merge_json_text: str | None = rclone.read_text(merge_path)
+    except KeyboardInterrupt:
+        raise
+    except Exception:
+        merge_json_text = None
 
-        s3_bucket = merger.bucket
-        is_done = info.fetch_is_done()
-        assert is_done, f"Upload is not done: {info}"
-
-        merge_path = _get_merge_path(info_path=info.src_info)
+    if merge_json_text is not None:
+        merge_data = cast(MergeStateJson, json.loads(merge_json_text))
         try:
-            merge_json_text: str | None = rclone.read_text(merge_path)
-        except KeyboardInterrupt:
-            raise
-        except Exception:
-            merge_json_text = None
+            merge_state = MergeState.from_json(rclone_impl=rclone, data=merge_data)
+        except (KeyError, MergeStateError) as error:
+            warnings.warn(f"Failed to resume merge: {error}, starting new merge", stacklevel=2)
+        else:
+            merger._begin_resume_merge(merge_state=merge_state)
+            return merger
 
-        if merge_json_text is not None:
-            merge_data = cast(MergeStateJson, json.loads(merge_json_text))
-            try:
-                merge_state = MergeState.from_json(rclone_impl=rclone, data=merge_data)
-            except (KeyError, MergeStateError) as error:
-                warnings.warn(f"Failed to resume merge: {error}, starting new merge", stacklevel=2)
-            else:
-                merger._begin_resume_merge(merge_state=merge_state)
-                return merger
+    parts_dir = info.parts_dir
+    source_keys = info.fetch_all_finished()
 
-        parts_dir = info.parts_dir
-        source_keys = info.fetch_all_finished()
+    parts_path = parts_dir.split(s3_bucket)[1]
+    if parts_path.startswith("/"):
+        parts_path = parts_path[1:]
 
-        parts_path = parts_dir.split(s3_bucket)[1]
-        if parts_path.startswith("/"):
-            parts_path = parts_path[1:]
+    first_part: int | None = info.first_part
+    last_part: int | None = info.last_part
 
-        first_part: int | None = info.first_part
-        last_part: int | None = info.last_part
+    assert first_part is not None
+    assert last_part is not None
 
-        assert first_part is not None
-        assert last_part is not None
-
-        def _to_s3_key(name: str | None) -> str:
-            if name:
-                out = f"{parts_path}/{name}"
-                return out
-            out = f"{parts_path}"
+    def _to_s3_key(name: str | None) -> str:
+        if name:
+            out = f"{parts_path}/{name}"
             return out
+        out = f"{parts_path}"
+        return out
 
-        parts: list[Part] = []
-        part_num = first_part
-        for part_key in source_keys:
-            assert part_num <= last_part and part_num >= first_part
-            s3_key = _to_s3_key(name=part_key)
-            part = Part(part_number=part_num, s3_key=s3_key)
-            parts.append(part)
-            part_num += 1
+    parts: list[Part] = []
+    part_num = first_part
+    for part_key in source_keys:
+        assert part_num <= last_part and part_num >= first_part
+        s3_key = _to_s3_key(name=part_key)
+        part = Part(part_number=part_num, s3_key=s3_key)
+        parts.append(part)
+        part_num += 1
 
-        dst_name = info.dst_name
-        dst_dir = os.path.dirname(parts_path)
-        dst_key = f"{dst_dir}/{dst_name}"
+    dst_name = info.dst_name
+    dst_dir = os.path.dirname(parts_path)
+    dst_key = f"{dst_dir}/{dst_name}"
 
-        err = merger._begin_new_merge(
-            merge_path=merge_path,
-            parts=parts,
-            bucket=merger.bucket,
-            dst_key=dst_key,
-        )
-        if isinstance(err, Exception):
-            return err
-        return merger
-    except Exception as e:
-        return e
+    merger._begin_new_merge(
+        merge_path=merge_path,
+        parts=parts,
+        bucket=merger.bucket,
+        dst_key=dst_key,
+    )
+    return merger
 
 
 class S3MultiPartMerger:
@@ -435,7 +403,7 @@ class S3MultiPartMerger:
     @staticmethod
     def create(
         rclone: RcloneImpl, info: InfoJson, max_workers: int, verbose: bool
-    ) -> "S3MultiPartMerger | Exception":
+    ) -> "S3MultiPartMerger":
         return _begin_or_resume_merge(
             rclone=rclone, info=info, max_workers=max_workers, verbose=verbose
         )
@@ -459,28 +427,23 @@ class S3MultiPartMerger:
         merge_path: str,
         bucket: str,
         dst_key: str,
-    ) -> Exception | None:
-        try:
-            upload_id: str = _begin_upload(
-                s3_client=self.client,
-                parts=parts,
-                bucket=bucket,
-                dst_key=dst_key,
-                verbose=self.verbose,
-            )
-            merge_state = MergeState(
-                rclone_impl=self.rclone_impl,
-                merge_path=merge_path,
-                upload_id=upload_id,
-                bucket=bucket,
-                dst_key=dst_key,
-                finished=[],
-                all_parts=parts,
-            )
-            self.state = merge_state
-            return None
-        except Exception as e:
-            return e
+    ) -> None:
+        upload_id: str = _begin_upload(
+            s3_client=self.client,
+            parts=parts,
+            bucket=bucket,
+            dst_key=dst_key,
+            verbose=self.verbose,
+        )
+        self.state = MergeState(
+            rclone_impl=self.rclone_impl,
+            merge_path=merge_path,
+            upload_id=upload_id,
+            bucket=bucket,
+            dst_key=dst_key,
+            finished=[],
+            all_parts=parts,
+        )
 
     def _begin_resume_merge(
         self,
@@ -497,25 +460,20 @@ class S3MultiPartMerger:
             self.state.on_finished(finished_piece)
             self.write_thread.add_finished(finished_piece)
 
-    def merge(
-        self,
-    ) -> Exception | None:
+    def merge(self) -> None:
         state = self.state
         if state is None:
-            return Exception("No merge state loaded")
+            raise S3MergeError("No merge state loaded")
         self.start_write_thread()
-        err = _do_upload_task(
+        _do_upload_task(
             s3_client=self.client,
             merge_state=state,
             max_workers=self.max_workers,
             on_finished=self._on_piece_finished,
         )
-        if isinstance(err, Exception):
-            return err
-        return None
 
-    def cleanup(self) -> Exception | None:
-        return _cleanup_merge(rclone=self.rclone_impl, info=self.info)
+    def cleanup(self) -> None:
+        _cleanup_merge(rclone=self.rclone_impl, info=self.info)
 
 
 def s3_server_side_multi_part_merge(
@@ -523,22 +481,18 @@ def s3_server_side_multi_part_merge(
     info_path: str,
     max_workers: int = DEFAULT_MAX_WORKERS,
     verbose: bool = False,
-) -> Exception | None:
+) -> None:
+    """Merge a completed set of uploaded parts into the final S3 object.
+
+    Raises `FileNotFoundError` when `info_path` doesn't exist, or
+    `S3MergeError`/`MergeStateError` on any other merge failure.
+    """
     info = InfoJson(rclone, src=None, src_info=info_path)
     loaded = info.load()
     if not loaded:
-        return FileNotFoundError(f"Info file not found, has the upload finished? {info_path}")
-    merger: S3MultiPartMerger | Exception = S3MultiPartMerger.create(
+        raise FileNotFoundError(f"Info file not found, has the upload finished? {info_path}")
+    merger = S3MultiPartMerger.create(
         rclone=rclone, info=info, max_workers=max_workers, verbose=verbose
     )
-    if isinstance(merger, Exception):
-        return merger
-
-    err = merger.merge()
-    if isinstance(err, Exception):
-        return err
-
-    err = merger.cleanup()
-    if isinstance(err, Exception):
-        return err
-    return None
+    merger.merge()
+    merger.cleanup()

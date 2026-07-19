@@ -74,3 +74,11 @@ class MergeStateError(RcloneKitError):
     def __init__(self, detail: str) -> None:
         self.detail = detail
         super().__init__(f"Invalid merge-state JSON: {detail}")
+
+
+class S3MergeError(RcloneKitError):
+    """Raised when an S3 server-side multipart merge fails: a part copy
+    exhausts its retries, completing the upload fails, or the merged
+    object's state is invalid (no parts loaded, a finished-parts count
+    mismatch, or a failed cleanup purge).
+    """
