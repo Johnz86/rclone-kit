@@ -152,6 +152,21 @@ class GroupFilestest(unittest.TestCase):
         self.assertIn(expected_files[1], grouped_files)
         print("done")
 
+    def test_group_under_one_prefix_preserves_literal_backslash_in_filename(self) -> None:
+        """A filename containing a literal backslash (valid on S3 and most
+        rclone backends) must not be split into two components. On Windows
+        this used to fail because `_get_prefix` parsed the path with
+        `pathlib.Path`, which resolves to `WindowsPath` there and treats
+        `\\` as a directory separator; `PurePosixPath` never does.
+        """
+        backslash_name = "weird" + chr(92) + "name.txt"
+        files = [f"Bucket/subdir/{backslash_name}"]
+
+        prefix, grouped_files = group_under_one_prefix("src:", files)
+
+        self.assertEqual(prefix, "src:Bucket/subdir")
+        self.assertEqual(grouped_files, [backslash_name])
+
 
 if __name__ == "__main__":
     unittest.main()

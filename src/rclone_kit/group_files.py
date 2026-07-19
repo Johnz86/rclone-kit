@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import PurePosixPath
 
 
 @dataclass
@@ -204,7 +204,16 @@ def group_under_remote_bucket(
 
 
 def _get_prefix(path: str) -> tuple[str, str] | None:
-    path_path: Path = Path(path)
+    """Split `path` on its first `/`.
+
+    Uses `PurePosixPath`, not `Path`, because `path` is always a
+    forward-slash-delimited rclone remote path, never a local filesystem
+    path. `Path` resolves to `WindowsPath` on Windows, which treats a
+    literal `\\` inside a path segment (a valid character in many remote
+    object keys) as a separator, silently splitting one filename into two
+    path components - a bug that only reproduces on Windows.
+    """
+    path_path = PurePosixPath(path)
     parts = path_path.parts
     if len(parts) == 1:
         return None

@@ -2,7 +2,7 @@ import json
 import warnings
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
+from pathlib import PurePosixPath
 
 from rclone_kit.rpath import RcloneJsonEntry, RPath
 
@@ -51,7 +51,7 @@ def _get_suffix(name: str, chop_compressed_suffixes: bool = True) -> str:
         return ".".join(parts[-1:])
     except IndexError:
         warnings.warn(f"Invalid name: {name} for normal suffix extraction", stacklevel=2)
-        suffix = Path(name).suffix
+        suffix = PurePosixPath(name).suffix
         if suffix.startswith("."):
             return suffix[1:]
         return suffix
@@ -98,7 +98,7 @@ class FileItem:
     def from_json(remote: str, data: dict) -> "FileItem | None":
         try:
             path_str: str = data["Path"]
-            parent_path = Path(path_str).parent.as_posix()
+            parent_path = str(PurePosixPath(path_str).parent)
             name = data["Name"]
             size = data["Size"]
             mime_type = data["MimeType"]
@@ -181,10 +181,17 @@ class File:
         return rest
 
     def relative_to(self, prefix: str) -> str:
-        """Return the relative path to the other directory."""
-        self_path = Path(str(self))
+        """Return the relative path to the other directory.
+
+        Uses `PurePosixPath`, not `Path`: `str(self)` is a
+        `remote:bucket/path` rclone path, not a local filesystem path, so a
+        literal `\\` in a path segment (a valid character in many remote
+        object keys) must not be parsed as a separator the way `WindowsPath`
+        would on Windows.
+        """
+        self_path = PurePosixPath(str(self))
         rel_path = self_path.relative_to(prefix)
-        return str(rel_path.as_posix())
+        return str(rel_path)
 
     @property
     def size(self) -> int:

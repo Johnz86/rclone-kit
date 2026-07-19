@@ -1,6 +1,6 @@
 import json
 from collections.abc import Generator
-from pathlib import Path
+from pathlib import PurePosixPath
 
 from rclone_kit.dir_listing import DirListing
 from rclone_kit.remote import Remote
@@ -61,11 +61,17 @@ class Dir:
         )
 
     def relative_to(self, other: "Dir") -> str:
-        """Return the relative path to the other directory."""
-        self_path = Path(self.path.path)
-        other_path = Path(other.path.path)
+        """Return the relative path to the other directory.
+
+        Uses `PurePosixPath`, not `Path`: `self.path.path` is a
+        forward-slash-delimited rclone remote path, not a local filesystem
+        path, so it must not be parsed with `WindowsPath` semantics (which
+        treats a literal `\\` in a path segment as a separator).
+        """
+        self_path = PurePosixPath(self.path.path)
+        other_path = PurePosixPath(other.path.path)
         rel_path = self_path.relative_to(other_path)
-        return str(rel_path.as_posix())
+        return str(rel_path)
 
     def walk(self, breadth_first: bool, max_depth: int = -1) -> Generator[DirListing]:
         """List files and directories in the given path."""
@@ -94,11 +100,17 @@ class Dir:
         return out
 
     def __truediv__(self, other: str) -> "Dir":
-        """Join the current path with another path."""
-        path = Path(self.path.path) / other
+        """Join the current path with another path.
+
+        Uses `PurePosixPath`, not `Path` (see `relative_to`'s docstring for
+        why): joining with `WindowsPath` on Windows both misparses a
+        literal `\\` in `other` as a separator and normalizes it away in
+        the result, silently corrupting the joined path.
+        """
+        path = PurePosixPath(self.path.path) / other
         rpath = RPath(
             self.path.remote,
-            str(path.as_posix()),
+            str(path),
             name=other,
             size=0,
             mime_type="inode/directory",

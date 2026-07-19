@@ -3,7 +3,7 @@ import logging
 import shutil
 import warnings
 from collections.abc import Generator
-from pathlib import Path
+from pathlib import Path, PurePath, PurePosixPath
 from typing import Self
 
 from rclone_kit.config import Config
@@ -36,7 +36,39 @@ class FS(abc.ABC):
 
     @abc.abstractmethod
     def ls(self, path: Path | str) -> tuple[list[str], list[str]]:
-        """First is files and second is directories."""
+        """List the immediate children of `path`. Returns `(files, dirs)`.
+
+        No ordering guarantee is made; callers that need a stable order
+        must sort explicitly (`RealFS.ls` orders however `Path.iterdir()`
+        does, which is filesystem-dependent).
+
+        The two entries in `(files, dirs)` are NOT the same shape across
+        implementations, and callers must not assume otherwise:
+
+        - `RealFS.ls` returns full path strings (`path` joined with each
+          child's name), because it builds them from `Path.iterdir()`.
+        - `RemoteFS.ls` returns bare name strings relative to `path`
+          (no `path` prefix), and a directory's name keeps its trailing
+          `/` marker from the rclone HTTP autoindex listing; a file's name
+          never has one.
+
+        Despite the difference, `FSPath.__truediv__` (`self / name`) joins
+        either result back into a correct child `FSPath`: `pathlib`'s `/`
+        operator discards the left operand when the right operand is
+        itself an absolute path, which is exactly what makes `RealFS`'s
+        full-path entries round-trip correctly through `current / name`
+        instead of doubling the prefix. This is why `fs_walk`
+        (`fs/walk.py`) and `FSPath.lspaths()` can call `current_dir / name`
+        uniformly for both `FS` implementations without branching on type.
+        Do not change `RealFS.ls` to return bare names without also
+        auditing every `current / name` call site - the round-trip
+        currently depends on this asymmetry, not despite it.
+
+        Raises `FileNotFoundError` when `path` does not exist
+        (`RemoteFS.ls`); `RealFS.ls` raises whatever `Path.iterdir()`
+        raises for a missing path (`FileNotFoundError` as well, via the
+        stdlib).
+        """
 
     @abc.abstractmethod
     def remove(self, path: Path | str) -> None:
@@ -156,7 +188,15 @@ class RemoteFS(FS):
         return path
 
     def _to_remote_path(self, path: str | Path) -> str:
-        return Path(path).relative_to(self.src).as_posix()
+        """Make `path` relative to `self.src`.
+
+        Uses `PurePosixPath`, not `Path`: `path` is always a
+        forward-slash-delimited rclone remote path here, never a local
+        filesystem path, so it must not be parsed with `WindowsPath`
+        semantics (which treats a literal `\\` in a path segment - a valid
+        character in many remote object keys - as a separator).
+        """
+        return str(PurePosixPath(path).relative_to(self.src))
 
     def copy(self, src: Path | str, dst: Path | str) -> None:
         from rclone_kit.completed_process import CompletedProcess
@@ -351,8 +391,25 @@ class FSPath:
         """
         return FSWalker(self, max_backlog=max_backlog)
 
+    def _pure_path(self) -> PurePath:
+        """The path-math value type for `self.path`.
+
+        `FSPath` wraps both local filesystem paths (`RealFS`) and rclone
+        remote paths (`RemoteFS`) behind one string attribute. Path-joining
+        and -splitting must use the value type matching the domain: `Path`
+        (native `WindowsPath`/`PosixPath`) for local paths, but always
+        `PurePosixPath` for remote paths, since those are forward-slash-only
+        regardless of host OS - `WindowsPath` would otherwise treat a
+        literal `\\` in a remote object key as a separator on Windows.
+        """
+        if isinstance(self.fs, RemoteFS):
+            return PurePosixPath(self.path)
+        return Path(self.path)
+
     def relative_to(self, other: "FSPath") -> "FSPath":
-        p = Path(self.path).relative_to(other.path)
+        self_pure = self._pure_path()
+        other_pure = type(self_pure)(other.path)
+        p = self_pure.relative_to(other_pure)
         return FSPath(self.fs, p.as_posix())
 
     def write_text(self, data: str, encoding: str | None = None) -> None:
@@ -405,24 +462,24 @@ class FSPath:
         self.fs.unlink(self.path)
 
     def with_suffix(self, suffix: str) -> "FSPath":
-        return FSPath(self.fs, Path(self.path).with_suffix(suffix).as_posix())
+        return FSPath(self.fs, self._pure_path().with_suffix(suffix).as_posix())
 
     @property
     def suffix(self) -> str:
-        return Path(self.path).suffix
+        return self._pure_path().suffix
 
     @property
     def name(self) -> str:
-        return Path(self.path).name
+        return self._pure_path().name
 
     @property
     def parent(self) -> "FSPath":
-        parent_path = Path(self.path).parent
+        parent_path = self._pure_path().parent
         parent_str = parent_path.as_posix()
         return FSPath(self.fs, parent_str)
 
     def __truediv__(self, other: str) -> "FSPath":
-        new_path = Path(self.path) / other
+        new_path = self._pure_path() / other
         return FSPath(self.fs, new_path.as_posix())
 
     def __hash__(self) -> int:

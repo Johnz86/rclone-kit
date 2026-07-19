@@ -11,12 +11,20 @@ from tempfile import TemporaryDirectory
 import pytest
 
 from rclone_kit.exceptions import FilesystemError
-from rclone_kit.fs.filesystem import FSPath, RealFS
+from rclone_kit.fs.filesystem import FSPath, RealFS, RemoteFS
 
 HERE = Path(__file__).parent
 DB_PATH = HERE / "test.db"
 
 os.environ["DB_PATH"] = str(DB_PATH)
+
+_BACKSLASH_NAME = "weird" + chr(92) + "name.txt"
+
+
+def _bare_remote_fs() -> RemoteFS:
+    fs = object.__new__(RemoteFS)
+    fs.shutdown = True
+    return fs
 
 
 class RcloneFSTester(unittest.TestCase):
@@ -123,6 +131,45 @@ def test_remove_wraps_other_os_errors_in_filesystem_error(
             assert isinstance(exc_info.value.cause, PermissionError)
         finally:
             monkeypatch.undo()
+
+
+def test_remote_fs_path_truediv_preserves_literal_backslash_in_joined_name() -> None:
+    """`FSPath` path math must use `PurePosixPath`, not `Path`, for a
+    `RemoteFS`-backed path: `remote:bucket/...` is a forward-slash-only
+    rclone path, never a local filesystem path, so a literal `\\` (a valid
+    character in many remote object keys) must never be treated as a
+    directory separator the way `WindowsPath` would on Windows.
+    """
+    parent = FSPath(_bare_remote_fs(), "remote:bucket/subdir")
+
+    child = parent / _BACKSLASH_NAME
+
+    assert child.path == f"remote:bucket/subdir/{_BACKSLASH_NAME}"
+
+
+def test_remote_fs_path_relative_to_preserves_literal_backslash() -> None:
+    parent = FSPath(_bare_remote_fs(), "remote:bucket/subdir")
+    child = FSPath(_bare_remote_fs(), f"remote:bucket/subdir/{_BACKSLASH_NAME}")
+
+    assert child.relative_to(parent).path == _BACKSLASH_NAME
+
+
+def test_remote_fs_path_name_preserves_literal_backslash() -> None:
+    path = FSPath(_bare_remote_fs(), f"remote:bucket/subdir/{_BACKSLASH_NAME}")
+
+    assert path.name == _BACKSLASH_NAME
+
+
+def test_real_fs_path_truediv_still_uses_native_path_semantics() -> None:
+    """A `RealFS`-backed `FSPath` must keep native local-filesystem
+    joining (verifying the `RemoteFS` fix above did not change `RealFS`
+    behavior).
+    """
+    with TemporaryDirectory() as temp_dir:
+        parent = RealFS.from_path(Path(temp_dir))
+        child = parent / "sub" / "file.txt"
+
+        assert child.path == (Path(temp_dir) / "sub" / "file.txt").as_posix()
 
 
 if __name__ == "__main__":
