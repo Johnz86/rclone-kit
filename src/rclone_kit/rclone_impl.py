@@ -2,6 +2,8 @@
 Unit test file.
 """
 
+from __future__ import annotations
+
 import logging
 import os
 import random
@@ -15,6 +17,7 @@ from datetime import datetime
 from fnmatch import fnmatch
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from typing import TYPE_CHECKING
 
 from rclone_kit import Dir
 from rclone_kit.completed_process import CompletedProcess
@@ -31,12 +34,12 @@ from rclone_kit.fs.filesystem import FSPath, RemoteFS
 from rclone_kit.group_files import group_files
 from rclone_kit.http_server import HttpServer
 from rclone_kit.mount import Mount
+from rclone_kit.optional_dependency import MissingOptionalDependencyError
 from rclone_kit.process import Process
 from rclone_kit.remote import Remote
 from rclone_kit.rpath import RPath
-from rclone_kit.s3.api import S3Client
-from rclone_kit.s3.create import S3Credentials
 from rclone_kit.s3.types import (
+    S3Credentials,
     S3Provider,
 )
 from rclone_kit.types import (
@@ -54,6 +57,12 @@ from rclone_kit.util import (
     get_verbose,
     to_path,
 )
+
+if TYPE_CHECKING:
+    # Only needed for the `_s3_client` return-type annotation below; the
+    # real import is lazy (see `_s3_client`) so importing `rclone_impl`
+    # never requires `boto3` to be installed.
+    from rclone_kit.s3.api import S3Client
 
 # Enable tracing memory usage always
 tracemalloc.start()
@@ -231,7 +240,12 @@ class RcloneImpl:
             fast_list: Use fast list (only use when getting THE entire data repository from the root/bucket)
 
         """
-        from rclone_kit.db import DB
+        try:
+            from rclone_kit.db import DB
+        except ModuleNotFoundError as error:
+            raise MissingOptionalDependencyError(
+                "Database operations", "database", "sqlmodel"
+            ) from error
 
         db = DB(db_url)
         with self.ls_stream(src, max_depth, fast_list) as stream:
@@ -816,6 +830,11 @@ class RcloneImpl:
 
     def _s3_client(self, src: str, verbose: bool | None = None) -> S3Client:
         """Get an S3 client."""
+        try:
+            from rclone_kit.s3.api import S3Client
+        except ModuleNotFoundError as error:
+            raise MissingOptionalDependencyError("S3 operations", "s3", "boto3") from error
+
         verbose = get_verbose(verbose)
         s3_creds = self.get_s3_credentials(remote=src, verbose=verbose)
         s3_client = S3Client(s3_creds=s3_creds, verbose=verbose)

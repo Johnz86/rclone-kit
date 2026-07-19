@@ -19,14 +19,17 @@ classifiers = [
 ]
 dependencies = [
     "psutil",
-    "sqlmodel>=0.0.23",
-    "psycopg2-binary>=2.9.10",
     "httpx>=0.28.1",
-    "boto3>=1.28.23",
 ]
 
 # Change this with the version number bump.
 version = "1.0.0"
+
+[project.optional-dependencies]
+s3 = ["boto3>=1.28.23"]
+database = ["sqlmodel>=0.0.23"]
+postgres = ["rclone-kit[database]", "psycopg2-binary>=2.9.10"]
+full = ["rclone-kit[s3,database,postgres]"]
 
 [project.urls]
 Homepage = "https://github.com/Johnz86/rclone-kit"

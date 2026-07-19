@@ -423,11 +423,25 @@ name = "rclone-kit"
 version = "1.0.0"
 source = { editable = "." }
 dependencies = [
-    { name = "boto3" },
     { name = "httpx" },
     { name = "psutil" },
+]
+
+[package.optional-dependencies]
+database = [
+    { name = "sqlmodel" },
+]
+full = [
+    { name = "boto3" },
     { name = "psycopg2-binary" },
     { name = "sqlmodel" },
+]
+postgres = [
+    { name = "psycopg2-binary" },
+    { name = "sqlmodel" },
+]
+s3 = [
+    { name = "boto3" },
 ]
 
 [package.dev-dependencies]
@@ -440,12 +454,15 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "boto3", specifier = ">=1.28.23" },
+    { name = "boto3", marker = "extra == 's3'", specifier = ">=1.28.23" },
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "psutil" },
-    { name = "psycopg2-binary", specifier = ">=2.9.10" },
-    { name = "sqlmodel", specifier = ">=0.0.23" },
+    { name = "psycopg2-binary", marker = "extra == 'postgres'", specifier = ">=2.9.10" },
+    { name = "rclone-kit", extras = ["database"], marker = "extra == 'postgres'" },
+    { name = "rclone-kit", extras = ["s3", "database", "postgres"], marker = "extra == 'full'" },
+    { name = "sqlmodel", marker = "extra == 'database'", specifier = ">=0.0.23" },
 ]
+provides-extras = ["s3", "database", "postgres", "full"]
 
 [package.metadata.requires-dev]
 dev = [
