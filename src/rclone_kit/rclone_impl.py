@@ -4,14 +4,12 @@ from __future__ import annotations
 
 import logging
 import os
-import random
 import subprocess
 import time
 import warnings
 from collections.abc import Generator
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime
-from fnmatch import fnmatch
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING
@@ -248,83 +246,48 @@ class RcloneImpl:
         Returns:
             List of File objects found at the path
         """
+        from rclone_kit.detail.listing_ops import fetch_ls
 
-        if src is None:
-            list_remotes: list[Remote] = self.listremotes()
-            dirs: list[Dir] = [Dir(remote) for remote in list_remotes]
-            for d in dirs:
-                d.path.path = ""
-            rpaths = [d.path for d in dirs]
-            return DirListing(rpaths)
-
-        if isinstance(src, str):
-            src = Dir(to_path(src, self))
-
-        cmd = ["lsjson"]
-        if max_depth is not None:
-            if max_depth < 0:
-                cmd.append("--recursive")
-            if max_depth > 0:
-                cmd.append("--max-depth")
-                cmd.append(str(max_depth))
-        if listing_option != ListingOption.ALL:
-            cmd.append(f"--{listing_option.value}")
-
-        cmd.append(str(src))
-        remote = src.remote if isinstance(src, Dir) else src
-        assert isinstance(remote, Remote)
-
-        cp = self._run(cmd, check=True)
-        text = cp.stdout
-        parent_path: str | None = None
-        if isinstance(src, Dir):
-            parent_path = src.path.path
-        paths: list[RPath] = RPath.from_json_str(text, remote, parent_path=parent_path)
-
-        for o in paths:
-            o.set_rclone(self)
-
-        if glob is not None:
-            paths = [p for p in paths if fnmatch(p.path, glob)]
-
-        if order == Order.REVERSE:
-            paths.reverse()
-        elif order == Order.RANDOM:
-            random.shuffle(paths)
-        return DirListing(paths)
+        return fetch_ls(
+            self,
+            src,
+            max_depth=max_depth,
+            glob=glob,
+            order=order,
+            listing_option=listing_option,
+        )
 
     def print(self, src: str) -> None:
         """Print the contents of a file."""
-        print(self.read_text(src))
+        from rclone_kit.detail.listing_ops import print_contents
+
+        print_contents(self, src)
 
     def stat(self, src: str) -> File:
         """Get the status of a file or directory.
 
         Raises FileNotFoundError if `src` does not exist.
         """
-        dirlist: DirListing = self.ls(src)
-        if len(dirlist.files) == 0:
-            raise FileNotFoundError(f"File not found: {src}")
-        return dirlist.files[0]
+        from rclone_kit.detail.listing_ops import fetch_stat
+
+        return fetch_stat(self, src)
 
     def modtime(self, src: str) -> str:
         """Get the modification time of a file or directory."""
-        return self.stat(src).mod_time()
+        from rclone_kit.detail.listing_ops import fetch_modtime
+
+        return fetch_modtime(self, src)
 
     def modtime_dt(self, src: str) -> datetime:
         """Get the modification time of a file or directory."""
-        return self.stat(src).mod_time_dt()
+        from rclone_kit.detail.listing_ops import fetch_modtime_dt
+
+        return fetch_modtime_dt(self, src)
 
     def listremotes(self) -> list[Remote]:
-        cmd = ["listremotes"]
-        cp = self._run(cmd)
-        text: str = cp.stdout
-        tmp = text.splitlines()
-        tmp = [t.strip() for t in tmp]
+        from rclone_kit.detail.listing_ops import fetch_listremotes
 
-        tmp = [t.replace(":", "") for t in tmp]
-        out = [Remote(name=t, rclone=self) for t in tmp]
-        return out
+        return fetch_listremotes(self)
 
     def diff(
         self,
@@ -755,25 +718,15 @@ class RcloneImpl:
 
     def exists(self, src: Dir | Remote | str | File) -> bool:
         """Check if a file or directory exists."""
-        arg: str = convert_to_str(src)
-        assert isinstance(arg, str)
-        try:
-            dir_listing = self.ls(arg)
+        from rclone_kit.detail.listing_ops import check_exists
 
-            return len(dir_listing.dirs) > 0 or len(dir_listing.files) > 0
-        except subprocess.CalledProcessError:
-            return False
+        return check_exists(self, src)
 
     def is_synced(self, src: str | Dir, dst: str | Dir) -> bool:
         """Check if two directories are in sync."""
-        src = convert_to_str(src)
-        dst = convert_to_str(dst)
-        cmd_list: list[str] = ["check", str(src), str(dst)]
-        try:
-            self._run(cmd_list, check=True)
-            return True
-        except subprocess.CalledProcessError:
-            return False
+        from rclone_kit.detail.listing_ops import check_is_synced
+
+        return check_is_synced(self, src, dst)
 
     def _s3_client(self, src: str, verbose: bool | None = None) -> S3Client:
         """Get an S3 client."""
