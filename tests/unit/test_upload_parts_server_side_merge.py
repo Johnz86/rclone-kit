@@ -199,6 +199,35 @@ def test_merge_closes_write_thread_after_retry_exhaustion(
     assert not merger.write_thread.is_alive()
 
 
+class _CompletionFailingS3Client:
+    def upload_part_copy(self, **_kwargs: object) -> dict:
+        return {"CopyPartResult": {"ETag": "etag-1"}}
+
+    def complete_multipart_upload(self, **_kwargs: object) -> None:
+        raise RuntimeError("complete failed")
+
+
+def test_merge_closes_write_thread_after_completion_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every part copy can succeed and still leave the write thread stranded
+    if completing the multipart upload itself fails - a separate failure
+    point from part-copy retry exhaustion, so merge() must close the write
+    thread on this path too.
+    """
+    rclone = _stub_rclone_impl()
+    monkeypatch.setattr(rclone, "write_text", lambda *_args, **_kwargs: None)
+    merger = _stub_merger()
+    merger.rclone_impl = rclone
+    merger.client = cast(Any, _CompletionFailingS3Client())
+
+    with pytest.raises(S3MergeError, match="Failed to complete multipart upload"):
+        merger.merge()
+
+    assert merger.write_thread is not None
+    assert not merger.write_thread.is_alive()
+
+
 def _fake_s3_credentials() -> S3Credentials:
     return S3Credentials(
         bucket_name="bucket",
