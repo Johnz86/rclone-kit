@@ -1,5 +1,6 @@
 """Unit tests for `rclone_kit.s3.multipart.upload_parts_server_side_merge`."""
 
+import json
 import subprocess
 from types import SimpleNamespace
 from typing import Any, cast
@@ -279,3 +280,47 @@ def test_begin_or_resume_merge_falls_back_to_fresh_merge_on_corrupt_state(
     assert merger.state is not None
     assert merger.state.upload_id == "new-upload-id"
     assert merger.state.finished == []
+
+
+class _CreateMultipartUploadForbiddenS3Client:
+    def create_multipart_upload(self, **_kwargs: object) -> dict:
+        raise AssertionError("resume path must not start a new multipart upload")
+
+
+def _valid_merge_state_json() -> str:
+    return json.dumps(
+        {
+            "merge_path": "remote:bucket/dst-parts/merge.json",
+            "bucket": "bucket",
+            "dst_key": "dst-dir/dst",
+            "upload_id": "resumed-upload-id",
+            "finished": [{"etag": "etag-1", "part_number": 1}],
+            "all": [
+                {"part_number": 1, "s3_key": "dst-parts/part.00001"},
+                {"part_number": 2, "s3_key": "dst-parts/part.00002"},
+            ],
+        }
+    )
+
+
+def test_begin_or_resume_merge_resumes_from_valid_prior_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A valid prior merge.json must resume rather than restart: the loaded
+    state's already-finished parts are preserved, only the remaining part
+    is left to copy, and no new multipart upload is created.
+    """
+    rclone = _stub_rclone_impl()
+    monkeypatch.setattr(rclone, "get_s3_credentials", lambda **_kwargs: _fake_s3_credentials())
+    monkeypatch.setattr(rclone, "read_text", lambda _path: _valid_merge_state_json())
+    monkeypatch.setattr(
+        "rclone_kit.s3.multipart.upload_parts_server_side_merge.create_s3_client",
+        lambda **_kwargs: _CreateMultipartUploadForbiddenS3Client(),
+    )
+
+    merger = _begin_or_resume_merge(rclone=rclone, info=_stub_info_for_begin_or_resume())
+
+    assert merger.state is not None
+    assert merger.state.upload_id == "resumed-upload-id"
+    assert [p.part_number for p in merger.state.finished] == [1]
+    assert merger.state.remaining_parts() == [Part(part_number=2, s3_key="dst-parts/part.00002")]
