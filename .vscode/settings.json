@@ -1,29 +1,20 @@
 {
-    "python.autoComplete.extraPaths": [
-        "."
+    "python.analysis.extraPaths": [
+        "src"
     ],
-    "python.linting.pylintEnabled": true,
-    "python.linting.enabled": true,
-    "terminal.integrated.defaultProfile.windows": "Git Bash",
-    "terminal.integrated.profiles.windows": {
-        "Git Bash": {
-            "path": "C:\\Program Files\\Git\\bin\\bash.exe",
-            "args": ["--cd=."]
-        }
-    },
-    // adds activate virtualenv to terminal
-    "terminal.integrated.env.windows": {
-        "VIRTUAL_ENV": "${workspaceFolder}/venv"
-    },
-    "files.eol": "\n", // Unix
+    "python.defaultInterpreterPath": "${workspaceFolder}/.venv/Scripts/python.exe",
+    "files.eol": "\n",
     "editor.tabSize": 4,
     "editor.insertSpaces": true,
     "editor.detectIndentation": false,
-    "editor.formatOnSave": false,
-    "python.formatting.provider": "black",
-    "python.formatting.blackArgs": [
-    ],
-    "python.analysis.extraPaths": [
-        "."
-    ]
+    "editor.formatOnSave": true,
+    "editor.defaultFormatter": "charliermarsh.ruff",
+    "[python]": {
+        "editor.defaultFormatter": "charliermarsh.ruff",
+        "editor.formatOnSave": true,
+        "editor.codeActionsOnSave": {
+            "source.fixAll.ruff": "explicit",
+            "source.organizeImports.ruff": "explicit"
+        }
+    }
 }

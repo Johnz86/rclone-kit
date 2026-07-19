@@ -1,16 +1,11 @@
 {
-    // See https://go.microsoft.com/fwlink/?LinkId=733558
-    // for the documentation about the tasks.json format
     "version": "2.0.0",
     "tasks": [
         {
-            "label": "Lint",
+            "label": "Ruff: format check",
             "type": "shell",
-            "command": ". ./activate.sh && ./lint.sh",
+            "command": "uv run ruff format --check .",
             "group": "build",
-            "options": {
-                "cwd": "${workspaceRoot}"
-            },
             "presentation": {
                 "echo": true,
                 "reveal": "always",
@@ -21,13 +16,10 @@
             "problemMatcher": []
         },
         {
-            "label": "Tox",
+            "label": "Ruff: check",
             "type": "shell",
-            "command": "tox",
+            "command": "uv run ruff check .",
             "group": "build",
-            "options": {
-                "cwd": "${workspaceRoot}"
-            },
             "presentation": {
                 "echo": true,
                 "reveal": "always",
@@ -37,5 +29,33 @@
             },
             "problemMatcher": []
         },
+        {
+            "label": "Pyright",
+            "type": "shell",
+            "command": "uv run pyright src tests scripts",
+            "group": "build",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": true,
+                "panel": "shared",
+                "clear": true
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "Pytest: unit",
+            "type": "shell",
+            "command": "uv run pytest tests/unit",
+            "group": "test",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": true,
+                "panel": "shared",
+                "clear": true
+            },
+            "problemMatcher": []
+        }
     ]
 }
