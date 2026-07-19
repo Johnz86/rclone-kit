@@ -48,11 +48,14 @@ class SizeResult:
     file_sizes: dict[str, int]
 
 
+_BYTES_PER_SIZE_UNIT = 1024
+
+
 def _to_size_suffix(size: int) -> str:
     def _convert(size: int) -> tuple[float, str]:
         val: float
         unit: str
-        if size < 1024:
+        if size < _BYTES_PER_SIZE_UNIT:
             val = size
             unit = "B"
         elif size < 1024**2:

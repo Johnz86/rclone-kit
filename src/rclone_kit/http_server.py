@@ -157,7 +157,7 @@ class HttpServer:
             self._ensure_running()
             url = self._get_file_url(path)
             response = httpx.head(url)
-            return response.status_code == 200
+            return response.status_code == httpx.codes.OK
         except Exception as e:
             warnings.warn(f"Failed to check if {self.url}/{path} exists: {e}", stacklevel=2)
             return False

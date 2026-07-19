@@ -13,6 +13,7 @@ _DEFAULT_ENV_FILENAME = ".env"
 _COMMENT_PREFIX = "#"
 _ASSIGNMENT_SEPARATOR = "="
 _QUOTE_CHARACTERS = ("'", '"')
+_MIN_QUOTED_VALUE_LENGTH = 2
 
 
 def load_env_file(path: Path | None = None) -> None:
@@ -48,7 +49,11 @@ def load_env_file(path: Path | None = None) -> None:
         key, _, value = line.partition(_ASSIGNMENT_SEPARATOR)
         key = key.strip()
         value = value.strip()
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in _QUOTE_CHARACTERS:
+        if (
+            len(value) >= _MIN_QUOTED_VALUE_LENGTH
+            and value[0] == value[-1]
+            and value[0] in _QUOTE_CHARACTERS
+        ):
             value = value[1:-1]
         if key and key not in os.environ:
             os.environ[key] = value

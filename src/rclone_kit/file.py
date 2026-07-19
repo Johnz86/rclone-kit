@@ -14,6 +14,7 @@ def _intern(s: str) -> str:
 
 
 _SUFFIX_LARGEST_SIZE = len("torrents") + 2
+_MIN_PARTS_WITH_REAL_SUFFIX_BEFORE_GZ = 2
 
 
 def _suffix_clean_bad_parts(suffix: list[str]) -> list[str]:
@@ -46,7 +47,11 @@ def _get_suffix(name: str, chop_compressed_suffixes: bool = True) -> str:
             return ""
         parts = _suffix_clean_bad_parts(parts)
         last_part = parts[-1]
-        if chop_compressed_suffixes and last_part == "gz" and len(parts) > 2:
+        if (
+            chop_compressed_suffixes
+            and last_part == "gz"
+            and len(parts) > _MIN_PARTS_WITH_REAL_SUFFIX_BEFORE_GZ
+        ):
             parts = parts[:-1]
         return ".".join(parts[-1:])
     except IndexError:

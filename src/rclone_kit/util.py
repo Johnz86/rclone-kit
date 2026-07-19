@@ -360,6 +360,9 @@ def rclone_execute(
             _LIVE_SUBPROCESSES.discard(process)
 
 
+_MIN_S3_PATH_PARTS = 2
+
+
 def split_s3_path(path: str) -> S3PathInfo:
     if ":" not in path:
         raise ValueError(f"Invalid S3 path: {path}")
@@ -372,7 +375,7 @@ def split_s3_path(path: str) -> S3PathInfo:
         part = raw_part.strip()
         if part:
             parts.append(part)
-    if len(parts) < 2:
+    if len(parts) < _MIN_S3_PATH_PARTS:
         raise ValueError(f"Invalid S3 path: {path}")
     bucket = parts[0]
     key = "/".join(parts[1:])

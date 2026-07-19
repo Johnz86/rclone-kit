@@ -18,6 +18,8 @@ from rclone_kit.rpath import RPath
 from rclone_kit.types import ListingOption, Order, SizeResult, SizeSuffix
 from rclone_kit.util import get_check, get_verbose, to_path
 
+_MIN_FILES_FOR_BATCH_LISTING = 2
+
 
 def fetch_ls(
     self: RcloneImpl,
@@ -163,7 +165,7 @@ def fetch_size_files(
     check = get_check(check)
     if not files:
         return SizeResult(prefix=src, total_size=0, file_sizes={})
-    if len(files) < 2:
+    if len(files) < _MIN_FILES_FOR_BATCH_LISTING:
         full_path = f"{src}/{files[0]}"
         tmp = self.size_file(full_path)
         return SizeResult(prefix=src, total_size=tmp.as_int(), file_sizes={files[0]: tmp.as_int()})

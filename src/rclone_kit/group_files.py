@@ -1,6 +1,9 @@
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 
+_MIN_QUALIFIED_PATH_PARTS = 2
+_MAX_CHILDREN_FOR_INDIVIDUAL_MERGE = 2
+
 
 @dataclass
 class PrefixResult:
@@ -34,7 +37,7 @@ def parse_file(file_path: str) -> FilePathParts:
     """Parse file path into parts."""
     assert not file_path.endswith("/"), "This looks like a directory path"
     parts = file_path.split(":")
-    if len(parts) < 2:
+    if len(parts) < _MIN_QUALIFIED_PATH_PARTS:
         raise ValueError(
             f"Invalid file path: {file_path}, expected fully qualified path like dst:Bucket/subdir/file.txt"
         )
@@ -117,7 +120,7 @@ def _merge(node: TreeNode, parent_path: str, out: dict[str, list[str]]) -> None:
 
     n_child_nodes = len(node.child_nodes)
 
-    if n_child_nodes <= 2:
+    if n_child_nodes <= _MAX_CHILDREN_FOR_INDIVIDUAL_MERGE:
         for child in node.child_nodes.values():
             _merge(child, parent_path, out)
         return
