@@ -15,7 +15,7 @@ from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from queue import Queue
 from threading import Semaphore, Thread
-from typing import Any
+from typing import Any, cast
 
 from rclone_kit.rclone_impl import RcloneImpl
 from rclone_kit.s3.create import (
@@ -25,7 +25,7 @@ from rclone_kit.s3.create import (
 )
 from rclone_kit.s3.multipart.finished_piece import FinishedPiece
 from rclone_kit.s3.multipart.info_json import InfoJson
-from rclone_kit.s3.multipart.merge_state import MergeState, Part
+from rclone_kit.s3.multipart.merge_state import MergeState, MergeStateJson, Part
 from rclone_kit.types import EndOfStream
 from rclone_kit.util import locked_print
 
@@ -343,8 +343,8 @@ def _begin_or_resume_merge(
         merge_path = _get_merge_path(info_path=info.src_info)
         merge_json_text = rclone.read_text(merge_path)
         if isinstance(merge_json_text, str):
-            merge_data = json.loads(merge_json_text)
-            merge_state = MergeState.from_json(rclone_impl=rclone, json=merge_data)
+            merge_data = cast(MergeStateJson, json.loads(merge_json_text))
+            merge_state = MergeState.from_json(rclone_impl=rclone, data=merge_data)
             if isinstance(merge_state, MergeState):
                 merger._begin_resume_merge(merge_state=merge_state)
                 return merger

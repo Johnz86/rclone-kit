@@ -1,7 +1,16 @@
 import warnings
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from typing import TypedDict
 
 from rclone_kit.types import EndOfStream
+
+
+class FinishedPieceJson(TypedDict):
+    """Shape of one completed part, matching S3's `CompletedPart`."""
+
+    PartNumber: int
+    ETag: str
 
 
 @dataclass
@@ -9,13 +18,8 @@ class FinishedPiece:
     part_number: int
     etag: str
 
-    def to_json(self) -> dict:
-
-        tag = self.etag
-        if not tag.startswith('"'):
-            tag = f'"{tag}"'
-        out = {"PartNumber": self.part_number, "ETag": self.etag}
-        return out
+    def to_json(self) -> FinishedPieceJson:
+        return {"PartNumber": self.part_number, "ETag": self.etag}
 
     def __post_init__(self):
         assert isinstance(self.part_number, int)
@@ -24,7 +28,7 @@ class FinishedPiece:
     @staticmethod
     def to_json_array(
         parts: list["FinishedPiece | EndOfStream"] | list["FinishedPiece"],
-    ) -> list[dict]:
+    ) -> list[FinishedPieceJson]:
         non_none: list[FinishedPiece] = [p for p in parts if not isinstance(p, EndOfStream)]
         non_none.sort(key=lambda x: x.part_number)
 
@@ -41,11 +45,11 @@ class FinishedPiece:
         return out
 
     @staticmethod
-    def from_json(json: dict | None) -> "FinishedPiece | EndOfStream":
-        if json is None:
+    def from_json(data: Mapping[str, object] | None) -> "FinishedPiece | EndOfStream":
+        if data is None:
             return EndOfStream()
-        part_number = json.get("PartNumber") or json.get("part_number")
-        etag = json.get("ETag") or json.get("etag")
+        part_number = data.get("PartNumber") or data.get("part_number")
+        etag = data.get("ETag") or data.get("etag")
         assert isinstance(etag, str)
 
         etag = etag.replace('"', "")
@@ -54,8 +58,8 @@ class FinishedPiece:
         return FinishedPiece(part_number=part_number, etag=etag)
 
     @staticmethod
-    def from_json_array(json: dict) -> list["FinishedPiece"]:
-        tmp = [FinishedPiece.from_json(j) for j in json]
+    def from_json_array(data: Sequence[Mapping[str, object] | None]) -> list["FinishedPiece"]:
+        tmp = [FinishedPiece.from_json(j) for j in data]
         return [t for t in tmp if isinstance(t, FinishedPiece)]
 
     def __hash__(self) -> int:

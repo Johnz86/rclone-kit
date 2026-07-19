@@ -7,11 +7,17 @@ from existing S3 objects using upload_part_copy.
 """
 
 import json
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import TypedDict
 
 from rclone_kit.rclone_impl import RcloneImpl
-from rclone_kit.s3.multipart.finished_piece import FinishedPiece
+from rclone_kit.s3.multipart.finished_piece import FinishedPiece, FinishedPieceJson
+
+
+class PartJson(TypedDict):
+    part_number: int
+    s3_key: str
 
 
 @dataclass
@@ -19,19 +25,21 @@ class Part:
     part_number: int
     s3_key: str
 
-    def to_json(self) -> dict:
+    def to_json(self) -> PartJson:
         return {"part_number": self.part_number, "s3_key": self.s3_key}
 
     @staticmethod
-    def from_json(json_dict: dict) -> "Part | Exception":
+    def from_json(json_dict: Mapping[str, object]) -> "Part | Exception":
         part_number = json_dict.get("part_number")
         s3_key = json_dict.get("s3_key")
         if part_number is None or s3_key is None:
             return Exception(f"Invalid JSON: {json_dict}")
+        assert isinstance(part_number, int)
+        assert isinstance(s3_key, str)
         return Part(part_number=part_number, s3_key=s3_key)
 
     @staticmethod
-    def from_json_array(json_array: list[dict]) -> list["Part"] | Exception:
+    def from_json_array(json_array: Sequence[Mapping[str, object]]) -> list["Part"] | Exception:
         try:
             out: list[Part] = []
             for j in json_array:
@@ -43,6 +51,15 @@ class Part:
             return out
         except Exception as e:
             return e
+
+
+class MergeStateJson(TypedDict):
+    merge_path: str
+    bucket: str
+    dst_key: str
+    upload_id: str
+    finished: list[FinishedPieceJson]
+    all: list[PartJson]
 
 
 class MergeState:
@@ -74,15 +91,15 @@ class MergeState:
         return remaining
 
     @staticmethod
-    def from_json(rclone_impl: RcloneImpl, json: dict) -> "MergeState | Exception":
+    def from_json(rclone_impl: RcloneImpl, data: MergeStateJson) -> "MergeState | Exception":
         try:
-            merge_path = json["merge_path"]
-            bucket = json["bucket"]
-            dst_key = json["dst_key"]
-            finished: list[FinishedPiece] = FinishedPiece.from_json_array(json["finished"])
-            all_parts: list[Part | Exception] = [Part.from_json(j) for j in json["all"]]
+            merge_path = data["merge_path"]
+            bucket = data["bucket"]
+            dst_key = data["dst_key"]
+            finished: list[FinishedPiece] = FinishedPiece.from_json_array(data["finished"])
+            all_parts: list[Part | Exception] = [Part.from_json(j) for j in data["all"]]
             all_parts_no_err: list[Part] = [p for p in all_parts if not isinstance(p, Exception)]
-            upload_id: str = json["upload_id"]
+            upload_id: str = data["upload_id"]
             errs: list[Exception] = [p for p in all_parts if isinstance(p, Exception)]
             if errs:
                 return Exception(f"Errors in parts: {errs}")
@@ -98,7 +115,7 @@ class MergeState:
         except Exception as e:
             return e
 
-    def to_json(self) -> dict:
+    def to_json(self) -> MergeStateJson:
         finished = self.finished.copy()
         all_parts = self.all_parts.copy()
         return {
@@ -121,17 +138,11 @@ class MergeState:
     def __repr__(self):
         return self.to_json_str()
 
-    def write(self, rclone_impl: Any, dst: str) -> None:
-        from rclone_kit.rclone_impl import RcloneImpl
-
-        assert isinstance(rclone_impl, RcloneImpl)
+    def write(self, rclone_impl: RcloneImpl, dst: str) -> None:
         json_str = self.to_json_str()
         rclone_impl.write_text(dst, json_str)
 
-    def read(self, rclone_impl: Any, src: str) -> None:
-        from rclone_kit.rclone_impl import RcloneImpl
-
-        assert isinstance(rclone_impl, RcloneImpl)
+    def read(self, rclone_impl: RcloneImpl, src: str) -> None:
         json_str = rclone_impl.read_text(src)
         if isinstance(json_str, Exception):
             raise json_str
