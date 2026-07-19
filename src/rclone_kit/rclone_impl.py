@@ -22,7 +22,6 @@ from rclone_kit import Dir
 from rclone_kit.completed_process import CompletedProcess
 from rclone_kit.config import Config, Parsed, Section
 from rclone_kit.convert import convert_to_filestr_list, convert_to_str
-from rclone_kit.deprecated import deprecated
 from rclone_kit.detail.walk import walk
 from rclone_kit.diff import DiffItem, DiffOption, diff_stream_from_running_process
 from rclone_kit.dir_listing import DirListing
@@ -781,11 +780,6 @@ class RcloneImpl:
                 completed_processes.append(out)
 
         return CompletedProcess(completed_processes)
-
-    @deprecated("delete_files")
-    def deletefiles(self, files: str | File | list[str] | list[File]) -> CompletedProcess:
-        out = self.delete_files(files)
-        return out
 
     def exists(self, src: Dir | Remote | str | File) -> bool:
         """Check if a file or directory exists."""
