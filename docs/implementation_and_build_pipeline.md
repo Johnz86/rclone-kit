@@ -435,9 +435,41 @@ demonstrated need would just duplicate `MergeState`'s design. A
 `PartMergeState` naming/documentation pass was considered speculative and
 skipped.
 
+The public-facade phase is partially done, by deliberate scope choice.
+`Rclone` was already a clean, thin, boilerplate-only pass-through facade
+(1049 lines, nearly all docstring); the "large and duplicate" complaint the
+roadmap named is really about `RcloneImpl`, which held real
+command-construction logic directly inline rather than delegating to
+focused modules. Before moving anything, `test_rclone_facade_contract.py`
+pinned the current `Rclone` <-> `RcloneImpl` contract (every public
+`Rclone` method has a same-named `RcloneImpl` counterpart with a matching
+signature, with three pre-existing, documented exceptions the test itself
+surfaced rather than silently accepted), and `test_rclone_impl_contracts.py`
+gained command-vector coverage for the copy/delete group. Three
+self-contained, low-coupling groups were then extracted into
+`rclone_kit/detail/`, each following the pattern `copy_file_parts_resumable`
+already established (a free function taking `self: RcloneImpl`, imported
+lazily inside the corresponding one-line `RcloneImpl` method to avoid an
+import cycle, since `RcloneImpl` is used directly by `Remote`, `RPath`,
+`config.py`, and every `s3/` module - not just through the `Rclone`
+facade - so its own public names and signatures had to stay unchanged too):
+config/S3 discovery (`config_ops.py`), HTTP/WebDAV serving (`serve_ops.py`),
+and mounting (`mount_ops.py`). Each extraction added direct unit coverage
+the logic previously lacked.
+
+The two groups actually driving the "large" complaint - listing/walk/diff/
+stat (moderate risk: several methods share a single `ls()` implementation)
+and copy/transfer/delete (highest risk: real inline `ThreadPoolExecutor`
+orchestration in `copy_files`/`delete_files`, not just command building) -
+were deliberately left for a future pass. They need substantially more
+characterization coverage first, the orchestration extraction is real
+design work rather than a mechanical move, and attempting both in one pass
+would violate this roadmap's own closing guidance to keep improvement pull
+requests small.
+
 | Area | Current constraint | Preferred next step | Required evidence |
 |---|---|---|---|
-| Public facade | `Rclone` and `RcloneImpl` remain large and duplicate the operation surface. | Extract pure command builders and cohesive listing, transfer, configuration, serve, mount, and S3 services while keeping `Rclone` stable. | Characterization tests and an API compatibility snapshot. |
+| Public facade: listing/transfer | `RcloneImpl.copy_files`/`delete_files` build command vectors and own `ThreadPoolExecutor` partitioning inline; `ls`/`stat`/`exists`/`size_file` share one `ls()` implementation. | Extract a pure command-builder for the copy/delete group first (highest risk, needs the most characterization coverage), then the listing/walk/diff/stat group. | Command-vector tests pin exact behavior before any code moves; `Rclone`/`RcloneImpl` public signatures unchanged. |
 | Paths and filesystems | Local paths, rclone paths, and strings still overlap. | Introduce immutable local/rclone path values and one documented `FS.ls` contract. | Identical remote-path behavior on Windows and Linux. |
 | Typing and linting | Legacy rule families remain globally ignored and Pyright is not strict. | Make new modules strict, then remove one narrow ignore family per behavior-preserving change. | Quality gates pass with a smaller ignore surface and no broad `Any` escape hatches in changed code. |
 | Test isolation | Cloud tests retain legacy `unittest` setup and disabled scenarios. | Move shared setup to pytest fixtures and replace disabled tests with deterministic fakes where possible. | Unit tests run offline and in arbitrary order; external suites are explicitly opt-in. |
