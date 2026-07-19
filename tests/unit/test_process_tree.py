@@ -22,6 +22,7 @@ class FakeProcess:
     kill_calls: int = 0
 
     def children(self, recursive: bool = True) -> list["FakeProcess"]:
+        del recursive
         return self.child_processes
 
     def is_running(self) -> bool:

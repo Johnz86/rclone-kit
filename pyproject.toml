@@ -169,11 +169,6 @@ select = [
 #                                 behavior change for the resumable-upload
 #                                 feature, out of scope for a lint-tooling
 #                                 migration.
-#   ARG002                     - The remaining findings are parameters required
-#                                 by an abstract base class signature (`FS`) or
-#                                 reserved for a documented public API
-#                                 (`config_paths(no_obscure=...)`); unused by
-#                                 design.
 ignore = [
     "ANN",
     "TRY",
@@ -193,7 +188,6 @@ ignore = [
     "T201",
     "E501",
     "DTZ005",
-    "ARG002",
 ]
 
 [tool.ruff.lint.per-file-ignores]

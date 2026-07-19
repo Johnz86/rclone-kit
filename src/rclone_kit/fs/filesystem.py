@@ -249,6 +249,7 @@ class RemoteFS(FS):
         return self.server.exists(dst_rel)
 
     def mkdir(self, path: str, parents=True, exist_ok=True) -> None:
+        del path, parents, exist_ok
 
         import warnings
 

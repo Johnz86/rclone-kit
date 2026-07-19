@@ -16,6 +16,7 @@ class _RecordingRclone:
         max_depth: int = -1,
         fast_list: bool = False,
     ) -> None:
+        del max_depth
         self.calls.append(
             {
                 "src": src,
