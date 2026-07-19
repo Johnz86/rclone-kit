@@ -144,8 +144,6 @@ class MergeState:
 
     def read(self, rclone_impl: RcloneImpl, src: str) -> None:
         json_str = rclone_impl.read_text(src)
-        if isinstance(json_str, Exception):
-            raise json_str
         json_dict = json.loads(json_str)
         ok_or_err = FinishedPiece.from_json_array(json_dict["finished"])
         if isinstance(ok_or_err, Exception):

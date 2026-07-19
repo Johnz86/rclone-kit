@@ -56,9 +56,7 @@ class RcloneSizeFilesTester(unittest.TestCase):
                 self.assertEqual(dirlisting.files[0].name, "first.txt")
                 is_first = False
             files.extend(dirlisting.files_relative(src))
-        size_map: SizeResult | Exception = rclone.size_files(src=src, files=files, check=True)
-        if isinstance(size_map, Exception):
-            self.fail(size_map)
+        size_map: SizeResult = rclone.size_files(src=src, files=files, check=True)
         print(size_map)
         print("done")
 

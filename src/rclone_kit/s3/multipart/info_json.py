@@ -24,22 +24,18 @@ def _fetch_all_names(
 
 
 def _get_info_json(self: RcloneImpl, src: str | None, src_info: str) -> dict:
-    from rclone_kit.file import File
-
     data: dict
-    text: str
     if src is None:
-        text_or_err = self.read_text(src_info)
-        if isinstance(text_or_err, Exception):
-            raise FileNotFoundError(f"Could not load {src_info}: {text_or_err}")
-        assert isinstance(text_or_err, str)
-        text = text_or_err
+        try:
+            text = self.read_text(src_info)
+        except KeyboardInterrupt:
+            raise
+        except Exception as error:
+            raise FileNotFoundError(f"Could not load {src_info}: {error}") from error
         data = json.loads(text)
         return data
 
-    src_stat: File | Exception = self.stat(src)
-    if isinstance(src_stat, Exception):
-        raise FileNotFoundError(f"Failed to stat {src}: {src_stat}")
+    src_stat = self.stat(src)
 
     now: datetime = datetime.now()
     new_data = {
@@ -55,15 +51,12 @@ def _get_info_json(self: RcloneImpl, src: str | None, src_info: str) -> dict:
         "hash": None,
     }
 
-    text_or_err = self.read_text(src_info)
-    err: Exception | None = text_or_err if isinstance(text_or_err, Exception) else None
-    if isinstance(text_or_err, Exception):
-        warnings.warn(f"Failed to read {src_info}: {text_or_err}", stacklevel=2)
-        return new_data
-    assert isinstance(text_or_err, str)
-    text = text_or_err
-
-    if err is not None:
+    try:
+        text = self.read_text(src_info)
+    except KeyboardInterrupt:
+        raise
+    except Exception as error:
+        warnings.warn(f"Failed to read {src_info}: {error}", stacklevel=2)
         return new_data
 
     try:

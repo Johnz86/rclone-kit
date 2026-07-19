@@ -214,9 +214,6 @@ def upload_parts_resumable(
         dst_dir = dst_dir[:-1]
     src_size = self.size_file(src)
 
-    if isinstance(src_size, Exception):
-        return src_size
-
     part_info: PartInfo
     src_dir = os.path.dirname(src)
     src_name = os.path.basename(src)
@@ -228,9 +225,6 @@ def upload_parts_resumable(
     assert isinstance(full_part_infos, list)
 
     if part_infos is None:
-        src_size = self.size_file(src)
-        if isinstance(src_size, Exception):
-            return src_size
         part_infos = full_part_infos.copy()
 
     err = _check_part_size(part_infos)

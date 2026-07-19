@@ -170,9 +170,14 @@ class RemoteFS(FS):
             filesize = src.stat().st_size
             if filesize < 1024 * 1024 * 1024:
                 logger.info(f"S3 OPTIMIZED: Copying {src} -> {dst_remote_path}")
-                err = self.rclone.copy_file_s3(src, dst_remote_path)
-                if isinstance(err, Exception):
-                    raise FileNotFoundError(f"File not found: {src}, specified by {err}")
+                try:
+                    self.rclone.copy_file_s3(src, dst_remote_path)
+                except KeyboardInterrupt:
+                    raise
+                except Exception as error:
+                    raise FileNotFoundError(
+                        f"File not found: {src}, specified by {error}"
+                    ) from error
                 return
 
         logging.info(f"Copying {src} -> {dst}")
@@ -184,10 +189,12 @@ class RemoteFS(FS):
 
     def read_bytes(self, path: Path | str) -> bytes:
         path = self._to_str(path)
-        err = self.rclone.read_bytes(path)
-        if isinstance(err, Exception):
-            raise FileNotFoundError(f"File not found: {path}")
-        return err
+        try:
+            return self.rclone.read_bytes(path)
+        except KeyboardInterrupt:
+            raise
+        except Exception as error:
+            raise FileNotFoundError(f"File not found: {path}") from error
 
     def write_binary(self, path: Path | str, data: bytes) -> None:
         path = self._to_str(path)

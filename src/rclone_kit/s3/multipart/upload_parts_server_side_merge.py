@@ -286,9 +286,12 @@ class WriteMergeStateThread(Thread):
             assert isinstance(item, FinishedPiece)
 
             json_str = self.merge_state.to_json_str()
-            err = self.rclone_impl.write_text(self.merge_path, json_str)
-            if isinstance(err, Exception):
-                warnings.warn(f"Error writing merge state: {err}", stacklevel=2)
+            try:
+                self.rclone_impl.write_text(self.merge_path, json_str)
+            except KeyboardInterrupt:
+                raise
+            except Exception as error:
+                warnings.warn(f"Error writing merge state: {error}", stacklevel=2)
                 break
 
     def add_finished(self, finished: FinishedPiece) -> None:
@@ -341,8 +344,14 @@ def _begin_or_resume_merge(
         assert is_done, f"Upload is not done: {info}"
 
         merge_path = _get_merge_path(info_path=info.src_info)
-        merge_json_text = rclone.read_text(merge_path)
-        if isinstance(merge_json_text, str):
+        try:
+            merge_json_text: str | None = rclone.read_text(merge_path)
+        except KeyboardInterrupt:
+            raise
+        except Exception:
+            merge_json_text = None
+
+        if merge_json_text is not None:
             merge_data = cast(MergeStateJson, json.loads(merge_json_text))
             merge_state = MergeState.from_json(rclone_impl=rclone, data=merge_data)
             if isinstance(merge_state, MergeState):
