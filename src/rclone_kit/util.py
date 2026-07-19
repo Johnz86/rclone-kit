@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import atexit
 import contextlib
 import logging
@@ -12,7 +14,7 @@ import warnings
 import weakref
 from pathlib import Path
 from threading import Lock
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from rclone_kit.config import Config
 from rclone_kit.dir import Dir
@@ -21,6 +23,9 @@ from rclone_kit.remote import Remote
 from rclone_kit.rpath import RPath
 from rclone_kit.runtime.rclone_binary import resolve_rclone_executable
 from rclone_kit.types import S3PathInfo
+
+if TYPE_CHECKING:
+    from rclone_kit.rclone_impl import RcloneImpl
 
 logger = logging.getLogger(__name__)
 
@@ -137,7 +142,7 @@ def format_command(command: list[str]) -> str:
     return subprocess.list2cmdline(redacted)
 
 
-def locked_print(*args: Any, **kwargs: Any) -> None:
+def locked_print(*args: object, **kwargs: Any) -> None:
     with _PRINT_LOCK:
         print(*args, **kwargs)
 
@@ -169,11 +174,7 @@ def find_free_port() -> int:
     return port
 
 
-def to_path(item: Dir | Remote | str, rclone: Any) -> RPath:
-    from rclone_kit.rclone_impl import RcloneImpl
-
-    assert isinstance(rclone, RcloneImpl)
-
+def to_path(item: Dir | Remote | str, rclone: RcloneImpl) -> RPath:
     if isinstance(item, str):
         parts = item.split(":")
         remote_name = parts[0]

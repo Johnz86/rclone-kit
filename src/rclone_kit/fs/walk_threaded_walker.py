@@ -1,19 +1,22 @@
+from __future__ import annotations
+
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from rclone_kit.fs.filesystem import FSPath
 
 
 @dataclass
 class FSWalker:
     """Threaded"""
 
-    fspath: Any
+    fspath: FSPath
     max_backlog: int
 
     def __enter__(self):
-        from rclone_kit.fs.filesystem import FSPath
         from rclone_kit.fs.walk_threaded import FSWalkThread
 
-        assert isinstance(self.fspath, FSPath), f"Expected FSPath, got {type(self.fspath)}"
         self.walker = FSWalkThread(self.fspath, self.max_backlog)
         return self
 

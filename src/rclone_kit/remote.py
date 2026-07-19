@@ -1,16 +1,18 @@
-from typing import Any
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from rclone_kit.rclone_impl import RcloneImpl
 
 
 class Remote:
     """Remote (root) directory."""
 
-    def __init__(self, name: str, rclone: Any) -> None:
-        from rclone_kit.rclone_impl import RcloneImpl
-
+    def __init__(self, name: str, rclone: RcloneImpl) -> None:
         if ":" in name:
             raise ValueError("Remote name cannot contain ':'")
 
-        assert isinstance(rclone, RcloneImpl)
         self.name = name
         self.rclone: RcloneImpl = rclone
 
