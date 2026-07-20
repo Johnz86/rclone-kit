@@ -12,10 +12,9 @@ permissions:
   contents: read
 
 env:
-  # The pinned uv release. Every `uses:` action reference below is pinned by
-  # full commit SHA. This value is an input to astral-sh/setup-uv rather than
-  # an action reference. Every job resolves the Python patch version from
-  # `.python-version`.
+  # Input to astral-sh/setup-uv, not an action reference - every `uses:`
+  # below is pinned by SHA instead. Python's patch version comes from
+  # .python-version, resolved separately in each job.
   UV_VERSION: "0.11.29"
 
 jobs:
@@ -36,11 +35,9 @@ jobs:
         run: uv python install
 
       - name: Install dependencies
-        # --all-extras pulls in boto3/sqlmodel/psycopg2-binary so the S3 and
-        # database code paths (and their tests) are actually type-checked
-        # and exercised here, instead of being silently skipped due to
-        # missing imports. The wheel-* jobs below intentionally omit this:
-        # they prove the default, minimal, extras-free install still works.
+        # --all-extras exercises the S3/database code paths instead of
+        # silently skipping them; the wheel-* jobs omit it deliberately, to
+        # prove the default extras-free install still works.
         run: uv sync --locked --all-groups --all-extras
 
       - name: Check formatting
@@ -133,17 +130,8 @@ jobs:
           key: rclone-archive-windows-amd64-${{ hashFiles('src/rclone_kit/runtime/platform.py') }}
 
       - name: Build, verify, and smoke-test the wheel
-        # scripts/build_distribution.py is the single canonical build
-        # command (see docs/build_pipeline_improvements.md): it stages the
-        # certified rclone artifact for this platform into an isolated
-        # temporary copy of the source tree, verifies the extracted
-        # executable's digest, builds exactly one wheel, runs every
-        # scripts/verify_distribution.py check, installs the wheel into a
-        # clean environment, and runs the bundled-executable and
-        # console-script smoke tests. Nothing under
-        # src/rclone_kit/assets/rclone/ is ever written in this checkout;
-        # per docs/build_pipeline_improvements.md's recommended sdist
-        # policy, no source distribution is built or published.
+        # The single canonical build command; see its own docstring and
+        # docs/implementation_and_build_pipeline.md for what it does.
         run: uv run python scripts/build_distribution.py --target windows-amd64 --out-dir dist
 
       - name: Upload wheel artifact
@@ -217,21 +205,17 @@ jobs:
           merge-multiple: true
 
       - name: Verify the complete, deduplicated release set
-        # Re-verifies every wheel's internal consistency (already checked
-        # once inside each wheel-* job) plus the cross-platform invariant
-        # only visible once every wheel has been collected into one
-        # directory: exactly one wheel per certified target, no duplicates,
-        # nothing unrecognized.
+        # Adds the cross-platform invariant only visible once every wheel
+        # is collected: exactly one per certified target, no duplicates.
         run: uv run python scripts/verify_distribution.py dist --require-complete-release-set
 
       - name: Print release digests
         run: sha256sum dist/*.whl
 
       - name: Upload assembled release set
-        # No publish step exists yet: docs/release_process.md documents
-        # this as a deliberate choice, deferred until PyPI trusted
-        # publishing is registered for this project. This artifact is the
-        # exact input a future publish job would consume.
+        # This workflow never publishes - publishing to PyPI is
+        # release.yaml's job, triggered by a v* tag push, not by this one.
+        # See docs/release_process.md.
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: release-dist

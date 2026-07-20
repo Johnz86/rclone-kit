@@ -3,13 +3,13 @@
 Composes the existing staging (`scripts/prepare_rclone_artifact.py`),
 verification (`scripts/verify_distribution.py`), and smoke-test
 (`scripts/smoke_test_installed_wheel.py`) steps into the single command
-`docs/build_pipeline_improvements.md` calls for, so a caller cannot produce
-an unverified or incomplete wheel by skipping a step of an out-of-band
-manual sequence. Maintainers and CI both run this script; neither
-reproduces the staging/build/verify/smoke-test sequence separately.
+`docs/implementation_and_build_pipeline.md` documents, so a caller cannot
+produce an unverified or incomplete wheel by skipping a step of an
+out-of-band manual sequence. Maintainers and CI both run this script;
+neither reproduces the staging/build/verify/smoke-test sequence separately.
 
-Per `docs/build_pipeline_improvements.md`'s recommended short-term sdist
-policy, this script builds and verifies exactly one platform wheel and never
+Per `docs/implementation_and_build_pipeline.md`'s distribution policy, this
+script builds and verifies exactly one platform wheel and never
 builds a source distribution: a plain `pip wheel` build from an sdist has no
 staging step and would silently produce a wheel without rclone.
 
@@ -230,8 +230,7 @@ def _smoke_env_python_and_scripts_dir(smoke_env: Path) -> tuple[Path, Path]:
 def _poisoned_proxy_env() -> dict[str, str]:
     """Return a copy of the current environment with the proxy variables
     poisoned to an unreachable address, as best-effort network isolation for
-    the smoke test — mirrors the equivalent step in
-    `.github/workflows/ci.yml`'s `package` job.
+    the smoke test.
     """
     env = os.environ.copy()
     env[_HTTP_PROXY_ENV_VAR] = _HTTP_PROXY_POISON_URL
