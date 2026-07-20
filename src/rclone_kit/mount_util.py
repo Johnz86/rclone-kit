@@ -113,6 +113,22 @@ def _cleanup_mounts() -> None:
             executor.submit(mount.close)
 
 
+def _register_exit_cleanup_handlers() -> None:
+    """Register this module's `atexit` handler, once, at import time.
+
+    Wrapped in a named function rather than left as a bare
+    `atexit.register(...)` statement, so this module's exit-time side
+    effect is discoverable by name instead of blending into the
+    surrounding statement flow. Placed immediately after `_cleanup_mounts`
+    rather than after the unrelated helpers that follow it, so the
+    definition and its registration read together.
+    """
+    atexit.register(_cleanup_mounts)
+
+
+_register_exit_cleanup_handlers()
+
+
 def _run_command(cmd: list[str], verbose: bool) -> int:
     """Run `cmd` as an argument list (never through a shell) and print its
     output if `verbose` is `True`.
@@ -130,9 +146,6 @@ def _run_command(cmd: list[str], verbose: bool) -> int:
     if result.returncode != 0 and verbose:
         logger.info("Command failed: %s\nStdErr: %s", cmd, result.stderr.strip())
     return result.returncode
-
-
-atexit.register(_cleanup_mounts)
 
 
 def cache_dir_delete_on_exit(cache_dir: Path) -> None:

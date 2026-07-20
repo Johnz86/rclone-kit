@@ -175,4 +175,15 @@ def _cleanup_live_processes() -> None:
             executor.submit(process._atexit_terminate)
 
 
-atexit.register(_cleanup_live_processes)
+def _register_exit_cleanup_handlers() -> None:
+    """Register this module's `atexit` handler, once, at import time.
+
+    Wrapped in a named function rather than left as a bare
+    `atexit.register(...)` statement, so this module's exit-time side
+    effect is discoverable by name instead of blending into the
+    surrounding statement flow.
+    """
+    atexit.register(_cleanup_live_processes)
+
+
+_register_exit_cleanup_handlers()

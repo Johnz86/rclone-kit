@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 _LOCK = threading.Lock()
 
 _TMP_UPLOAD_DIRS: set[Path] = set()
+_MIN_PART_UPLOAD_SIZE = SizeSuffix("5MB")
 
 
 def _cleanup_tmp_upload_dirs() -> None:
@@ -41,7 +42,18 @@ def _cleanup_tmp_upload_dirs() -> None:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
-atexit.register(_cleanup_tmp_upload_dirs)
+def _register_exit_cleanup_handlers() -> None:
+    """Register this module's `atexit` handler, once, at import time.
+
+    Wrapped in a named function rather than left as a bare
+    `atexit.register(...)` statement, so this module's exit-time side
+    effect is discoverable by name instead of blending into the
+    surrounding statement flow.
+    """
+    atexit.register(_cleanup_tmp_upload_dirs)
+
+
+_register_exit_cleanup_handlers()
 
 
 def _log(msg: str) -> None:
@@ -188,9 +200,6 @@ def collapse_runs(numbers: list[int]) -> list[str]:
         runs.append(f"{start}-{prev}")
 
     return runs
-
-
-_MIN_PART_UPLOAD_SIZE = SizeSuffix("5MB")
 
 
 def _check_part_size(parts: list[PartInfo]) -> None:
