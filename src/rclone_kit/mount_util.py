@@ -124,7 +124,11 @@ def _register_exit_cleanup_handlers() -> None:
     effect is discoverable by name instead of blending into the
     surrounding statement flow. Placed immediately after `_cleanup_mounts`
     rather than after the unrelated helpers that follow it, so the
-    definition and its registration read together.
+    definition and its registration read together. Unlike the lazy,
+    first-use-guarded registration in `util.py`/`process.py`/`file_part.py`,
+    "at import time" is correct here rather than a leftover eager pattern:
+    this module is itself only ever imported function-locally at its one
+    real call site, so module import and first real use already coincide.
     """
     atexit.register(_cleanup_mounts)
 
