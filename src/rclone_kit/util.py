@@ -37,6 +37,11 @@ _DO_CLEANUP = os.getenv("RCLONE_KIT_CLEANUP", "1") == "1"
 _REDACTED_VALUE = "<redacted>"
 _SENSITIVE_FLAG_PARTS = frozenset({"auth", "password", "pass", "secret", "token"})
 _SENSITIVE_COMPOUND_FLAGS = ("access-key", "private-key")
+_LIVE_SUBPROCESSES: weakref.WeakSet[subprocess.Popen[str]] = weakref.WeakSet()
+_FREE_PORT_RANGE_START = 10000
+_FREE_PORT_RANGE_END = 20000
+_FREE_PORT_MAX_ATTEMPTS = 20
+_MIN_S3_PATH_PARTS = 2
 
 
 def _clean_configs(signum: int | None = None, _frame: object | None = None) -> None:
@@ -59,23 +64,28 @@ def _clean_configs(signum: int | None = None, _frame: object | None = None) -> N
         os.kill(os.getpid(), signum)
 
 
-atexit.register(_clean_configs)
-
-_LIVE_SUBPROCESSES: weakref.WeakSet[subprocess.Popen[str]] = weakref.WeakSet()
-
-
 def _terminate_live_subprocesses() -> None:
-    """Kill every subprocess `rclone_execute` started that is still tracked.
-
-    Registered once at import time rather than per call, so every
-    `rclone_execute` invocation does not grow `atexit`'s internal
-    registration list without bound.
-    """
+    """Kill every subprocess `rclone_execute` started that is still tracked."""
     for process in list(_LIVE_SUBPROCESSES):
         terminate_process_tree(process.pid)
 
 
-atexit.register(_terminate_live_subprocesses)
+def _register_exit_cleanup_handlers() -> None:
+    """Register this module's `atexit` handlers, once, at import time.
+
+    Both handlers are registered together here, after both are defined,
+    instead of each sitting as a bare `atexit.register(...)` statement next
+    to its own function - so the module's exit-time side effects are all
+    visible in one place rather than interleaved between unrelated
+    definitions. Doing this at import time rather than per call also keeps
+    `atexit`'s internal registration list from growing without bound as
+    `rclone_execute` is called repeatedly.
+    """
+    atexit.register(_clean_configs)
+    atexit.register(_terminate_live_subprocesses)
+
+
+_register_exit_cleanup_handlers()
 
 
 def register_signal_cleanup() -> None:
@@ -168,11 +178,6 @@ def port_is_free(port: int) -> bool:
 
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         return s.connect_ex(("localhost", port)) != 0
-
-
-_FREE_PORT_RANGE_START = 10000
-_FREE_PORT_RANGE_END = 20000
-_FREE_PORT_MAX_ATTEMPTS = 20
 
 
 def _random_port() -> int:
@@ -358,9 +363,6 @@ def rclone_execute(
         clear_temp_config_file(tmpfile)
         if process is not None:
             _LIVE_SUBPROCESSES.discard(process)
-
-
-_MIN_S3_PATH_PARTS = 2
 
 
 def split_s3_path(path: str) -> S3PathInfo:
