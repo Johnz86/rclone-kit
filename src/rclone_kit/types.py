@@ -98,16 +98,23 @@ class SizeSuffix:
         return self._size
 
     def as_str(self) -> str:
-        value, unit = self._value_and_unit(self._size)
-        formatted = self._format_value(value, unit)
+        return self._round_trip_format(self._size)
 
-        # Formatting can round a value up across a unit boundary (e.g.
-        # 1023.9999...K rounds to "1024.0K", which is really 1.0M);
-        # reparsing the formatted string and reconverting picks the unit
-        # that actually matches the displayed number.
-        rounded_size = self._parse_size_suffix(formatted)
-        value, unit = self._value_and_unit(rounded_size)
-        return self._format_value(value, unit)
+    @classmethod
+    def _round_trip_format(cls, size: int) -> str:
+        """Format `size` bytes, then reparse and reformat once more.
+
+        Rounding to one decimal place can push a value across a unit
+        boundary (e.g. 1023.9999...K displays as "1024.0K", which is
+        really 1.0M); reparsing the first formatted string and
+        reconverting the resulting byte count picks the unit that
+        actually matches what gets displayed.
+        """
+        value, unit = cls._value_and_unit(size)
+        formatted = cls._format_value(value, unit)
+        rounded_size = cls._parse_size_suffix(formatted)
+        value, unit = cls._value_and_unit(rounded_size)
+        return cls._format_value(value, unit)
 
     @classmethod
     def _value_and_unit(cls, size: int) -> tuple[float, str]:
