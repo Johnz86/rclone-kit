@@ -4,8 +4,8 @@ import warnings
 from pathlib import Path
 from threading import Lock
 
+from rclone_kit.chunk_store import get_chunk_tmpdir
 from rclone_kit.s3.multipart.file_info import S3FileInfo
-from rclone_kit.types import get_chunk_tmpdir
 
 logger = logging.getLogger(__name__)
 

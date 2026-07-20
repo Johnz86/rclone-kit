@@ -14,11 +14,12 @@ from urllib.parse import quote
 
 import httpx
 
+from rclone_kit.chunk_store import get_chunk_tmpdir
 from rclone_kit.exceptions import HttpFetchError
 from rclone_kit.file_part import FilePart
 from rclone_kit.process import Process
 from rclone_kit.s3.multipart.file_info import S3FileInfo
-from rclone_kit.types import Range, SizeSuffix, get_chunk_tmpdir
+from rclone_kit.types import Range, SizeSuffix
 
 _TIMEOUT = 10 * 60
 _PUT_WARNING_EMITTED = Event()

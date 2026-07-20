@@ -61,7 +61,7 @@ class UploadState:
             self._save_no_lock()
 
     def __post_init__(self):
-        from rclone_kit.types import get_chunk_tmpdir
+        from rclone_kit.chunk_store import get_chunk_tmpdir
 
         if self.peristant is None:
             object_name = self.upload_info.object_name

@@ -1,11 +1,7 @@
-import os
 import re
-import time
 import warnings
 from dataclasses import dataclass
 from enum import Enum
-from pathlib import Path
-from threading import Lock
 from typing import Self
 
 
@@ -48,86 +44,15 @@ class SizeResult:
     file_sizes: dict[str, int]
 
 
-_BYTES_PER_SIZE_UNIT = 1024
-
-
-def _to_size_suffix(size: int) -> str:
-    def _convert(size: int) -> tuple[float, str]:
-        val: float
-        unit: str
-        if size < _BYTES_PER_SIZE_UNIT:
-            val = size
-            unit = "B"
-        elif size < 1024**2:
-            val = size / 1024
-            unit = "K"
-        elif size < 1024**3:
-            val = size / (1024**2)
-            unit = "M"
-        elif size < 1024**4:
-            val = size / (1024**3)
-            unit = "G"
-        elif size < 1024**5:
-            val = size / (1024**4)
-            unit = "T"
-        elif size < 1024**6:
-            val = size / (1024**5)
-            unit = "P"
-        else:
-            raise ValueError(f"Invalid size: {size}")
-
-        return val, unit
-
-    def _fmt(_val: float, _unit: str) -> str:
-        first_str = str(int(_val)) if float(_val).is_integer() else f"{_val:.1f}"
-        return first_str + _unit
-
-    val, unit = _convert(size)
-    out = _fmt(val, unit)
-
-    int_val = _from_size_suffix(out)
-    val, unit = _convert(int_val)
-    out = _fmt(val, unit)
-    return out
-
-
-_PATTERN_SIZE_SUFFIX = re.compile(r"^(\d+(?:\.\d+)?)([A-Za-z]+)$")
-
-
-def _parse_elements(value: str) -> tuple[str, str] | None:
-    match = _PATTERN_SIZE_SUFFIX.match(value)
-    if match is None:
-        return None
-    return match.group(1), match.group(2)
-
-
-def _from_size_suffix(size: str) -> int:
-    if size == "0":
-        return 0
-    pair = _parse_elements(size)
-    if pair is None:
-        raise ValueError(f"Invalid size suffix: {size}")
-    num_str, suffix = pair
-    n = float(num_str)
-
-    unit = suffix[0].upper()
-    if unit == "B":
-        return int(n)
-    if unit == "K":
-        return int(n * 1024)
-    if unit == "M":
-        return int(n * 1024 * 1024)
-    if unit == "G":
-        return int(n * 1024 * 1024 * 1024)
-    if unit == "T":
-        return int(n * 1024**4)
-    if unit == "P":
-        return int(n * 1024**5)
-    raise ValueError(f"Invalid size suffix: {suffix}")
+_SIZE_SUFFIX_STEP = 1024
+_SIZE_SUFFIX_UNITS: tuple[str, ...] = ("B", "K", "M", "G", "T", "P")
+_SIZE_SUFFIX_PATTERN = re.compile(r"^(\d+(?:\.\d+)?)([A-Za-z]+)$")
 
 
 @dataclass(frozen=True, slots=True, init=False)
 class SizeSuffix:
+    """A byte count with an rclone-style human-readable suffix (`1.5M`, `16K`, ...)."""
+
     _size: int
 
     def __init__(self, size: "int | str | SizeSuffix"):
@@ -137,18 +62,64 @@ class SizeSuffix:
         elif isinstance(size, int):
             parsed_size = size
         elif isinstance(size, str):
-            parsed_size = _from_size_suffix(size)
+            parsed_size = self._parse_size_suffix(size)
         elif isinstance(size, float):
             parsed_size = int(size)
         else:
             raise ValueError(f"Invalid type for size: {type(size)}")
         object.__setattr__(self, "_size", parsed_size)
 
+    @staticmethod
+    def _unit_multiplier(unit_index: int) -> int:
+        return _SIZE_SUFFIX_STEP**unit_index
+
+    @staticmethod
+    def _parse_number_and_unit(value: str) -> tuple[str, str] | None:
+        match = _SIZE_SUFFIX_PATTERN.match(value)
+        if match is None:
+            return None
+        return match.group(1), match.group(2)
+
+    @classmethod
+    def _parse_size_suffix(cls, size: str) -> int:
+        if size == "0":
+            return 0
+        pair = cls._parse_number_and_unit(size)
+        if pair is None:
+            raise ValueError(f"Invalid size suffix: {size}")
+        num_str, suffix = pair
+        unit = suffix[0].upper()
+        if unit not in _SIZE_SUFFIX_UNITS:
+            raise ValueError(f"Invalid size suffix: {suffix}")
+        unit_index = _SIZE_SUFFIX_UNITS.index(unit)
+        return int(float(num_str) * cls._unit_multiplier(unit_index))
+
     def as_int(self) -> int:
         return self._size
 
     def as_str(self) -> str:
-        return _to_size_suffix(self._size)
+        value, unit = self._value_and_unit(self._size)
+        formatted = self._format_value(value, unit)
+
+        # Formatting can round a value up across a unit boundary (e.g.
+        # 1023.9999...K rounds to "1024.0K", which is really 1.0M);
+        # reparsing the formatted string and reconverting picks the unit
+        # that actually matches the displayed number.
+        rounded_size = self._parse_size_suffix(formatted)
+        value, unit = self._value_and_unit(rounded_size)
+        return self._format_value(value, unit)
+
+    @classmethod
+    def _value_and_unit(cls, size: int) -> tuple[float, str]:
+        for unit_index, unit in enumerate(_SIZE_SUFFIX_UNITS):
+            if size < cls._unit_multiplier(unit_index + 1):
+                return size / cls._unit_multiplier(unit_index), unit
+        raise ValueError(f"Invalid size: {size}")
+
+    @staticmethod
+    def _format_value(value: float, unit: str) -> str:
+        number = str(int(value)) if float(value).is_integer() else f"{value:.1f}"
+        return f"{number}{unit}"
 
     def __repr__(self) -> str:
         return self.as_str()
@@ -249,46 +220,6 @@ class SizeSuffix:
         return type(self)(self._size - SizeSuffix(other)._size)
 
 
-_TMP_DIR_ACCESS_LOCK = Lock()
-
-
-def _clean_old_files(out: Path) -> None:
-
-    from rclone_kit.util import locked_print
-
-    now = time.time()
-
-    for root, _dirs, files in os.walk(out):
-        for name in files:
-            f = Path(root) / name
-            filemod = f.stat().st_mtime
-            diff_secs = now - filemod
-            diff_days = diff_secs / (60 * 60 * 24)
-            if diff_days > 1:
-                locked_print(f"Removing old file: {f}")
-                f.unlink()
-
-    for root, dirs, _ in os.walk(out):
-        for dir in dirs:
-            d = Path(root) / dir
-            if not list(d.iterdir()):
-                locked_print(f"Removing empty directory: {d}")
-                d.rmdir()
-
-
-def get_chunk_tmpdir() -> Path:
-    with _TMP_DIR_ACCESS_LOCK:
-        dat = get_chunk_tmpdir.__dict__
-        if "out" in dat:
-            return dat["out"]
-        out = Path("chunk_store")
-        if out.exists():
-            _clean_old_files(out)
-        out.mkdir(exist_ok=True, parents=True)
-        dat["out"] = out
-        return out
-
-
 class EndOfStream:
     pass
 
@@ -324,61 +255,6 @@ class Range:
 _MAX_PART_NUMBER = 10000
 
 
-def _get_chunk_size(src_size: int | SizeSuffix, target_chunk_size: int | SizeSuffix) -> SizeSuffix:
-    src_size = SizeSuffix(src_size)
-    target_chunk_size = SizeSuffix(target_chunk_size)
-    if src_size < 0:
-        raise ValueError("Source size must not be negative")
-    if target_chunk_size <= 0:
-        raise ValueError("Target chunk size must be greater than zero")
-    minimum_bytes = (src_size.as_int() + _MAX_PART_NUMBER - 1) // _MAX_PART_NUMBER
-    min_chunk_size = SizeSuffix(minimum_bytes)
-    if min_chunk_size > target_chunk_size:
-        warnings.warn(
-            f"min_chunk_size: {min_chunk_size} is greater than target_chunk_size: {target_chunk_size}, adjusting target_chunk_size to min_chunk_size",
-            stacklevel=2,
-        )
-        chunk_size = SizeSuffix(min_chunk_size)
-    else:
-        chunk_size = SizeSuffix(target_chunk_size)
-    return chunk_size
-
-
-def _create_part_infos(
-    src_size: int | SizeSuffix, target_chunk_size: int | SizeSuffix
-) -> list["PartInfo"]:
-    target_chunk_size = SizeSuffix(target_chunk_size)
-    src_size = SizeSuffix(src_size)
-    if src_size < 0:
-        raise ValueError("Source size must not be negative")
-    if src_size == 0:
-        return []
-    chunk_size = _get_chunk_size(src_size=src_size, target_chunk_size=target_chunk_size)
-
-    part_infos: list[PartInfo] = []
-    curr_offset: int = 0
-    part_number: int = 0
-    while True:
-        part_number += 1
-        done = False
-        end = curr_offset + chunk_size
-        if end > src_size:
-            done = True
-            chunk_size = src_size - curr_offset
-        range: Range = Range(start=curr_offset, end=curr_offset + chunk_size)
-        part_info = PartInfo(
-            part_number=part_number,
-            range=range,
-        )
-        part_infos.append(part_info)
-        curr_offset += chunk_size.as_int()
-        if curr_offset >= src_size:
-            break
-        if done:
-            break
-    return part_infos
-
-
 @dataclass(frozen=True, slots=True)
 class PartInfo:
     part_number: int
@@ -388,8 +264,66 @@ class PartInfo:
     def split_parts(
         size: int | SizeSuffix, target_chunk_size: int | SizeSuffix
     ) -> list["PartInfo"]:
-        out = _create_part_infos(size, target_chunk_size)
-        return out
+        return PartInfo._create_part_infos(size, target_chunk_size)
+
+    @staticmethod
+    def _get_chunk_size(
+        src_size: int | SizeSuffix, target_chunk_size: int | SizeSuffix
+    ) -> SizeSuffix:
+        src_size = SizeSuffix(src_size)
+        target_chunk_size = SizeSuffix(target_chunk_size)
+        if src_size < 0:
+            raise ValueError("Source size must not be negative")
+        if target_chunk_size <= 0:
+            raise ValueError("Target chunk size must be greater than zero")
+        minimum_bytes = (src_size.as_int() + _MAX_PART_NUMBER - 1) // _MAX_PART_NUMBER
+        min_chunk_size = SizeSuffix(minimum_bytes)
+        if min_chunk_size > target_chunk_size:
+            warnings.warn(
+                f"min_chunk_size: {min_chunk_size} is greater than target_chunk_size: {target_chunk_size}, adjusting target_chunk_size to min_chunk_size",
+                stacklevel=2,
+            )
+            chunk_size = SizeSuffix(min_chunk_size)
+        else:
+            chunk_size = SizeSuffix(target_chunk_size)
+        return chunk_size
+
+    @staticmethod
+    def _create_part_infos(
+        src_size: int | SizeSuffix, target_chunk_size: int | SizeSuffix
+    ) -> list["PartInfo"]:
+        target_chunk_size = SizeSuffix(target_chunk_size)
+        src_size = SizeSuffix(src_size)
+        if src_size < 0:
+            raise ValueError("Source size must not be negative")
+        if src_size == 0:
+            return []
+        chunk_size = PartInfo._get_chunk_size(
+            src_size=src_size, target_chunk_size=target_chunk_size
+        )
+
+        part_infos: list[PartInfo] = []
+        curr_offset: int = 0
+        part_number: int = 0
+        while True:
+            part_number += 1
+            done = False
+            end = curr_offset + chunk_size
+            if end > src_size:
+                done = True
+                chunk_size = src_size - curr_offset
+            part_range = Range(start=curr_offset, end=curr_offset + chunk_size)
+            part_info = PartInfo(
+                part_number=part_number,
+                range=part_range,
+            )
+            part_infos.append(part_info)
+            curr_offset += chunk_size.as_int()
+            if curr_offset >= src_size:
+                break
+            if done:
+                break
+        return part_infos
 
     def __post_init__(self) -> None:
         if not 1 <= self.part_number <= _MAX_PART_NUMBER:
