@@ -10,7 +10,7 @@ import pytest
 from rclone_kit.backend import CliRcloneBackend
 from rclone_kit.command_flags import FLAG_S3_NO_CHECK_BUCKET
 from rclone_kit.config import Config
-from rclone_kit.detail.transfer_ops import copy_file_to
+from rclone_kit.operations.transfer_ops import copy_file_to
 from rclone_kit.process import Process
 
 

@@ -7,7 +7,7 @@ import pytest
 from helpers import ClientBackendAdapter
 from rclone_kit.client import Rclone
 from rclone_kit.config import Config
-from rclone_kit.detail.config_ops import (
+from rclone_kit.operations.config_ops import (
     check_is_s3,
     fetch_s3_credentials,
     obscure_password,

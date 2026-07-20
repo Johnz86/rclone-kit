@@ -20,11 +20,11 @@ def test_package_and_operation_imports_are_side_effect_free() -> None:
 
         subprocess.Popen = RejectProcess
 
-        import rclone_kit.detail.config_ops
-        import rclone_kit.detail.listing_ops
-        import rclone_kit.detail.mount_ops
-        import rclone_kit.detail.serve_ops
-        import rclone_kit.detail.transfer_ops
+        import rclone_kit.operations.config_ops
+        import rclone_kit.operations.listing_ops
+        import rclone_kit.operations.mount_ops
+        import rclone_kit.operations.serve_ops
+        import rclone_kit.operations.transfer_ops
         import rclone_kit
 
         assert "boto3" not in sys.modules

@@ -14,7 +14,8 @@ from rclone_kit.command_flags import (
     FLAG_S3_NO_CHECK_BUCKET,
     FLAG_TRANSFERS,
 )
-from rclone_kit.detail.transfer_ops import (
+from rclone_kit.group_files import group_files
+from rclone_kit.operations.transfer_ops import (
     copy_between_remotes,
     copy_byte_range,
     copy_directory,
@@ -24,7 +25,6 @@ from rclone_kit.detail.transfer_ops import (
     delete_files_partitioned,
     purge_dir,
 )
-from rclone_kit.group_files import group_files
 from rclone_kit.remote import Remote
 
 

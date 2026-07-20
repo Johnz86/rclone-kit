@@ -1,4 +1,4 @@
-"""Unit tests for `rclone_kit.detail.walk`'s `walk_runner_depth_first` and
+"""Unit tests for `rclone_kit.operations.walk`'s `walk_runner_depth_first` and
 `walk_runner_breadth_first`, run entirely offline against an in-memory fake
 directory tree (no subprocess or network calls).
 
@@ -20,9 +20,9 @@ from typing import cast
 import pytest
 
 from rclone_kit.client import Rclone
-from rclone_kit.detail.walk import walk, walk_runner_breadth_first, walk_runner_depth_first
 from rclone_kit.dir import Dir
 from rclone_kit.dir_listing import DirListing
+from rclone_kit.operations.walk import walk, walk_runner_breadth_first, walk_runner_depth_first
 from rclone_kit.remote import Remote
 from rclone_kit.rpath import RPath
 from rclone_kit.types import Order

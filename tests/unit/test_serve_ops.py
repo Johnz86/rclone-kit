@@ -7,7 +7,7 @@ import pytest
 
 from helpers import ClientBackendAdapter
 from rclone_kit.client import Rclone
-from rclone_kit.detail.serve_ops import launch_http_server, launch_webdav_server
+from rclone_kit.operations.serve_ops import launch_http_server, launch_webdav_server
 from rclone_kit.process import Process
 
 
@@ -28,7 +28,7 @@ def _bare_rclone() -> Rclone:
 def test_launch_http_server_builds_expected_command_vector(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("rclone_kit.detail.serve_ops.time.sleep", lambda _s: None)
+    monkeypatch.setattr("rclone_kit.operations.serve_ops.time.sleep", lambda _s: None)
     rclone = _bare_rclone()
     commands: list[tuple[list[str], Path | None]] = []
 
@@ -66,7 +66,7 @@ def test_launch_http_server_builds_expected_command_vector(
 def test_launch_http_server_includes_log_flags_when_serve_http_log_set(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setattr("rclone_kit.detail.serve_ops.time.sleep", lambda _s: None)
+    monkeypatch.setattr("rclone_kit.operations.serve_ops.time.sleep", lambda _s: None)
     rclone = _bare_rclone()
     commands: list[list[str]] = []
     log_path = tmp_path / "serve.log"
@@ -92,7 +92,7 @@ def test_launch_http_server_includes_log_flags_when_serve_http_log_set(
 def test_launch_http_server_raises_when_process_fails_to_start(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("rclone_kit.detail.serve_ops.time.sleep", lambda _s: None)
+    monkeypatch.setattr("rclone_kit.operations.serve_ops.time.sleep", lambda _s: None)
     rclone = _bare_rclone()
     rclone._launch_process = lambda *_args, **_kwargs: cast(Process, _FakeProcess(1))
 
@@ -108,7 +108,7 @@ def test_launch_http_server_raises_when_process_fails_to_start(
 def test_launch_webdav_server_builds_expected_command_vector(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("rclone_kit.detail.serve_ops.time.sleep", lambda _s: None)
+    monkeypatch.setattr("rclone_kit.operations.serve_ops.time.sleep", lambda _s: None)
     rclone = _bare_rclone()
     commands: list[list[str]] = []
 
@@ -142,7 +142,7 @@ def test_launch_webdav_server_builds_expected_command_vector(
 def test_launch_webdav_server_raises_when_process_fails_to_start(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("rclone_kit.detail.serve_ops.time.sleep", lambda _s: None)
+    monkeypatch.setattr("rclone_kit.operations.serve_ops.time.sleep", lambda _s: None)
     rclone = _bare_rclone()
     rclone._launch_process = lambda *_args, **_kwargs: cast(Process, _FakeProcess(1))
 

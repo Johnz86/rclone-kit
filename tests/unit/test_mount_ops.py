@@ -9,8 +9,8 @@ from pathlib import Path
 from typing import Any, cast
 
 from rclone_kit.client import Rclone
-from rclone_kit.detail.mount_ops import launch_s3_mount
 from rclone_kit.mount import Mount
+from rclone_kit.operations.mount_ops import launch_s3_mount
 
 
 def _rclone_recording_mount() -> tuple[Rclone, dict[str, Any]]:

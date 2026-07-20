@@ -12,7 +12,10 @@ import pytest
 from helpers import ClientBackendAdapter
 from rclone_kit.client import Rclone
 from rclone_kit.command_flags import FLAG_CHECKERS, FLAG_FAST_LIST, FLAG_FILES_FROM
-from rclone_kit.detail.listing_ops import (
+from rclone_kit.diff import DiffOption, DiffType
+from rclone_kit.dir_listing import DirListing
+from rclone_kit.file import File
+from rclone_kit.operations.listing_ops import (
     check_exists,
     check_is_synced,
     fetch_listremotes,
@@ -25,9 +28,6 @@ from rclone_kit.detail.listing_ops import (
     print_contents,
     stream_diff,
 )
-from rclone_kit.diff import DiffOption, DiffType
-from rclone_kit.dir_listing import DirListing
-from rclone_kit.file import File
 from rclone_kit.process import Process
 from rclone_kit.remote import Remote
 from rclone_kit.types import SizeResult, SizeSuffix

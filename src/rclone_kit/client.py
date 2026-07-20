@@ -17,15 +17,24 @@ from rclone_kit.command_flags import FLAG_FAST_LIST
 from rclone_kit.completed_process import CompletedProcess
 from rclone_kit.config import Config
 from rclone_kit.config_discovery import find_conf_file
-from rclone_kit.detail.config_ops import (
+from rclone_kit.diff import DiffItem, DiffOption
+from rclone_kit.dir import Dir
+from rclone_kit.dir_listing import DirListing
+from rclone_kit.exceptions import RcloneCommandError
+from rclone_kit.file import File
+from rclone_kit.file_stream import FilesStream
+from rclone_kit.fs.filesystem import FSPath, RemoteFS
+from rclone_kit.http_server import HttpServer
+from rclone_kit.mount import Mount
+from rclone_kit.operations.config_ops import (
     check_is_s3,
     fetch_config_paths,
     fetch_config_show,
     fetch_s3_credentials,
     obscure_password,
 )
-from rclone_kit.detail.copy_file_parts_resumable import copy_file_parts_resumable
-from rclone_kit.detail.listing_ops import (
+from rclone_kit.operations.copy_file_parts_resumable import copy_file_parts_resumable
+from rclone_kit.operations.listing_ops import (
     check_exists,
     check_is_synced,
     fetch_listremotes,
@@ -38,9 +47,9 @@ from rclone_kit.detail.listing_ops import (
     print_contents,
     stream_diff,
 )
-from rclone_kit.detail.mount_ops import launch_mount, launch_s3_mount
-from rclone_kit.detail.serve_ops import launch_http_server, launch_webdav_server
-from rclone_kit.detail.transfer_ops import (
+from rclone_kit.operations.mount_ops import launch_mount, launch_s3_mount
+from rclone_kit.operations.serve_ops import launch_http_server, launch_webdav_server
+from rclone_kit.operations.transfer_ops import (
     copy_between_remotes,
     copy_byte_range,
     copy_directory,
@@ -50,16 +59,7 @@ from rclone_kit.detail.transfer_ops import (
     delete_files_partitioned,
     purge_dir,
 )
-from rclone_kit.detail.walk import walk
-from rclone_kit.diff import DiffItem, DiffOption
-from rclone_kit.dir import Dir
-from rclone_kit.dir_listing import DirListing
-from rclone_kit.exceptions import RcloneCommandError
-from rclone_kit.file import File
-from rclone_kit.file_stream import FilesStream
-from rclone_kit.fs.filesystem import FSPath, RemoteFS
-from rclone_kit.http_server import HttpServer
-from rclone_kit.mount import Mount
+from rclone_kit.operations.walk import walk
 from rclone_kit.optional_dependency import MissingOptionalDependencyError
 from rclone_kit.process import Process
 from rclone_kit.remote import Remote

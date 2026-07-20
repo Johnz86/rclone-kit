@@ -18,11 +18,11 @@ from rclone_kit.command_flags import (
     FLAG_S3_NO_CHECK_BUCKET,
     FLAG_TRANSFERS,
 )
-from rclone_kit.detail import mount_ops as mount_ops_module
 from rclone_kit.diff import DiffOption, DiffType
 from rclone_kit.dir_listing import DirListing
 from rclone_kit.exceptions import RcloneCommandError
 from rclone_kit.group_files import group_files
+from rclone_kit.operations import mount_ops as mount_ops_module
 from rclone_kit.process import Process
 from rclone_kit.remote import Remote
 from rclone_kit.types import ListingOption, Order, SizeResult

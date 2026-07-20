@@ -8,9 +8,9 @@ from concurrent.futures import ThreadPoolExecutor
 from queue import Empty, Queue
 from threading import Thread
 
-from rclone_kit.detail.walk import walk_runner_depth_first
 from rclone_kit.dir import Dir
 from rclone_kit.dir_listing import DirListing
+from rclone_kit.operations.walk import walk_runner_depth_first
 from rclone_kit.types import ListingOption, Order
 
 _MAX_OUT_QUEUE_SIZE = 50

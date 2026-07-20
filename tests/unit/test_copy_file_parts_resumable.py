@@ -1,9 +1,9 @@
-"""Unit tests for `rclone_kit.detail.copy_file_parts_resumable`."""
+"""Unit tests for `rclone_kit.operations.copy_file_parts_resumable`."""
 
 import pytest
 
 from rclone_kit.client import Rclone
-from rclone_kit.detail.copy_file_parts_resumable import copy_file_parts_resumable
+from rclone_kit.operations.copy_file_parts_resumable import copy_file_parts_resumable
 
 
 def _stub_rclone() -> Rclone:
