@@ -4,9 +4,12 @@
 
 This is the current maintainer guide for the `rclone-kit` implementation,
 test strategy, build pipeline, and safe contribution workflow. It replaces
-the historical build and source improvement proposals: many build
-recommendations and focused source fixes were implemented, while the larger
-source redesign remains future work.
+the historical build and source improvement proposals: the build
+recommendations, focused source fixes, and the larger source redesign (the
+client-architecture refactor around a single `Rclone` class and narrow
+`RcloneBackend` boundary) have all been implemented. See "Improvement
+roadmap" below for what remains: typing/linting depth, release-pipeline
+refinement, build isolation, and source distributions.
 
 The authoritative configuration remains in the code:
 
@@ -374,7 +377,10 @@ distribution verifier and smoke test discover console scripts dynamically.
 
 The build pipeline is substantially complete. Source improvements were
 delivered as focused correctness, security, dependency, logging, cleanup, and
-test changes; the broad architectural phases were not completed. Improve
+test changes, and the broad architectural phases (error model, resource
+ownership, S3 multipart, client architecture, paths and filesystems, test
+isolation) are now also complete - only typing/linting, release publication
+refinement, build isolation, and source distributions remain open. Improve
 them incrementally:
 
 The error model phase is done: `rclone_kit.exceptions` now holds a typed
@@ -491,6 +497,12 @@ the pre-refactor `RcloneImpl`/facade duplication this phase already
 eliminated, every phase it planned through Phase 4 (plus the compatibility
 decisions from Phase 5) is complete and narrated above, and leaving it in
 place risked convincing a future reader the cycles it describes still exist.
+`detail/` was then renamed to `operations/` as its own separate, mechanical
+commit (no other changes mixed in), resolving the plan's last open naming
+decision - every module content is unchanged, only the package name and its
+importers moved. Every `detail/*.py`/`detail.*` reference elsewhere in this
+document below is describing history from before that rename and is
+accurate for the point in time it narrates, not a live path.
 
 The paths-and-filesystems phase is done. The "local paths, rclone paths,
 and strings still overlap" complaint turned out to be a real, reproducible
@@ -599,8 +611,8 @@ future session, they will have moved again.
 
 | Area | Current constraint | Preferred next step | Required evidence |
 |---|---|---|---|
-| Typing and linting | `S101`, `ANN`, `TRY`, `FBT001`/`FBT002`/`FBT003`, `A001`/`A002`, `PLR0913`, `PTH`, `PLR0911`/`PLR0912`/`PLR0915` remain globally ignored, and Pyright is not strict anywhere. | With `CompletedProcess[str]` now propagated, add a real `[tool.pyright]` `strict = [...]` list starting from near-zero-finding modules (`detail/config_ops.py`, `detail/mount_ops.py`, `detail/serve_ops.py`, `completed_process.py`, `exec.py`), then work through the remaining ignore families with per-call-site judgment. | Quality gates pass with a smaller ignore surface and no broad `Any` escape hatches in changed code. |
-| Release publication | CI assembles verified wheels but does not publish or attest them. | Configure PyPI trusted publishing, an approval-protected environment, a tag-driven publish job, and artifact attestations. | Only a verified `release-dist` artifact can reach the publish job. |
+| Typing and linting | `S101`, `ANN`, `TRY`, `FBT001`/`FBT002`/`FBT003`, `A001`/`A002`, `PLR0913`, `PTH`, `PLR0911`/`PLR0912`/`PLR0915` remain globally ignored. Pyright `strict` now covers `command_flags.py`, `settings.py`, and `group_files.py` (all genuinely 0-error, not just near-zero) - every other module trialed (`access.py`, `backend.py`, `chunk_store.py`, `completed_process.py`, `config_discovery.py`) still returns only `reportMissingTypeStubs` cross-module noise from importing a non-strict sibling, so broadening the list further should wait on real `ANN` progress rather than adding more noisy modules. | Make progress on the `ANN` family (even partial) before adding more files to `strict = [...]`; re-trial candidates afterward, since most of the remaining ones are only "near-zero" because of the cross-module noise, not their own quality. | Quality gates pass with a smaller ignore surface and no broad `Any` escape hatches in changed code. |
+| Release publication | Done: `.github/workflows/release.yaml` builds, verifies, and publishes both certified wheels to PyPI via trusted publishing (OIDC, no stored token) on `v*` tags, gated by the `pypi-release` GitHub Environment. See `docs/release_process.md`. Artifact attestations (`actions/attest-build-provenance` or equivalent) are not yet added. | Add build provenance attestations to the `publish` job's uploaded wheels if supply-chain verification beyond trusted publishing becomes a requirement. | A published wheel carries a verifiable attestation, not just a trusted-publishing OIDC trail. |
 | Build isolation | Smoke tests poison proxies but do not enforce network denial. | Run them in a network-disabled container or namespace where supported. | A deliberate network attempt fails while the bundled executable still runs. |
 | Source distributions | An sdist cannot yet build a complete certified wheel. | Keep wheel-only releases, or add a verified artifact input/download hook and test sdist-to-wheel builds on every target. | A built-from-sdist wheel passes the same verifier and smoke test. |
 

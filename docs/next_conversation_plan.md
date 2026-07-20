@@ -20,7 +20,9 @@ bugs, and fixed the small deviations it did find - see the
 for the full account. `docs/rclone_architecture_refactor_plan.md` itself was
 removed afterward: it described the pre-refactor architecture as current,
 and every phase it planned is now complete and narrated in
-`implementation_and_build_pipeline.md` instead.
+`implementation_and_build_pipeline.md` instead. `detail/` was then renamed
+to `operations/` as its own mechanical commit, and the Pyright strict
+rollout below started with its first three modules.
 
 The typing-and-linting phase's first pass is also done: slices 1-4 from
 this file's previous revision all landed -
@@ -112,114 +114,81 @@ Counts re-measured during the client-architecture follow-up review
 (2026-07-20); re-run `uv run ruff check --select <CODE> --no-cache .` before
 trusting any of these in a later session - they will have moved again.
 
-## Slice 5: Pyright strict rollout - stale, re-measure before using
+## Slice 5: Pyright strict rollout - three modules landed, re-trialed with fresh data
 
-**The module list and error counts below predate the client-architecture
-refactor (`0a9dc41`) and are now partly wrong, not just possibly drifted:**
-`exec.py` no longer exists (`backend.py` and `util.py`'s `rclone_execute`
-absorbed its role) and `rclone_impl.py` was renamed to `client.py`
-(`RcloneImpl` no longer exists as a name - the class is `Rclone`). The two
-structural findings below (cross-module `reportMissingTypeStubs` noise, and
-`reportPrivateUsage` on the `detail/` extraction pattern's `self._run(...)`
-calls) are still conceptually accurate - the pattern they describe still
-exists, just under `Rclone._run` instead of `RcloneImpl._run` - but every
-number and module name needs a fresh trial run (temporary `[tool.pyright]`
-`strict = [...]` edit, reverted after measuring, per the "Working
-conventions" section below) before this slice is picked up again.
-`group_files.py`'s one finding from the original trial
-(`reportUnnecessaryIsInstance`) is already fixed and documented in
-`implementation_and_build_pipeline.md`'s typing-and-linting paragraph - drop
-it from the candidate list rather than re-measuring it.
+`[tool.pyright]`'s `strict = [...]` now permanently covers `command_flags.py`,
+`settings.py`, and `group_files.py` - all three came back genuinely 0 errors
+in a fresh trial run against the post-`operations/`-rename tree, and the
+reason turns out to be simple rather than a sign of exceptional annotation
+quality: all three have **zero `rclone_kit`-internal imports** (stdlib only -
+`dataclasses`, `pathlib`, `os`, `warnings`). That's a real, permanent, valid
+win (nothing to revert), but it also means these three don't yet prove the
+cross-module noise problem below is solved for a module that actually
+imports siblings.
 
-The previous revision of this file proposed re-measuring strict-mode noise
-on `detail/listing_ops.py`, `detail/transfer_ops.py`, `detail/config_ops.py`,
-`detail/mount_ops.py`, `detail/serve_ops.py`, `group_files.py`,
-`completed_process.py`, and `exec.py` as "reasonable candidates," expecting
-most to come back at or near zero. Re-running that exact trial after
-slices 1-4 and the `types.py`/`chunk_store.py` work (temporary
-`[tool.pyright]` `strict = [...]` edit covering those eight plus the new
-`chunk_store.py`, reverted after measuring, not committed) gives a
-**materially different picture than expected - read this before deciding
-how to scope the next slice**:
+A fresh trial (temporary `strict = [...]` edit covering the six best
+remaining candidates, reverted after measuring, not committed) gives:
 
 | Module | Errors | Dominant cause |
 |---|---|---|
-| `chunk_store.py` | 1 | `reportMissingTypeStubs` only (see below) |
-| `group_files.py` | 1 | One real finding: `reportUnnecessaryIsInstance` at line ~102 - genuine dead code, trivially fixable |
-| `exec.py` | 3 | `reportMissingTypeStubs` only |
-| `completed_process.py` | 4 | 1 `reportMissingTypeStubs` + 3 `reportUnnecessaryComparison` - **read the caution below before touching these** |
-| `detail/mount_ops.py` | 9 | Mostly `reportMissingTypeStubs` |
-| `detail/serve_ops.py` | 9 | Mostly `reportMissingTypeStubs` |
-| `detail/config_ops.py` | 11 | `reportMissingTypeStubs` + 3 `reportPrivateUsage` (`_run`) |
-| `detail/listing_ops.py` | 16 | `reportMissingTypeStubs` + `reportPrivateUsage` (`_run`) |
-| `detail/transfer_ops.py` | 43 | **Not a good candidate despite slice 1** - still dominated by `Future[Unknown]` (missing generic type args on `ThreadPoolExecutor`/`Future` usage) and several closures with unannotated parameters (`rmdirs`, `files`, `check`, `remote`) |
+| `chunk_store.py` | 1 | `reportMissingTypeStubs` only, from importing `util.py` |
+| `completed_process.py` | 3 | 1 `reportMissingTypeStubs` + 2 `reportUnnecessaryComparison` (the `stdout`/`stderr is not None` guards - **read the caution below, these are false positives, do not remove them**) |
+| `config_discovery.py` | 2 | `reportMissingTypeStubs`, from importing `runtime/exceptions.py` and `util.py` |
+| `backend.py` | 3 | `reportMissingTypeStubs`, from importing `config.py`/`process.py`/`util.py` |
+| `access.py` | 5 | `reportMissingTypeStubs`, from importing `dir.py`/`dir_listing.py`/`file.py`/`remote.py`/`types.py` |
 
-97 errors total across the 9 modules, breaking down by category as:
-**47 `reportMissingTypeStubs`, 19 `reportPrivateUsage`, and ~31 spread
-across `reportUnknownVariableType`/`reportUnknownMemberType`/
-`reportMissingParameterType`/`reportUnnecessaryComparison`/
-`reportUnknownArgumentType`/`reportMissingTypeArgument`/
-`reportUnnecessaryIsInstance`/`reportUnknownParameterType`.**
+A third finding used to be in this table - `completed_process.py`'s
+`rtn is None` check on `returncode` - and is now fixed and removed from the
+property entirely (`Popen.communicate()` always populates `returncode` with
+a real `int`, confirmed by tracing both construction sites in `util.py` and
+`operations/transfer_ops.py`; no caller ever checked for `None`).
 
-This surfaces two structural problems the next session needs to actually
-decide on before adding any file to a real `strict = [...]` list - neither
-is mechanical:
+This still surfaces the one structural problem that matters for scoping the
+next slice: **every remaining candidate's only finding is
+`reportMissingTypeStubs` from importing a non-strict sibling module** - not
+about missing third-party stubs, but Pyright strict mode measuring the
+annotation-completeness of everything a file transitively imports, not just
+the file itself (the reason the `ANN` family is still globally ignored).
+Decide one of: (a) find or set a Pyright option that suppresses this
+specific report for first-party same-package imports without weakening
+strict mode's real value, (b) accept it as noise and count only the *other*
+categories when judging a file "clean enough" for the strict list, or
+(c) treat it as evidence that the `ANN` family needs at least partial
+progress before broadening the strict list further - this is the
+provisional choice reflected in `implementation_and_build_pipeline.md`'s
+roadmap table right now, not a final decision.
 
-1. **`reportMissingTypeStubs` is not about missing third-party stubs
-   here - it fires because a strict-mode file imports a *sibling*
-   `rclone_kit` module (`util.py`, `config.py`, `rclone_impl.py`, etc.)
-   that isn't itself strict-mode-clean/fully annotated** (the whole
-   reason the `ANN` family is still globally ignored). In other words,
-   `strict = [...]` on a single file doesn't purely measure that file's
-   own quality - it also measures the annotation-completeness of
-   everything it transitively imports. This means most of the "near-zero"
-   candidates the previous plan expected are only near-zero *because* of
-   this cross-module noise, not because the file itself has few real
-   issues (`chunk_store.py` and `exec.py` are exactly this case: their
-   only findings are `reportMissingTypeStubs` from importing `util.py`).
-   Decide one of: (a) find or set a Pyright option that suppresses this
-   specific report for first-party same-package imports without weakening
-   strict mode's real value, (b) accept it as noise and count only the
-   *other* categories when judging a file "clean enough" for the strict
-   list, or (c) treat it as evidence that the `ANN` family needs at least
-   partial progress before a broad strict rollout is worth doing.
-2. **`reportPrivateUsage` (19 findings, all `RcloneImpl._run` accessed
-   from `detail/*.py` sibling modules) is the `detail/` extraction
-   pattern's core design working as intended** - each `detail/*.py` free
-   function takes `self: RcloneImpl` and calls `self._run(...)`
-   deliberately, per the public-facade phase's own established pattern.
-   Python/Pyright has no "friend function" concept, so every one of these
-   trips strict mode. Decide whether to suppress this per call site with a
-   comment explaining the intentional pattern, or accept these files won't
-   reach strict-mode-clean without a wider signature change - do not
-   "fix" this by making `_run` non-private, that changes the class's
-   public surface for a tooling concern.
+The `detail/` extraction pattern's `reportPrivateUsage` finding
+(`Rclone._run` accessed from operation-module sibling functions, the same
+`RcloneImpl._run` finding from the pre-rename trial under its new name) was
+not re-measured this pass since none of the five candidates above are
+`operations/*.py` files - re-trial those specifically before relying on this
+note; the design tradeoff is unchanged: Python/Pyright has no "friend
+function" concept, so this trips strict mode by design, not by mistake - do
+not "fix" it by making `_run` non-private, that changes `Rclone`'s public
+surface for a tooling concern.
 
-**Caution before touching `completed_process.py`'s 3
-`reportUnnecessaryComparison` findings** (lines ~30, ~39, ~47 - the
-`stdout is not None`/`stderr is not None`/`rtn is None` guards): typeshed
-types `subprocess.CompletedProcess[str]`'s `.stdout`/`.stderr` fields as
-plain `str`, not `str | None`, even though at runtime they genuinely are
-`None` whenever a command ran without capturing output (`rclone_execute`'s
+**Caution before touching `completed_process.py`'s 2 remaining
+`reportUnnecessaryComparison` findings** (the `stdout is not None`/
+`stderr is not None` guards): typeshed types
+`subprocess.CompletedProcess[str]`'s `.stdout`/`.stderr` fields as plain
+`str`, not `str | None`, even though at runtime they genuinely are `None`
+whenever a command ran without capturing output (`rclone_execute`'s
 `capture=False` path does exactly this). Pyright strict mode's complaint
-here is a **false positive relative to actual runtime behavior**, not
-dead code - removing the `stdout`/`stderr` guards would introduce a real
-`None`-handling bug the type checker just can't see, given typeshed's
-imprecision. The `rtn is None` check on `returncode` is a different case
-and worth its own look - `Popen.communicate()` always populates
-`returncode` by the time a `CompletedProcess` is built, so that one might
-actually be legitimately dead now; verify with a quick trace before
-touching it, don't assume all three are the same shape just because
-Pyright reports them identically.
+here is a **false positive relative to actual runtime behavior**, not dead
+code - removing these guards would introduce a real `None`-handling bug the
+type checker just can't see, given typeshed's imprecision.
 
 ## Everything else in the roadmap (lower priority, do after this or independently)
 
 From `docs/implementation_and_build_pipeline.md`'s roadmap table:
 
-- **Release publication** - CI assembles verified wheels but doesn't
-  publish/attest them; needs PyPI trusted publishing, an
-  approval-protected environment, a tag-driven publish job, and artifact
-  attestations. Not started.
+- **Release publication** - done: `.github/workflows/release.yaml` builds,
+  verifies, and publishes both certified wheels to PyPI via trusted
+  publishing on `v*` tags, gated by the `pypi-release` GitHub Environment.
+  Artifact attestations (`actions/attest-build-provenance` or equivalent)
+  are not added yet - optional hardening, not required for the pipeline to
+  work.
 - **Build isolation** - smoke tests poison proxies but don't enforce
   network denial; run them in a network-disabled container/namespace
   where supported. Not started.
@@ -228,13 +197,11 @@ From `docs/implementation_and_build_pipeline.md`'s roadmap table:
   input/download hook and test sdist builds on every target. Not started,
   and may be a deliberate non-goal - confirm intent before investing here.
 
-Two open decisions survive from the now-removed
+One open decision survives from the now-removed
 `docs/rclone_architecture_refactor_plan.md`, not part of the formal roadmap
-table:
+table (`detail/` → `operations/` is done, see
+`implementation_and_build_pipeline.md`'s client-architecture paragraphs):
 
-- **Rename `detail/` to `operations/`.** Deferred deliberately as its own
-  mechanical, low-risk rename - do it as a single commit with no other
-  changes mixed in, since it touches every operation module's import path.
 - **Decide whether `RcloneBackend` stays a private extension boundary or
   becomes a documented public extension point.** Currently private (the
   safe default per `implementation_and_build_pipeline.md`); revisit only if
