@@ -119,6 +119,14 @@ class Rclone:
         *,
         backend: RcloneBackend | None = None,
     ) -> None:
+        """Bind a config and executable, or accept a caller-supplied backend.
+
+        ``self.config`` is always derived from ``rclone_conf`` directly, not
+        from ``backend``. ``RcloneBackend`` is intentionally narrow (``run``/
+        ``launch`` only) and does not expose its own configuration, so when a
+        custom ``backend`` is supplied the caller is responsible for passing
+        the matching ``rclone_conf`` alongside it.
+        """
         if isinstance(rclone_conf, Path) and not rclone_conf.exists():
             raise ValueError(f"Rclone config file not found: {rclone_conf}")
         if backend is None:
