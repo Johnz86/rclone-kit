@@ -211,6 +211,11 @@ quote-style = "double"
 # do a bare `import verify_distribution`, mirroring the `pythonpath`
 # entry pytest itself uses for the same import at test-run time.
 extraPaths = ["scripts"]
+strict = [
+    "src/rclone_kit/command_flags.py",
+    "src/rclone_kit/settings.py",
+    "src/rclone_kit/group_files.py",
+]
 
 [tool.pytest.ini_options]
 addopts = "-ra --strict-markers"
