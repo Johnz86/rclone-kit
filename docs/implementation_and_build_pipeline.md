@@ -397,7 +397,13 @@ bug; `upload_parts_resumable` reuses the same registry pattern instead of a
 per-call `atexit` closure; `RemoteFS` and `DB` gained context-manager support
 to match their sibling resource owners; and `fs/walk.py`'s module-level
 thread pool is now documented as an intentional process-lifetime singleton
-rather than an undocumented oversight. `WriteMergeStateThread` and
+rather than an undocumented oversight. `mount_util.py` and
+`upload_parts_resumable.py` register their `atexit` handler at import time
+rather than lazily on first use, unlike the other modules above; their
+`_register_exit_cleanup_handlers` docstrings now explain why that is still
+correct there instead of a leftover eager pattern - both modules are
+themselves only ever imported function-locally at their one real call site,
+so module import and first real use already coincide. `WriteMergeStateThread` and
 `S3MultiPartMerger` in `upload_parts_server_side_merge.py` still need an
 explicit `close()`/`stop()` and confirmed ownership; that is deferred to the
 S3 multipart phase since it touches the same state machine.
@@ -456,6 +462,35 @@ property or module was retained. `write_bytes` keeps the former facade's
 two-argument contract, while `serve_http` keeps its curated public options and
 uses the established minimal cache mode internally. Renaming `detail` to
 `operations` is deferred as a separate mechanical change.
+
+A follow-up review of the client-architecture commit against
+`docs/rclone_architecture_refactor_plan.md` and `docs/code_style.md` found the
+import boundaries genuinely hold (confirmed by both static reading and
+`test_import_boundaries.py`'s clean-interpreter check) and no behavioral
+bugs, with `ruff check`, `pyright`, and `pytest tests/unit` green throughout.
+Four small deviations were corrected: `s3/multipart/access.py`'s
+`MultipartAccess` protocol imported its annotation-only domain types at
+module scope instead of under `TYPE_CHECKING`, unlike the sibling
+`access.py`'s `DomainAccess`/`ListingAccess`; fixing it also required
+replacing its `Order.NORMAL`/`ListingOption.ALL` defaults with `...`
+placeholders, since parameter defaults are evaluated eagerly even under
+`from __future__ import annotations` and the real enum members were no
+longer in scope at runtime. `Rclone.__init__` gained a docstring recording
+that `self.config` is derived from `rclone_conf` independently of any
+caller-supplied `backend` - `RcloneBackend` is deliberately narrow and does
+not expose its own configuration, so a caller injecting both is responsible
+for keeping them consistent. The four test files still using
+`_bare_rclone_impl`/`_stub_rclone_impl` - the one place the retired
+`RcloneImpl` name survived in the repository - were renamed to
+`_bare_rclone`/`_stub_rclone`. `MultipartAccess`'s 11-method width was
+checked against every call site in `s3/multipart/`: each method is used by
+at least one strategy, so it is a genuinely shared subset rather than the
+oversized protocol the plan warns against. `docs/rclone_architecture_refactor_plan.md`
+was removed after this review: its "Current architecture" section described
+the pre-refactor `RcloneImpl`/facade duplication this phase already
+eliminated, every phase it planned through Phase 4 (plus the compatibility
+decisions from Phase 5) is complete and narrated above, and leaving it in
+place risked convincing a future reader the cycles it describes still exist.
 
 The paths-and-filesystems phase is done. The "local paths, rclone paths,
 and strings still overlap" complaint turned out to be a real, reproducible
@@ -552,7 +587,15 @@ comment no longer applied - `fetch_config_paths` already consumes its
 reserved parameters via `del` - and the 5 remaining findings, all
 signature-bound to the `FS` abstract base class or a test double's
 `Protocol`/duck-typed contract, were suppressed the same way rather than
-by loosening any signature).
+by loosening any signature). `group_files.py`'s one strict-mode finding
+(`reportUnnecessaryIsInstance` on `TreeNode.__repr__`'s child loop) is also
+resolved: `child_nodes: dict[str, "TreeNode"]` already guarantees every
+value is a `TreeNode`, so the `isinstance` check and its dead `else` branch
+were removed. Re-measured ignore-family counts as of this pass: `S101` 521,
+`ANN` 202, `TRY` 144, `FBT001`/`FBT002`/`FBT003` 143/82/17, `A001`/`A002`
+16/7, `PLR0913` 33, `PTH` 33, `PLR0911`/`PLR0912`/`PLR0915` 1/3/6 - re-run
+`uv run ruff check --select <CODE> --no-cache .` before trusting these in a
+future session, they will have moved again.
 
 | Area | Current constraint | Preferred next step | Required evidence |
 |---|---|---|---|
