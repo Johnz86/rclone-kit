@@ -1,6 +1,7 @@
 """Unit tests for `rclone_kit.file_part.FilePart`'s resource-ownership
-lifecycle: pruning the module-level exit-cleanup registry on disposal, and
-idempotent (silent-on-repeat) `dispose()`.
+lifecycle: pruning the module-level exit-cleanup registry on disposal,
+idempotent (silent-on-repeat) `dispose()`, and registering the module's
+`atexit` handler at most once no matter how many chunk files are staged.
 """
 
 from pathlib import Path
@@ -56,3 +57,22 @@ def test_dispose_on_error_payload_warns_once_then_is_silent(
     part.dispose()
 
     assert len(recwarn) == 0
+
+
+def test_add_for_cleanup_registers_atexit_handler_at_most_once(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    register_calls: list[object] = []
+    monkeypatch.setattr(file_part_module.atexit, "register", register_calls.append)
+    monkeypatch.setattr(file_part_module._register_exit_cleanup_handlers, "__dict__", {})
+
+    first_chunk = tmp_path / "first.chunk"
+    second_chunk = tmp_path / "second.chunk"
+
+    file_part_module._add_for_cleanup(first_chunk)
+    file_part_module._add_for_cleanup(second_chunk)
+
+    assert register_calls == [file_part_module._on_exit_cleanup]
+
+    file_part_module._remove_from_cleanup(first_chunk)
+    file_part_module._remove_from_cleanup(second_chunk)

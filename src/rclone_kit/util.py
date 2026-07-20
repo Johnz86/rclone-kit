@@ -43,6 +43,8 @@ _FREE_PORT_RANGE_END = 20000
 _FREE_PORT_MAX_ATTEMPTS = 20
 _MIN_S3_PATH_PARTS = 2
 
+_exit_cleanup_lock = Lock()
+
 
 def _clean_configs(signum: int | None = None, _frame: object | None = None) -> None:
     """Remove every temporary config directory created by this process.
@@ -71,21 +73,29 @@ def _terminate_live_subprocesses() -> None:
 
 
 def _register_exit_cleanup_handlers() -> None:
-    """Register this module's `atexit` handlers, once, at import time.
+    """Register this module's `atexit` handlers, once, the first time either
+    tracked resource is created.
 
-    Both handlers are registered together here, after both are defined,
-    instead of each sitting as a bare `atexit.register(...)` statement next
-    to its own function - so the module's exit-time side effects are all
-    visible in one place rather than interleaved between unrelated
-    definitions. Doing this at import time rather than per call also keeps
-    `atexit`'s internal registration list from growing without bound as
-    `rclone_execute` is called repeatedly.
+    Called from `make_temp_config_file` and `rclone_execute` - the sole
+    producers of `_RCLONE_CONFIGS_LIST` and `_LIVE_SUBPROCESSES`
+    respectively - rather than at import time, so a process that merely
+    imports `rclone_kit` without ever creating a temp config file or
+    running an rclone subprocess never wires up either handler. Both
+    handlers are registered together, since either kind of tracked resource
+    existing is enough to make both worth draining at exit. Guarded by
+    `_exit_cleanup_lock` and a function-attribute flag (the same
+    lock-plus-flag idiom `chunk_store.get_chunk_tmpdir` uses for its own
+    first-use guard) so concurrent callers - `rclone_execute` runs from a
+    `ThreadPoolExecutor` in `copy_files`/`delete_files` - only ever trigger
+    one `atexit.register` call each.
     """
-    atexit.register(_clean_configs)
-    atexit.register(_terminate_live_subprocesses)
-
-
-_register_exit_cleanup_handlers()
+    with _exit_cleanup_lock:
+        state = _register_exit_cleanup_handlers.__dict__
+        if state.get("registered"):
+            return
+        atexit.register(_clean_configs)
+        atexit.register(_terminate_live_subprocesses)
+        state["registered"] = True
 
 
 def register_signal_cleanup() -> None:
@@ -112,6 +122,7 @@ def make_temp_config_file() -> Path:
     Uses `tempfile.mkdtemp`, so the directory is created under the operating
     system's temporary directory rather than the current working directory.
     """
+    _register_exit_cleanup_handlers()
     tmpdir = Path(tempfile.mkdtemp(prefix=_TMP_CONFIG_DIR_PREFIX))
     _RCLONE_CONFIGS_LIST.append(tmpdir)
     config_path = tmpdir / "rclone.conf"
@@ -337,6 +348,7 @@ def rclone_execute(
             proc_kwargs["stdout"] = subprocess.PIPE if capture else None
 
         process = subprocess.Popen(full_cmd, **proc_kwargs)
+        _register_exit_cleanup_handlers()
         _LIVE_SUBPROCESSES.add(process)
 
         out, err = process.communicate()

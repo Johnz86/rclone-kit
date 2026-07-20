@@ -5,6 +5,7 @@ import weakref
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
+from threading import Lock
 from typing import IO, Self, cast
 
 from rclone_kit.config import Config
@@ -19,6 +20,7 @@ from rclone_kit.util import (
 logger = logging.getLogger(__name__)
 
 _LIVE_PROCESSES: weakref.WeakSet["Process"] = weakref.WeakSet()
+_exit_cleanup_lock = Lock()
 
 
 def _spawn_bytes_mode(cmd: list[str], kwargs: dict) -> subprocess.Popen[bytes]:
@@ -76,6 +78,7 @@ class Process:
             kwargs["stderr"] = subprocess.STDOUT
 
         self.process = _spawn_bytes_mode(self.cmd, kwargs)
+        _register_exit_cleanup_handlers()
         _LIVE_PROCESSES.add(self)
 
     def __enter__(self) -> Self:
@@ -164,26 +167,28 @@ class Process:
 
 
 def _cleanup_live_processes() -> None:
-    """Terminate every `Process` still tracked in `_LIVE_PROCESSES`.
-
-    Registered once at import time rather than per instance, so creating
-    many `Process` objects over a long-lived interpreter session does not
-    grow `atexit`'s internal registration list without bound.
-    """
+    """Terminate every `Process` still tracked in `_LIVE_PROCESSES`."""
     with ThreadPoolExecutor() as executor:
         for process in list(_LIVE_PROCESSES):
             executor.submit(process._atexit_terminate)
 
 
 def _register_exit_cleanup_handlers() -> None:
-    """Register this module's `atexit` handler, once, at import time.
+    """Register this module's `atexit` handler, once, the first time a
+    `Process` is constructed.
 
-    Wrapped in a named function rather than left as a bare
-    `atexit.register(...)` statement, so this module's exit-time side
-    effect is discoverable by name instead of blending into the
-    surrounding statement flow.
+    Called from `Process.__init__` - the sole producer of `_LIVE_PROCESSES`
+    - rather than at import time, so a process that merely imports
+    `rclone_kit` without ever mounting or serving anything never wires up
+    this handler. Guarded by `_exit_cleanup_lock` and a function-attribute
+    flag (the same lock-plus-flag idiom `chunk_store.get_chunk_tmpdir` uses
+    for its own first-use guard) so constructing many `Process` instances,
+    including concurrently across threads, only ever triggers one
+    `atexit.register` call.
     """
-    atexit.register(_cleanup_live_processes)
-
-
-_register_exit_cleanup_handlers()
+    with _exit_cleanup_lock:
+        state = _register_exit_cleanup_handlers.__dict__
+        if state.get("registered"):
+            return
+        atexit.register(_cleanup_live_processes)
+        state["registered"] = True

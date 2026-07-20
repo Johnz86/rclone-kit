@@ -10,9 +10,11 @@ from rclone_kit.s3.multipart.file_info import S3FileInfo
 logger = logging.getLogger(__name__)
 
 _CLEANUP_LIST: set[Path] = set()
+_exit_cleanup_lock = Lock()
 
 
 def _add_for_cleanup(path: Path) -> None:
+    _register_exit_cleanup_handlers()
     _CLEANUP_LIST.add(path)
 
 
@@ -31,17 +33,25 @@ def _on_exit_cleanup() -> None:
 
 
 def _register_exit_cleanup_handlers() -> None:
-    """Register this module's `atexit` handler, once, at import time.
+    """Register this module's `atexit` handler, once, the first time a
+    chunk file is staged for cleanup.
 
-    Wrapped in a named function rather than left as a bare
-    `atexit.register(...)` statement, so this module's exit-time side
-    effect is discoverable by name instead of blending into the
-    surrounding statement flow.
+    Called from `_add_for_cleanup` - the sole producer of `_CLEANUP_LIST`
+    - rather than at import time, so a process that merely imports
+    `rclone_kit` without ever constructing a `FilePart` backed by a chunk
+    file (HTTP range fetch, S3 multipart) never wires up this handler.
+    Guarded by `_exit_cleanup_lock` and a function-attribute flag (the same
+    lock-plus-flag idiom `chunk_store.get_chunk_tmpdir` uses for its own
+    first-use guard) so constructing many `FilePart` instances, including
+    concurrently across threads, only ever triggers one `atexit.register`
+    call.
     """
-    atexit.register(_on_exit_cleanup)
-
-
-_register_exit_cleanup_handlers()
+    with _exit_cleanup_lock:
+        state = _register_exit_cleanup_handlers.__dict__
+        if state.get("registered"):
+            return
+        atexit.register(_on_exit_cleanup)
+        state["registered"] = True
 
 
 class FilePart:

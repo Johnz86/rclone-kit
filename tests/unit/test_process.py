@@ -3,9 +3,9 @@
 `_spawn_bytes_mode` is replaced with a fake so no real process is spawned;
 these tests exist to prove that `Process` tracks itself in
 `process._LIVE_PROCESSES` for as long as it is live, discards itself on
-`dispose()` (idempotently), never registers a per-instance `atexit`
-callback, and that `_cleanup_live_processes` only terminates processes still
-running at interpreter exit.
+`dispose()` (idempotently), registers its `atexit` handler at most once no
+matter how many instances are constructed, and that `_cleanup_live_processes`
+only terminates processes still running at interpreter exit.
 """
 
 from pathlib import Path
@@ -75,11 +75,12 @@ def test_process_does_not_register_atexit_per_instance(
 ) -> None:
     register_calls: list[object] = []
     monkeypatch.setattr(process_module.atexit, "register", register_calls.append)
+    monkeypatch.setattr(process_module._register_exit_cleanup_handlers, "__dict__", {})
 
     _make_process(monkeypatch, tmp_path)
     _make_process(monkeypatch, tmp_path)
 
-    assert register_calls == []
+    assert register_calls == [process_module._cleanup_live_processes]
 
 
 def test_cleanup_live_processes_terminates_only_running_processes(

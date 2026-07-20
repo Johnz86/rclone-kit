@@ -3,8 +3,9 @@
 These tests replace `subprocess.Popen` with a fake so no real process is
 spawned; they exist to prove that `rclone_execute` tracks its subprocess in
 `util._LIVE_SUBPROCESSES` for the duration of the call and always discards it
-afterward, without registering a per-call `atexit` callback (the pattern
-that used to leak one closure per invocation for the life of the process).
+afterward, and that it registers its `atexit` handlers at most once no
+matter how many times it is called (the pattern that used to leak one
+closure per invocation for the life of the process).
 """
 
 from pathlib import Path
@@ -77,6 +78,7 @@ def test_rclone_execute_does_not_register_atexit_per_call(
     register_calls: list[object] = []
     monkeypatch.setattr(util.subprocess, "Popen", lambda *_args, **_kwargs: _FakePopen())
     monkeypatch.setattr(util.atexit, "register", register_calls.append)
+    monkeypatch.setattr(util._register_exit_cleanup_handlers, "__dict__", {})
 
     util.rclone_execute(
         cmd=["version"], rclone_conf=None, rclone_exe=tmp_path / "rclone", check=False
@@ -85,4 +87,4 @@ def test_rclone_execute_does_not_register_atexit_per_call(
         cmd=["version"], rclone_conf=None, rclone_exe=tmp_path / "rclone", check=False
     )
 
-    assert register_calls == []
+    assert register_calls == [util._clean_configs, util._terminate_live_subprocesses]
