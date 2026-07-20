@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import _thread
 import atexit
 import logging
@@ -11,13 +13,14 @@ from pathlib import Path
 
 from rclone_kit.exceptions import S3UploadError
 from rclone_kit.http_server import HttpServer
-from rclone_kit.rclone_impl import RcloneImpl
+from rclone_kit.s3.multipart.access import MultipartAccess
 from rclone_kit.s3.multipart.info_json import InfoJson
 from rclone_kit.types import (
     PartInfo,
     Range,
     SizeSuffix,
 )
+from rclone_kit.util import random_str
 
 logger = logging.getLogger(__name__)
 
@@ -105,7 +108,7 @@ def _gen_name(part_number: int, offset: SizeSuffix, end: SizeSuffix) -> str:
     return f"part.{part_number:05d}_{offset.as_int()}-{end.as_int()}"
 
 
-def upload_task(self: RcloneImpl, upload_part: UploadPart) -> UploadPart:
+def upload_task(access: MultipartAccess, upload_part: UploadPart) -> UploadPart:
     try:
         if upload_part.exception is not None:
             return upload_part
@@ -122,7 +125,7 @@ def upload_task(self: RcloneImpl, upload_part: UploadPart) -> UploadPart:
         msg += f"# Range: {upload_part.chunk.name}\n"
         msg += "##############################################################\n"
         _log(msg)
-        self.copy_to(upload_part.chunk.as_posix(), upload_part.dst_part)
+        access.copy_to(upload_part.chunk.as_posix(), upload_part.dst_part)
         return upload_part
     except Exception as e:
         upload_part.exception = e
@@ -216,7 +219,7 @@ def _check_part_size(parts: list[PartInfo]) -> None:
 
 
 def upload_parts_resumable(
-    self: RcloneImpl,
+    self: MultipartAccess,
     src: str,
     dst_dir: str,
     part_infos: list[PartInfo] | None = None,
@@ -228,7 +231,6 @@ def upload_parts_resumable(
     Raises `ValueError` if `part_infos` is empty or its parts are too
     small, or `S3UploadError` if any part fails to upload.
     """
-    from rclone_kit.util import random_str
 
     def verbose_print(msg: str) -> None:
         if verbose:
@@ -292,7 +294,7 @@ def upload_parts_resumable(
     tmp_dir = str(Path("chunks") / random_str(12))
     _TMP_UPLOAD_DIRS.add(Path(tmp_dir))
 
-    with self.serve_http(src_dir, cache_mode="minimal") as http_server:
+    with self.serve_http(src_dir) as http_server:
         tmpdir: Path = Path(tmp_dir)
         write_semaphore = threading.Semaphore(threads)
         with (

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import logging
 import subprocess
 import warnings
@@ -5,13 +7,8 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from rclone_kit.completed_process import CompletedProcess
-from rclone_kit.convert import convert_to_filestr_list, convert_to_str
-from rclone_kit.dir import Dir
-from rclone_kit.exceptions import RcloneCommandError
-from rclone_kit.file import File
-from rclone_kit.group_files import group_files
-from rclone_kit.rclone_impl import (
+from rclone_kit.backend import RcloneBackend
+from rclone_kit.command_flags import (
     FLAG_CHECKERS,
     FLAG_FAST_LIST,
     FLAG_FILES_FROM,
@@ -20,8 +17,13 @@ from rclone_kit.rclone_impl import (
     FLAG_PROGRESS,
     FLAG_S3_NO_CHECK_BUCKET,
     FLAG_TRANSFERS,
-    RcloneImpl,
 )
+from rclone_kit.completed_process import CompletedProcess
+from rclone_kit.convert import convert_to_filestr_list, convert_to_str
+from rclone_kit.dir import Dir
+from rclone_kit.exceptions import RcloneCommandError
+from rclone_kit.file import File
+from rclone_kit.group_files import group_files
 from rclone_kit.remote import Remote
 from rclone_kit.types import SizeSuffix
 from rclone_kit.util import get_check, get_verbose
@@ -30,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 
 def copy_file_to(
-    self: RcloneImpl,
+    backend: RcloneBackend,
     src: File | str,
     dst: File | str,
     check: bool | None = None,
@@ -54,12 +56,12 @@ def copy_file_to(
     ]
     if other_args is not None:
         cmd_list += other_args
-    cp = self._run(cmd_list, check=check)
+    cp = backend.run(tuple(cmd_list), check=check)
     return CompletedProcess.from_subprocess(cp)
 
 
 def copy_tree(
-    self: RcloneImpl,
+    backend: RcloneBackend,
     src: Dir | str,
     dst: Dir | str,
     check: bool | None = None,
@@ -87,20 +89,20 @@ def copy_tree(
         cmd_list += [FLAG_MULTI_THREAD_STREAMS, str(multi_thread_streams)]
     if other_args:
         cmd_list += other_args
-    cp = self._run(cmd_list, check=check, capture=False)
+    cp = backend.run(tuple(cmd_list), check=check, capture=False)
     return CompletedProcess.from_subprocess(cp)
 
 
-def purge_dir(self: RcloneImpl, src: Dir | str) -> CompletedProcess:
+def purge_dir(backend: RcloneBackend, src: Dir | str) -> CompletedProcess:
     """Purge a directory"""
     src = src if isinstance(src, str) else str(src.path)
     cmd_list: list[str] = ["purge", str(src)]
-    cp = self._run(cmd_list)
+    cp = backend.run(tuple(cmd_list))
     return CompletedProcess.from_subprocess(cp)
 
 
 def copy_byte_range(
-    self: RcloneImpl,
+    backend: RcloneBackend,
     src: str,
     offset: int | SizeSuffix,
     length: int | SizeSuffix,
@@ -124,13 +126,13 @@ def copy_byte_range(
     if other_args:
         cmd_list.extend(other_args)
     try:
-        self._run(cmd_list, check=True, capture=outfile)
+        backend.run(tuple(cmd_list), check=True, capture=outfile)
     except subprocess.CalledProcessError as error:
         raise RcloneCommandError("cat", error.stderr or "", error) from error
 
 
 def copy_directory(
-    self: RcloneImpl, src: str | Dir, dst: str | Dir, args: list[str] | None = None
+    backend: RcloneBackend, src: str | Dir, dst: str | Dir, args: list[str] | None = None
 ) -> CompletedProcess:
     """Copy a directory from source to destination."""
     src = convert_to_str(src)
@@ -138,24 +140,24 @@ def copy_directory(
     cmd_list: list[str] = ["copy", src, dst, FLAG_S3_NO_CHECK_BUCKET]
     if args is not None:
         cmd_list += args
-    cp = self._run(cmd_list)
+    cp = backend.run(tuple(cmd_list))
     return CompletedProcess.from_subprocess(cp)
 
 
 def copy_between_remotes(
-    self: RcloneImpl, src: Remote, dst: Remote, args: list[str] | None = None
+    backend: RcloneBackend, src: Remote, dst: Remote, args: list[str] | None = None
 ) -> CompletedProcess:
     """Copy a remote to another remote."""
     cmd_list: list[str] = ["copy", str(src), str(dst), FLAG_S3_NO_CHECK_BUCKET]
     if args is not None:
         cmd_list += args
 
-    cp = self._run(cmd_list)
+    cp = backend.run(tuple(cmd_list))
     return CompletedProcess.from_subprocess(cp)
 
 
 def copy_files_partitioned(
-    self: RcloneImpl,
+    backend: RcloneBackend,
     src: str,
     dst: str,
     files: list[str] | Path,
@@ -284,7 +286,7 @@ def copy_files_partitioned(
                         if not any(FLAG_PROGRESS in x for x in command_args):
                             cmd_list.append(FLAG_PROGRESS)
                     cmd_list += command_args
-                    out = self._run(cmd_list, capture=not verbose)
+                    out = backend.run(tuple(cmd_list), capture=not verbose)
                     return out
 
             fut: Future = executor.submit(_task)
@@ -302,7 +304,7 @@ def copy_files_partitioned(
 
 
 def delete_files_partitioned(
-    self: RcloneImpl,
+    backend: RcloneBackend,
     files: str | File | list[str] | list[File],
     check: bool | None = None,
     rmdirs=False,
@@ -356,7 +358,7 @@ def delete_files_partitioned(
                         cmd_list.append("--rmdirs")
                     if other_args:
                         cmd_list += other_args
-                    out = self._run(cmd_list, check=check)
+                    out = backend.run(tuple(cmd_list), check=check)
                 if out.returncode != 0:
                     if check:
                         completed_processes.append(out)

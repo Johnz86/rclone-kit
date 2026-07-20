@@ -2,12 +2,12 @@
 
 import pytest
 
+from rclone_kit.client import Rclone
 from rclone_kit.detail.copy_file_parts_resumable import copy_file_parts_resumable
-from rclone_kit.rclone_impl import RcloneImpl
 
 
-def _stub_rclone_impl() -> RcloneImpl:
-    return object.__new__(RcloneImpl)
+def _stub_rclone() -> Rclone:
+    return object.__new__(Rclone)
 
 
 def test_copy_file_parts_resumable_skips_merge_when_upload_fails(
@@ -31,7 +31,9 @@ def test_copy_file_parts_resumable_skips_merge_when_upload_fails(
 
     with pytest.raises(RuntimeError, match="upload failed"):
         copy_file_parts_resumable(
-            self=_stub_rclone_impl(), src="remote:src", dst_dir="remote:dst-parts"
+            access=_stub_rclone(),
+            src="remote:src",
+            dst_dir="remote:dst-parts",
         )
 
     assert merge_calls == []
@@ -52,7 +54,10 @@ def test_copy_file_parts_resumable_strips_trailing_slash_before_merge(
     )
 
     copy_file_parts_resumable(
-        self=_stub_rclone_impl(), src="remote:src", dst_dir="remote:dst-parts/", verbose=False
+        access=_stub_rclone(),
+        src="remote:src",
+        dst_dir="remote:dst-parts/",
+        verbose=False,
     )
 
     assert merge_calls == ["remote:dst-parts/info.json"]

@@ -1,7 +1,7 @@
 import argparse
 from pathlib import Path
 
-from rclone_kit import Rclone
+from rclone_kit.client import Rclone
 from rclone_kit.util import register_signal_cleanup
 
 

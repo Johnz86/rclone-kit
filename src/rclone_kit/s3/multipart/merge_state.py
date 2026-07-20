@@ -6,13 +6,15 @@ This module provides functionality for S3 multipart uploads, including copying p
 from existing S3 objects using upload_part_copy.
 """
 
+from __future__ import annotations
+
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import TypedDict
 
 from rclone_kit.exceptions import MergeStateError
-from rclone_kit.rclone_impl import RcloneImpl
+from rclone_kit.s3.multipart.access import MultipartAccess
 from rclone_kit.s3.multipart.finished_piece import FinishedPiece, FinishedPieceJson
 
 
@@ -30,7 +32,7 @@ class Part:
         return {"part_number": self.part_number, "s3_key": self.s3_key}
 
     @staticmethod
-    def from_json(json_dict: Mapping[str, object]) -> "Part":
+    def from_json(json_dict: Mapping[str, object]) -> Part:
         """Raises `MergeStateError` when `part_number`/`s3_key` are missing."""
         part_number = json_dict.get("part_number")
         s3_key = json_dict.get("s3_key")
@@ -41,7 +43,7 @@ class Part:
         return Part(part_number=part_number, s3_key=s3_key)
 
     @staticmethod
-    def from_json_array(json_array: Sequence[Mapping[str, object]]) -> list["Part"]:
+    def from_json_array(json_array: Sequence[Mapping[str, object]]) -> list[Part]:
         return [Part.from_json(j) for j in json_array]
 
 
@@ -57,7 +59,7 @@ class MergeStateJson(TypedDict):
 class MergeState:
     def __init__(
         self,
-        rclone_impl: RcloneImpl,
+        rclone: MultipartAccess,
         merge_path: str,
         upload_id: str,
         bucket: str,
@@ -65,7 +67,7 @@ class MergeState:
         finished: list[FinishedPiece],
         all_parts: list[Part],
     ) -> None:
-        self.rclone_impl: RcloneImpl = rclone_impl
+        self.rclone = rclone
         self.merge_path: str = merge_path
         self.merge_parts_path: str = f"{merge_path}/merge"
         self.upload_id: str = upload_id
@@ -83,12 +85,12 @@ class MergeState:
         return remaining
 
     @staticmethod
-    def from_json(rclone_impl: RcloneImpl, data: MergeStateJson) -> "MergeState":
+    def from_json(rclone: MultipartAccess, data: MergeStateJson) -> MergeState:
         """Raises `MergeStateError` when any part entry in `data["all"]` is malformed."""
         finished: list[FinishedPiece] = FinishedPiece.from_json_array(data["finished"])
         all_parts: list[Part] = Part.from_json_array(data["all"])
         return MergeState(
-            rclone_impl=rclone_impl,
+            rclone=rclone,
             merge_path=data["merge_path"],
             upload_id=data["upload_id"],
             bucket=data["bucket"],
@@ -120,11 +122,11 @@ class MergeState:
     def __repr__(self):
         return self.to_json_str()
 
-    def write(self, rclone_impl: RcloneImpl, dst: str) -> None:
+    def write(self, rclone: MultipartAccess, dst: str) -> None:
         json_str = self.to_json_str()
-        rclone_impl.write_text(dst, json_str)
+        rclone.write_text(text=json_str, dst=dst)
 
-    def read(self, rclone_impl: RcloneImpl, src: str) -> None:
-        json_str = rclone_impl.read_text(src)
+    def read(self, rclone: MultipartAccess, src: str) -> None:
+        json_str = rclone.read_text(src)
         json_dict = json.loads(json_str)
         self.finished = FinishedPiece.from_json_array(json_dict["finished"])

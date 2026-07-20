@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, TypedDict, cast
 from rclone_kit.remote import Remote
 
 if TYPE_CHECKING:
-    from rclone_kit.rclone_impl import RcloneImpl
+    from rclone_kit.access import DomainAccess
 
 
 class RcloneJsonEntry(TypedDict):
@@ -43,13 +43,13 @@ class RPath:
         self.mime_type = mime_type
         self.mod_time = mod_time
         self.is_dir = is_dir
-        self.rclone: RcloneImpl | None = None
+        self.rclone: DomainAccess | None = None
 
     def mod_time_dt(self) -> datetime:
         """Return the modification time as a datetime object."""
         return datetime.fromisoformat(self.mod_time)
 
-    def set_rclone(self, rclone: RcloneImpl | None) -> None:
+    def set_rclone(self, rclone: DomainAccess | None) -> None:
         """Set the rclone object."""
         self.rclone = rclone
 

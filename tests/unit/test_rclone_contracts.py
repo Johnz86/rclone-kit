@@ -8,27 +8,30 @@ from typing import cast
 
 import pytest
 
-from rclone_kit.detail import mount_ops as mount_ops_module
-from rclone_kit.diff import DiffOption, DiffType
-from rclone_kit.dir_listing import DirListing
-from rclone_kit.exceptions import RcloneCommandError
-from rclone_kit.group_files import group_files
-from rclone_kit.process import Process
-from rclone_kit.rclone_impl import (
+from helpers import ClientBackendAdapter
+from rclone_kit.client import Rclone
+from rclone_kit.command_flags import (
     FLAG_CHECKERS,
     FLAG_FAST_LIST,
     FLAG_FILES_FROM,
     FLAG_LOW_LEVEL_RETRIES,
     FLAG_S3_NO_CHECK_BUCKET,
     FLAG_TRANSFERS,
-    RcloneImpl,
 )
+from rclone_kit.detail import mount_ops as mount_ops_module
+from rclone_kit.diff import DiffOption, DiffType
+from rclone_kit.dir_listing import DirListing
+from rclone_kit.exceptions import RcloneCommandError
+from rclone_kit.group_files import group_files
+from rclone_kit.process import Process
 from rclone_kit.remote import Remote
 from rclone_kit.types import ListingOption, Order, SizeResult
 
 
-def _bare_rclone_impl() -> RcloneImpl:
-    return object.__new__(RcloneImpl)
+def _bare_rclone_impl() -> Rclone:
+    rclone = object.__new__(Rclone)
+    rclone._backend = ClientBackendAdapter(rclone)
+    return rclone
 
 
 def _recording_run(commands: list[list[str]]):
@@ -170,9 +173,9 @@ def test_copy_files_does_not_mutate_caller_arguments() -> None:
 def test_mount_respects_explicit_false_for_links(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setattr("rclone_kit.mount_util.ensure_mount_supported", lambda: None)
-    monkeypatch.setattr("rclone_kit.mount_util.clean_mount", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr("rclone_kit.mount_util.prepare_mount", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(mount_ops_module, "ensure_mount_supported", lambda: None)
+    monkeypatch.setattr(mount_ops_module, "clean_mount", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(mount_ops_module, "prepare_mount", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         mount_ops_module,
         "Mount",

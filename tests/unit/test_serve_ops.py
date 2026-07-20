@@ -1,16 +1,14 @@
-"""Unit tests for `rclone_kit.detail.serve_ops`, extracted from `RcloneImpl`
-as part of the public-facade-split roadmap phase. `RcloneImpl.serve_http`/
-`serve_webdav` delegate to these functions unchanged.
-"""
+"""Unit tests for serving operations used by the public client."""
 
 from pathlib import Path
 from typing import cast
 
 import pytest
 
+from helpers import ClientBackendAdapter
+from rclone_kit.client import Rclone
 from rclone_kit.detail.serve_ops import launch_http_server, launch_webdav_server
 from rclone_kit.process import Process
-from rclone_kit.rclone_impl import RcloneImpl
 
 
 class _FakeProcess:
@@ -21,8 +19,10 @@ class _FakeProcess:
         return self._poll_result
 
 
-def _bare_rclone_impl() -> RcloneImpl:
-    return object.__new__(RcloneImpl)
+def _bare_rclone_impl() -> Rclone:
+    rclone = object.__new__(Rclone)
+    rclone._backend = ClientBackendAdapter(rclone)
+    return rclone
 
 
 def test_launch_http_server_builds_expected_command_vector(
@@ -40,7 +40,10 @@ def test_launch_http_server_builds_expected_command_vector(
     rclone._launch_process = launch
 
     server = launch_http_server(
-        rclone, "remote:bucket/path", cache_mode="minimal", addr="localhost:1234"
+        rclone._backend,
+        "remote:bucket/path",
+        cache_mode="minimal",
+        addr="localhost:1234",
     )
 
     assert commands[0][0] == [
@@ -76,7 +79,11 @@ def test_launch_http_server_includes_log_flags_when_serve_http_log_set(
     rclone._launch_process = launch
 
     launch_http_server(
-        rclone, "remote:bucket", cache_mode=None, addr="localhost:1234", serve_http_log=log_path
+        rclone._backend,
+        "remote:bucket",
+        cache_mode=None,
+        addr="localhost:1234",
+        serve_http_log=log_path,
     )
 
     assert commands[0][-3:] == ["--log-file", str(log_path), "-vvvv"]
@@ -90,7 +97,12 @@ def test_launch_http_server_raises_when_process_fails_to_start(
     rclone._launch_process = lambda *_args, **_kwargs: cast(Process, _FakeProcess(1))
 
     with pytest.raises(ValueError, match="HTTP serve process failed to start"):
-        launch_http_server(rclone, "remote:bucket", cache_mode=None, addr="localhost:1234")
+        launch_http_server(
+            rclone._backend,
+            "remote:bucket",
+            cache_mode=None,
+            addr="localhost:1234",
+        )
 
 
 def test_launch_webdav_server_builds_expected_command_vector(
@@ -107,7 +119,12 @@ def test_launch_webdav_server_builds_expected_command_vector(
 
     rclone._launch_process = launch
 
-    launch_webdav_server(rclone, "remote:bucket", user="alice", password="hunter2")  # noqa: S106
+    launch_webdav_server(
+        rclone._backend,
+        "remote:bucket",
+        user="alice",
+        password="hunter2",  # noqa: S106
+    )
 
     assert commands[0] == [
         "serve",
@@ -130,4 +147,9 @@ def test_launch_webdav_server_raises_when_process_fails_to_start(
     rclone._launch_process = lambda *_args, **_kwargs: cast(Process, _FakeProcess(1))
 
     with pytest.raises(ValueError, match="NFS serve process failed to start"):
-        launch_webdav_server(rclone, "remote:bucket", user="alice", password="hunter2")  # noqa: S106
+        launch_webdav_server(
+            rclone._backend,
+            "remote:bucket",
+            user="alice",
+            password="hunter2",  # noqa: S106
+        )

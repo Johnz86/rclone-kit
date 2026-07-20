@@ -1,6 +1,8 @@
 import json
 import warnings
 
+from rclone_kit.dir import Dir
+from rclone_kit.file import File
 from rclone_kit.rpath import RcloneJsonEntry, RPath
 
 
@@ -21,9 +23,6 @@ class DirListing:
     """Remote file dataclass."""
 
     def __init__(self, dirs_and_files: list[RPath]) -> None:
-        from rclone_kit.dir import Dir
-        from rclone_kit.file import File
-
         dirs_and_files = _dedupe(dirs_and_files)
 
         self.dirs: list[Dir] = [Dir(d) for d in dirs_and_files if d.is_dir]

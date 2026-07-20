@@ -2,7 +2,7 @@ import argparse
 from dataclasses import dataclass
 from pathlib import Path
 
-from rclone_kit import Rclone
+from rclone_kit.client import Rclone
 
 
 @dataclass

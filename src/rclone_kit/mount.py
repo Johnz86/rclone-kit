@@ -2,6 +2,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Self
 
+from rclone_kit.mount_util import (
+    add_mount_for_gc,
+    cache_dir_delete_on_exit,
+    clean_mount,
+    remove_mount_for_gc,
+    wait_for_mount,
+)
 from rclone_kit.process import Process
 
 
@@ -18,8 +25,6 @@ class Mount:
     _closed: bool = False
 
     def __post_init__(self) -> None:
-        from rclone_kit.mount_util import add_mount_for_gc, wait_for_mount
-
         if not isinstance(self.mount_path, Path):
             raise TypeError(f"mount_path must be a Path, got {type(self.mount_path)!r}")
         if self.process is None:
@@ -29,12 +34,6 @@ class Mount:
 
     def close(self, wait=True) -> None:
         """Clean up the mount."""
-        from rclone_kit.mount_util import (
-            cache_dir_delete_on_exit,
-            clean_mount,
-            remove_mount_for_gc,
-        )
-
         if self._closed:
             return
         self._closed = True

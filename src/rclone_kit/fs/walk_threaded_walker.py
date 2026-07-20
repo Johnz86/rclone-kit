@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from rclone_kit.fs.walk_threaded import FSWalkThread
+
 if TYPE_CHECKING:
     from rclone_kit.fs.filesystem import FSPath
 
@@ -15,8 +17,6 @@ class FSWalker:
     max_backlog: int
 
     def __enter__(self):
-        from rclone_kit.fs.walk_threaded import FSWalkThread
-
         self.walker = FSWalkThread(self.fspath, self.max_backlog)
         return self
 

@@ -1,11 +1,14 @@
-from rclone_kit.rclone_impl import RcloneImpl
+from __future__ import annotations
+
+from rclone_kit.s3.multipart.access import MultipartAccess
 from rclone_kit.types import (
     PartInfo,
 )
+from rclone_kit.util import get_verbose
 
 
 def copy_file_parts_resumable(
-    self: RcloneImpl,
+    access: MultipartAccess,
     src: str,
     dst_dir: str,
     part_infos: list[PartInfo] | None = None,
@@ -19,10 +22,10 @@ def copy_file_parts_resumable(
     )
 
     if verbose is None:
-        verbose = self.get_verbose()
+        verbose = get_verbose(None)
 
     upload_parts_resumable(
-        self=self,
+        self=access,
         src=src,
         dst_dir=dst_dir,
         part_infos=part_infos,
@@ -32,5 +35,8 @@ def copy_file_parts_resumable(
         dst_dir = dst_dir[:-1]
     dst_info = f"{dst_dir}/info.json"
     s3_server_side_multi_part_merge(
-        rclone=self, info_path=dst_info, max_workers=merge_threads, verbose=verbose
+        rclone=access,
+        info_path=dst_info,
+        max_workers=merge_threads,
+        verbose=verbose,
     )

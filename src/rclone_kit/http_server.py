@@ -20,6 +20,7 @@ from rclone_kit.file_part import FilePart
 from rclone_kit.process import Process
 from rclone_kit.s3.multipart.file_info import S3FileInfo
 from rclone_kit.types import Range, SizeSuffix
+from rclone_kit.util import random_str
 
 _TIMEOUT = 10 * 60
 _PUT_WARNING_EMITTED = Event()
@@ -371,8 +372,6 @@ class HttpFetcher:
             size = size.as_int()
 
         def task() -> FilePart:
-            from rclone_kit.util import random_str
-
             try:
                 range = Range(offset, offset + size)
                 dst = get_chunk_tmpdir() / f"{random_str(12)}.chunk"

@@ -1,9 +1,16 @@
+from __future__ import annotations
+
+import logging
 import os
 from collections import OrderedDict
 from collections.abc import Generator
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from typing import TYPE_CHECKING
 
-from rclone_kit.fs.filesystem import FSPath, logger
+if TYPE_CHECKING:
+    from rclone_kit.fs.filesystem import FSPath
+
+logger = logging.getLogger(__name__)
 
 _FS_WALK_THREAD_MAX_BACKLOG = int(os.getenv("FS_WALK_THREAD_MAX_BACKLOG", "16"))
 

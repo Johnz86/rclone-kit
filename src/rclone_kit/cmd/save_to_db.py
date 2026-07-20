@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from rclone_kit import Rclone
+from rclone_kit.client import Rclone
 from rclone_kit.env_file import load_env_file
 from rclone_kit.util import register_signal_cleanup
 

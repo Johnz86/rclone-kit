@@ -1,15 +1,19 @@
-"""Unit tests for `rclone_kit.detail.transfer_ops`, extracted from
-`RcloneImpl` as part of the public-facade-split roadmap phase. `RcloneImpl`
-methods delegate to these functions unchanged, so these tests exercise the
-actual logic; `test_rclone_impl_contracts.py` covers that the delegation
-itself still works.
-"""
+"""Unit tests for transfer operations used by the public client."""
 
 import subprocess
 from pathlib import Path
 
 import pytest
 
+from helpers import ClientBackendAdapter
+from rclone_kit.client import Rclone
+from rclone_kit.command_flags import (
+    FLAG_CHECKERS,
+    FLAG_FILES_FROM,
+    FLAG_LOW_LEVEL_RETRIES,
+    FLAG_S3_NO_CHECK_BUCKET,
+    FLAG_TRANSFERS,
+)
 from rclone_kit.detail.transfer_ops import (
     copy_between_remotes,
     copy_byte_range,
@@ -21,19 +25,13 @@ from rclone_kit.detail.transfer_ops import (
     purge_dir,
 )
 from rclone_kit.group_files import group_files
-from rclone_kit.rclone_impl import (
-    FLAG_CHECKERS,
-    FLAG_FILES_FROM,
-    FLAG_LOW_LEVEL_RETRIES,
-    FLAG_S3_NO_CHECK_BUCKET,
-    FLAG_TRANSFERS,
-    RcloneImpl,
-)
 from rclone_kit.remote import Remote
 
 
-def _bare_rclone_impl() -> RcloneImpl:
-    return object.__new__(RcloneImpl)
+def _bare_rclone_impl() -> Rclone:
+    rclone = object.__new__(Rclone)
+    rclone._backend = ClientBackendAdapter(rclone)
+    return rclone
 
 
 def _recording_run(commands: list[list[str]]):
@@ -54,7 +52,7 @@ def test_copy_file_to_builds_expected_command_vector() -> None:
     commands: list[list[str]] = []
     rclone._run = _recording_run(commands)
 
-    copy_file_to(rclone, "src:bucket/a", "dst:bucket/a")
+    copy_file_to(rclone._backend, "src:bucket/a", "dst:bucket/a")
 
     assert commands == [
         ["copyto", "src:bucket/a", "dst:bucket/a", FLAG_S3_NO_CHECK_BUCKET, "--no-traverse"]
@@ -66,7 +64,7 @@ def test_copy_tree_builds_expected_command_vector_with_defaults() -> None:
     commands: list[list[str]] = []
     rclone._run = _recording_run(commands)
 
-    copy_tree(rclone, "src:bucket", "dst:bucket")
+    copy_tree(rclone._backend, "src:bucket", "dst:bucket")
 
     assert commands == [
         [
@@ -89,7 +87,7 @@ def test_purge_dir_builds_expected_command_vector() -> None:
     commands: list[list[str]] = []
     rclone._run = _recording_run(commands)
 
-    purge_dir(rclone, "remote:bucket")
+    purge_dir(rclone._backend, "remote:bucket")
 
     assert commands == [["purge", "remote:bucket"]]
 
@@ -99,7 +97,13 @@ def test_copy_byte_range_builds_expected_command_vector(tmp_path: Path) -> None:
     commands: list[list[str]] = []
     rclone._run = _recording_run(commands)
 
-    copy_byte_range(rclone, "src:bucket/a", offset=10, length=20, outfile=tmp_path / "out.bin")
+    copy_byte_range(
+        rclone._backend,
+        "src:bucket/a",
+        offset=10,
+        length=20,
+        outfile=tmp_path / "out.bin",
+    )
 
     assert commands == [["cat", "--offset", "10", "--count", "20", "src:bucket/a"]]
 
@@ -109,7 +113,7 @@ def test_copy_directory_builds_expected_command_vector() -> None:
     commands: list[list[str]] = []
     rclone._run = _recording_run(commands)
 
-    copy_directory(rclone, "src:bucket", "dst:bucket")
+    copy_directory(rclone._backend, "src:bucket", "dst:bucket")
 
     assert commands == [["copy", "src:bucket", "dst:bucket", FLAG_S3_NO_CHECK_BUCKET]]
 
@@ -121,7 +125,7 @@ def test_copy_between_remotes_builds_expected_command_vector() -> None:
     src = Remote(name="src", rclone=rclone)
     dst = Remote(name="dst", rclone=rclone)
 
-    copy_between_remotes(rclone, src, dst)
+    copy_between_remotes(rclone._backend, src, dst)
 
     assert commands == [["copy", "src:", "dst:", FLAG_S3_NO_CHECK_BUCKET]]
 
@@ -130,7 +134,7 @@ def test_copy_files_partitioned_empty_input_does_not_execute_rclone() -> None:
     rclone = _bare_rclone_impl()
     rclone._run = lambda *_args, **_kwargs: pytest.fail("rclone must not run")
 
-    assert copy_files_partitioned(rclone, "src:bucket", "dst:bucket", []) == []
+    assert copy_files_partitioned(rclone._backend, "src:bucket", "dst:bucket", []) == []
 
 
 def test_copy_files_partitioned_rejects_fully_qualified_file_paths() -> None:
@@ -138,7 +142,12 @@ def test_copy_files_partitioned_rejects_fully_qualified_file_paths() -> None:
     rclone._run = lambda *_args, **_kwargs: pytest.fail("rclone must not run")
 
     with pytest.raises(ValueError, match="not allowed for copy_files"):
-        copy_files_partitioned(rclone, "src:bucket", "dst:bucket", ["remote:bucket/a.txt"])
+        copy_files_partitioned(
+            rclone._backend,
+            "src:bucket",
+            "dst:bucket",
+            ["remote:bucket/a.txt"],
+        )
 
 
 def test_copy_files_partitioned_builds_expected_command_vector() -> None:
@@ -147,7 +156,7 @@ def test_copy_files_partitioned_builds_expected_command_vector() -> None:
     rclone._run = _recording_run(commands)
 
     copy_files_partitioned(
-        rclone,
+        rclone._backend,
         "src:bucket",
         "dst:bucket",
         ["a.txt", "b.txt"],
@@ -189,7 +198,7 @@ def test_copy_files_partitioned_partitions_across_multiple_workers() -> None:
     rclone._run = run
 
     result = copy_files_partitioned(
-        rclone,
+        rclone._backend,
         "src:bucket",
         "dst:bucket",
         ["dirA/a.txt", "dirB/b.txt"],
@@ -218,7 +227,7 @@ def test_copy_files_partitioned_failure_raises_after_running_all_partitions() ->
 
     with pytest.raises(ValueError, match="boom"):
         copy_files_partitioned(
-            rclone,
+            rclone._backend,
             "src:bucket",
             "dst:bucket",
             ["dirA/a.txt", "dirB/b.txt"],
@@ -234,7 +243,11 @@ def test_copy_files_partitioned_fast_list_warns() -> None:
 
     with pytest.warns(UserWarning, match="fast-list"):
         copy_files_partitioned(
-            rclone, "src:bucket", "dst:bucket", ["a.txt"], other_args=["--fast-list"]
+            rclone._backend,
+            "src:bucket",
+            "dst:bucket",
+            ["a.txt"],
+            other_args=["--fast-list"],
         )
 
 
@@ -242,7 +255,7 @@ def test_delete_files_partitioned_empty_input_does_not_execute_rclone() -> None:
     rclone = _bare_rclone_impl()
     rclone._run = lambda *_args, **_kwargs: pytest.fail("rclone must not run")
 
-    result = delete_files_partitioned(rclone, [])
+    result = delete_files_partitioned(rclone._backend, [])
 
     assert result.ok
     assert result.completed[0].args == ["rclone", "delete", FLAG_FILES_FROM, "[]"]
@@ -257,7 +270,7 @@ def test_delete_files_partitioned_builds_expected_command_vector() -> None:
     assert len(expected_groups) == 1
     expected_remote = next(iter(expected_groups))
 
-    result = delete_files_partitioned(rclone, files, max_partition_workers=1)
+    result = delete_files_partitioned(rclone._backend, files, max_partition_workers=1)
 
     assert result.ok
     assert len(commands) == 1
@@ -276,7 +289,7 @@ def test_delete_files_partitioned_partitions_across_multiple_workers() -> None:
     assert len(expected_groups) == 2
     rclone._run = _recording_run(commands)
 
-    result = delete_files_partitioned(rclone, files, max_partition_workers=2)
+    result = delete_files_partitioned(rclone._backend, files, max_partition_workers=2)
 
     assert result.ok
     assert len(commands) == 2
@@ -298,6 +311,6 @@ def test_delete_files_partitioned_failure_raises_after_running_all_partitions() 
     rclone._run = run
 
     with pytest.raises(ValueError, match="boom"):
-        delete_files_partitioned(rclone, files, max_partition_workers=2)
+        delete_files_partitioned(rclone._backend, files, max_partition_workers=2)
 
     assert len(commands) == 2

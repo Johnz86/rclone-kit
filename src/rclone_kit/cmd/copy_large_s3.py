@@ -2,7 +2,8 @@ import argparse
 from dataclasses import dataclass
 from pathlib import Path
 
-from rclone_kit import Rclone, SizeSuffix
+from rclone_kit.client import Rclone
+from rclone_kit.types import SizeSuffix
 from rclone_kit.util import register_signal_cleanup
 
 

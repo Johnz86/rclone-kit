@@ -1,18 +1,19 @@
+from __future__ import annotations
+
 import contextlib
 import warnings
 from collections.abc import Generator
 from queue import Empty, Queue
 from threading import Event, Thread
+from typing import TYPE_CHECKING
 
-from rclone_kit.fs.filesystem import FSPath
-from rclone_kit.fs.walk_threaded_walker import FSWalker
+from rclone_kit.fs.walk import fs_walk
+
+if TYPE_CHECKING:
+    from rclone_kit.fs.filesystem import FSPath
 
 _CLOSE_JOIN_TIMEOUT_SECONDS = 30.0
 _DRAIN_POLL_SECONDS = 0.1
-
-
-def os_walk_threaded_begin(self: FSPath, max_backlog: int = 8) -> FSWalker:
-    return FSWalker(self, max_backlog)
 
 
 class FSWalkThread:
@@ -27,8 +28,6 @@ class FSWalkThread:
         self.start()
 
     def worker(self):
-        from rclone_kit.fs.walk import fs_walk
-
         for root, dirnames, filenames in fs_walk(self.fspath):
             if self.stop_event.is_set():
                 break

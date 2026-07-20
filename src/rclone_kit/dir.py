@@ -1,11 +1,16 @@
+from __future__ import annotations
+
 import json
 from collections.abc import Generator
 from pathlib import PurePosixPath
+from typing import TYPE_CHECKING
 
-from rclone_kit.dir_listing import DirListing
 from rclone_kit.remote import Remote
 from rclone_kit.rpath import RcloneJsonEntry, RPath
 from rclone_kit.types import ListingOption, Order
+
+if TYPE_CHECKING:
+    from rclone_kit.dir_listing import DirListing
 
 
 class Dir:
@@ -60,7 +65,7 @@ class Dir:
             listing_option=listing_option,
         )
 
-    def relative_to(self, other: "Dir") -> str:
+    def relative_to(self, other: Dir) -> str:
         """Return the relative path to the other directory.
 
         Uses `PurePosixPath`, not `Path`: `self.path.path` is a
@@ -75,10 +80,12 @@ class Dir:
 
     def walk(self, breadth_first: bool, max_depth: int = -1) -> Generator[DirListing]:
         """List files and directories in the given path."""
-        from rclone_kit.detail.walk import walk
-
         assert self.path.rclone is not None
-        return walk(self, breadth_first=breadth_first, max_depth=max_depth)
+        return self.path.rclone.walk(
+            self,
+            breadth_first=breadth_first,
+            max_depth=max_depth,
+        )
 
     def to_json(self) -> RcloneJsonEntry:
         """Convert the Dir to a JSON serializable dictionary."""
@@ -99,7 +106,7 @@ class Dir:
             _, out = out.split(":", 1)
         return out
 
-    def __truediv__(self, other: str) -> "Dir":
+    def __truediv__(self, other: str) -> Dir:
         """Join the current path with another path.
 
         Uses `PurePosixPath`, not `Path` (see `relative_to`'s docstring for

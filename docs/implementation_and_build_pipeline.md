@@ -29,13 +29,16 @@ The main execution path is:
 Application / console script
         |
         v
-Rclone public facade (rclone_kit/__init__.py)
+Rclone client (rclone_kit/client.py)
         |
         v
-RcloneImpl operation layer
+focused operation modules
         |
         v
-RcloneExec + Process / rclone_execute
+RcloneBackend protocol
+        |
+        v
+CliRcloneBackend + Process / rclone_execute
         |
         v
 verified rclone executable + temporary rclone config
@@ -46,28 +49,23 @@ local or remote storage
 
 ### Public API and operations
 
-`rclone_kit.Rclone` is the stable public facade. It exposes listing, copying,
+`rclone_kit.Rclone` is the stable public client. It exposes listing, copying,
 deletion, remote-control, HTTP serving, mounting, filesystem, database, and
-S3 operations. Most methods delegate to `RcloneImpl`, which currently owns
-command construction and higher-level orchestration.
+S3 operations. `rclone_kit.__init__` only re-exports this class and the
+curated domain values.
 
-The facade and implementation are deliberately still separate:
-
-- callers depend on `Rclone`, not implementation modules;
-- compatibility changes can be handled at the facade boundary; and
-- unit tests can exercise `RcloneImpl` command contracts without launching
-  rclone.
-
-`RcloneImpl` and the facade are still large and duplicate much of the public
-operation surface. Treat that as a known refactoring boundary, not a pattern
-to extend. New cohesive behavior should normally live in a focused module
-and be exposed through a small facade method.
+The client owns a private `RcloneBackend` structural dependency and delegates
+command-oriented behavior to focused operation modules. Tests provide
+recording backends without subclassing a production class. Domain values use
+small access protocols for the convenience methods that still retain a client
+reference.
 
 ### Execution and configuration
 
-`RcloneExec` is the adapter between operations and subprocess management.
+`CliRcloneBackend` is the adapter between operations and subprocess management.
 Short-lived commands use `rclone_execute`; long-lived commands use `Process`.
-Subprocesses receive argument lists and run with `shell=False`.
+Operations build immutable command tuples; the CLI backend converts them to
+argument lists at the subprocess boundary, which runs with `shell=False`.
 
 When a `Config` object is supplied, its text is written to a process-private
 temporary directory. The config file is created with owner-only permissions
@@ -308,9 +306,9 @@ platform declarations.
 
 Follow `code_style.md`. In particular:
 
-- preserve the public `Rclone` facade unless a deprecation path is provided;
+- preserve the public `Rclone` contract unless a deprecation path is provided;
 - prefer small focused modules and pure command builders over adding more
-  orchestration to `RcloneImpl`;
+  orchestration to `Rclone`;
 - use named constants instead of magic strings;
 - do not mutate caller-owned argument lists;
 - use explicit resource ownership and context managers;
@@ -329,9 +327,9 @@ commit and follow the authorship and commit-message rules in `code_style.md`.
 1. Capture current command vectors, return values, and failure behavior with
    a unit test using a fake execution boundary.
 2. Put new command construction in a pure helper or focused operation module.
-3. Keep raw subprocess behavior in `RcloneExec`, `Process`, or
+3. Keep raw subprocess behavior in `CliRcloneBackend`, `Process`, or
    `rclone_execute`.
-4. Update the `Rclone` facade without exposing `RcloneImpl` as public API.
+4. Expose the operation through the curated `Rclone` client.
 5. Test empty inputs, explicit `False` options, caller-owned arguments,
    credential redaction, and subprocess failure.
 
@@ -435,41 +433,29 @@ demonstrated need would just duplicate `MergeState`'s design. A
 `PartMergeState` naming/documentation pass was considered speculative and
 skipped.
 
-The public-facade phase is done. `Rclone` was already a clean, thin,
-boilerplate-only pass-through facade (1049 lines, nearly all docstring);
-the "large and duplicate" complaint the roadmap named is really about
-`RcloneImpl`, which held real command-construction logic directly inline
-rather than delegating to focused modules. Before moving anything,
-`test_rclone_facade_contract.py` pinned the current `Rclone` <-> `RcloneImpl`
-contract (every public `Rclone` method has a same-named `RcloneImpl`
-counterpart with a matching signature, with three pre-existing, documented
-exceptions the test itself surfaced rather than silently accepted), and
-`test_rclone_impl_contracts.py` gained command-vector and multi-partition/
-failure-path coverage for the copy/delete group. Five self-contained
-groups were then extracted into `rclone_kit/detail/`, each following the
-pattern `copy_file_parts_resumable` already established (a free function
-taking `self: RcloneImpl`, imported lazily inside the corresponding
-one-line `RcloneImpl` method to avoid an import cycle, since `RcloneImpl`
-is used directly by `Remote`, `RPath`, `config.py`, and every `s3/` module -
-not just through the `Rclone` facade - so its own public names and
-signatures had to stay unchanged too): config/S3 discovery
-(`config_ops.py`), HTTP/WebDAV serving (`serve_ops.py`), mounting
-(`mount_ops.py`), listing/walk/diff/stat (`listing_ops.py` - `ls`, `print`,
-`stat`, `modtime`, `modtime_dt`, `listremotes`, `exists`, `is_synced`,
-`size_file`, `size_files`, and the generator method `diff`, which keeps its
-lazy-start semantics via `yield from` rather than a plain `return`), and
-copy/transfer/delete (`transfer_ops.py` - the four thin single-command
-methods plus the two highest-risk methods, `copy_files` and `delete_files`,
-which each own a `ThreadPoolExecutor` directly rather than going through
-`_run`/`_launch_process`). Before moving those last two, `_do_upload_task`
-in `s3/multipart/upload_parts_server_side_merge.py` was re-read as this
-repo's established bar for thread-pool orchestration with exception-path
-cleanup; both were re-checked against it and found already correct (temp
-files scoped to a per-task `TemporaryDirectory` that cleans up on every
-exit path, no leaked threads on the implicit `shutdown(wait=True)`), so
-both slices were pure relocations rather than redesigns. `RcloneImpl`
-shrank from 1230 to 903 lines; every extraction added direct unit coverage
-the logic previously lacked.
+The client-architecture phase is done. Command flags live in
+`command_flags.py`; configuration discovery and its shared frozen
+`RclonePaths` parser live in `config_discovery.py`; and
+`backend.py` defines the structural `RcloneBackend` contract plus the
+`CliRcloneBackend` subprocess implementation. Operation modules consume the
+backend or a focused access protocol and import at module scope without
+depending on a concrete client. The former forwarding facade and duplicate
+implementation class were merged into `client.py:Rclone`; package-root
+imports are re-exports only, internal `.impl` access is gone, and the old
+implementation module was deleted. Public `write_text`, `write_bytes`, and
+`serve_http` signatures follow the former facade contract and have dedicated
+regression tests. Configuration parsing no longer imports discovery or the
+client, and operation modules no longer require a pre-initialized concrete
+client.
+
+The execution implementation is named `CliRcloneBackend` and remains an
+internal extension boundary rather than a package-root export. Repository
+history and documentation provided no evidence that `.impl` or direct
+implementation-class imports were supported public APIs, so no compatibility
+property or module was retained. `write_bytes` keeps the former facade's
+two-argument contract, while `serve_http` keeps its curated public options and
+uses the established minimal cache mode internally. Renaming `detail` to
+`operations` is deferred as a separate mechanical change.
 
 The paths-and-filesystems phase is done. The "local paths, rclone paths,
 and strings still overlap" complaint turned out to be a real, reproducible
@@ -543,8 +529,8 @@ groundwork for a future Pyright-strict rollout is in place, but the large
 deferred families (`S101`, `ANN`, `TRY`, `FBT001`/`FBT002`/`FBT003`,
 `A001`/`A002`, `PLR0913`, `PTH`, `PLR0911`/`PLR0912`/`PLR0915`) and the
 strict-mode rollout itself are still open. Every `subprocess.CompletedProcess`
-return type and construction across `util.py`, `exec.py`,
-`rclone_impl.py`, `completed_process.py`, and `detail/transfer_ops.py` is
+return type and construction across `util.py`, `backend.py`, `client.py`,
+`completed_process.py`, and `detail/transfer_ops.py` is
 now parameterized as `CompletedProcess[str]` - true for every call site,
 since every `Popen` invocation already passes `encoding="utf-8"` - instead
 of the bare, effectively `Unknown`-typed generic Pyright previously

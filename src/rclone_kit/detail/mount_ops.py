@@ -1,16 +1,40 @@
-from pathlib import Path
+from __future__ import annotations
 
+from pathlib import Path
+from typing import Protocol
+
+from rclone_kit.backend import RcloneBackend
+from rclone_kit.command_flags import FLAG_TRANSFERS, FLAG_VFS_CACHE_MODE
 from rclone_kit.convert import convert_to_str
 from rclone_kit.dir import Dir
 from rclone_kit.mount import Mount
-from rclone_kit.rclone_impl import FLAG_TRANSFERS, FLAG_VFS_CACHE_MODE, RcloneImpl
+from rclone_kit.mount_util import clean_mount, ensure_mount_supported, prepare_mount
 from rclone_kit.remote import Remote
 from rclone_kit.types import ModTimeStrategy
 from rclone_kit.util import get_verbose
 
 
+class MountAccess(Protocol):
+    """High-level callback required by the S3 mount preset."""
+
+    def mount(
+        self,
+        src: Remote | Dir | str,
+        outdir: Path,
+        allow_writes: bool | None = False,
+        transfers: int | None = None,
+        use_links: bool | None = None,
+        vfs_cache_mode: str | None = None,
+        verbose: bool | None = None,
+        cache_dir: Path | None = None,
+        cache_dir_delete_on_exit: bool | None = None,
+        log: Path | None = None,
+        other_args: list[str] | None = None,
+    ) -> Mount: ...
+
+
 def launch_mount(
-    self: RcloneImpl,
+    backend: RcloneBackend,
     src: Remote | Dir | str,
     outdir: Path,
     allow_writes: bool | None = False,
@@ -29,8 +53,6 @@ def launch_mount(
     operating-system mount facility rclone's `mount` subcommand requires
     (WinFsp on Windows, FUSE on Linux).
     """
-    from rclone_kit.mount_util import clean_mount, ensure_mount_supported, prepare_mount
-
     ensure_mount_supported()
     allow_writes = False if allow_writes is None else allow_writes
     use_links = True if use_links is None else use_links
@@ -60,7 +82,7 @@ def launch_mount(
         cmd_list.append("-vvvv")
     if other_args:
         cmd_list += other_args
-    proc = self._launch_process(cmd_list, log=log)
+    proc = backend.launch(tuple(cmd_list), log=log)
     mount_read_only = not allow_writes
     mount: Mount = Mount(
         src=src_str,
@@ -74,7 +96,7 @@ def launch_mount(
 
 
 def launch_s3_mount(
-    self: RcloneImpl,
+    access: MountAccess,
     url: str,
     outdir: Path,
     allow_writes: bool = False,
@@ -120,7 +142,7 @@ def launch_s3_mount(
         other_args.append("--vfs-fast-fingerprint")
 
     other_args = other_args if other_args else None
-    return self.mount(
+    return access.mount(
         url,
         outdir,
         allow_writes=allow_writes,

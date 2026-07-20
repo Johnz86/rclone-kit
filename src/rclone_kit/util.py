@@ -7,6 +7,8 @@ import os
 import secrets
 import shutil
 import signal
+import socket
+import string
 import subprocess
 import tempfile
 import threading
@@ -25,7 +27,7 @@ from rclone_kit.runtime.rclone_binary import resolve_rclone_executable
 from rclone_kit.types import S3PathInfo
 
 if TYPE_CHECKING:
-    from rclone_kit.rclone_impl import RcloneImpl
+    from rclone_kit.access import DomainAccess
 
 logger = logging.getLogger(__name__)
 
@@ -41,8 +43,6 @@ _LIVE_SUBPROCESSES: weakref.WeakSet[subprocess.Popen[str]] = weakref.WeakSet()
 _FREE_PORT_RANGE_START = 10000
 _FREE_PORT_RANGE_END = 20000
 _FREE_PORT_MAX_ATTEMPTS = 20
-_MIN_S3_PATH_PARTS = 2
-
 _exit_cleanup_lock = Lock()
 
 
@@ -185,8 +185,6 @@ def locked_print(*args: object, **kwargs: Any) -> None:
 
 
 def port_is_free(port: int) -> bool:
-    import socket
-
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         return s.connect_ex(("localhost", port)) != 0
 
@@ -206,7 +204,7 @@ def find_free_port() -> int:
     return port
 
 
-def to_path(item: Dir | Remote | str, rclone: RcloneImpl) -> RPath:
+def to_path(item: Dir | Remote | str, rclone: DomainAccess) -> RPath:
     if isinstance(item, str):
         parts = item.split(":")
         remote_name = parts[0]
@@ -378,28 +376,10 @@ def rclone_execute(
 
 
 def split_s3_path(path: str) -> S3PathInfo:
-    if ":" not in path:
-        raise ValueError(f"Invalid S3 path: {path}")
-
-    prts = path.split(":", 1)
-    remote = prts[0]
-    path = prts[1]
-    parts: list[str] = []
-    for raw_part in path.split("/"):
-        part = raw_part.strip()
-        if part:
-            parts.append(part)
-    if len(parts) < _MIN_S3_PATH_PARTS:
-        raise ValueError(f"Invalid S3 path: {path}")
-    bucket = parts[0]
-    key = "/".join(parts[1:])
-    assert bucket
-    assert key
-    return S3PathInfo(remote=remote, bucket=bucket, key=key)
+    """Parse an rclone S3-style path into its remote, bucket, and key."""
+    return S3PathInfo.from_str(path)
 
 
 def random_str(length: int) -> str:
-    import string
-
     alphabet = string.ascii_lowercase + string.digits
     return "".join(secrets.choice(alphabet) for _ in range(length))

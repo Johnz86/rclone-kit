@@ -1,86 +1,179 @@
-"""Characterization tests pinning the `Rclone` <-> `RcloneImpl` contract.
-
-`Rclone` is a thin pass-through facade: every public instance method just
-forwards to an identically-named `RcloneImpl` method with the same
-parameters. These tests exist to catch accidental signature drift (a
-renamed/reordered/dropped parameter, or a method losing its `RcloneImpl`
-counterpart) before any facade-extraction work moves code between the two,
-per docs/implementation_and_build_pipeline.md's "Public facade" roadmap
-item: establish the contract with tests before changing a boundary.
-
-`Rclone.upgrade_rclone`/`Rclone.find_rclone_conf` are `@staticmethod`s that
-deliberately bypass `RcloneImpl` (they delegate straight to `util.py`/
-`config.py`), so they're excluded rather than asserted against.
-"""
+"""Regression tests for the single public ``Rclone`` API."""
 
 import inspect
-from typing import Any
+import subprocess
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, cast
 
-from rclone_kit import Rclone
-from rclone_kit.rclone_impl import RcloneImpl
+import pytest
+
+from rclone_kit import Rclone as PublicRclone
+from rclone_kit.client import Rclone
+from rclone_kit.command_flags import FLAG_S3_NO_CHECK_BUCKET
+from rclone_kit.config import Config
+from rclone_kit.http_server import HttpServer
+from rclone_kit.process import Process
+
+PUBLIC_OPERATION_NAMES = {
+    "cleanup",
+    "copy",
+    "copy_bytes",
+    "copy_dir",
+    "copy_file_s3",
+    "copy_file_s3_resumable",
+    "copy_files",
+    "copy_remote",
+    "copy_to",
+    "cwd",
+    "delete_files",
+    "diff",
+    "exists",
+    "filesystem",
+    "is_s3",
+    "is_synced",
+    "launch_server",
+    "listremotes",
+    "ls",
+    "ls_stream",
+    "modtime",
+    "modtime_dt",
+    "mount",
+    "obscure",
+    "purge",
+    "read_bytes",
+    "read_text",
+    "remote_control",
+    "save_to_db",
+    "scan_missing_folders",
+    "serve_http",
+    "size_file",
+    "size_files",
+    "walk",
+    "webgui",
+    "write_bytes",
+    "write_text",
+}
 
 
-def _public_instance_methods(cls: type) -> dict[str, Any]:
-    return {
-        name: member
-        for name, member in vars(cls).items()
-        if not name.startswith("_") and inspect.isfunction(member)
-    }
+@dataclass
+class RecordingBackend:
+    commands: list[tuple[str, ...]] = field(default_factory=list)
+
+    def run(
+        self,
+        command: tuple[str, ...],
+        *,
+        check: bool = False,
+        capture: bool | Path | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        del check, capture
+        self.commands.append(command)
+        return subprocess.CompletedProcess(list(command), 0, stdout="", stderr="")
+
+    def launch(
+        self,
+        command: tuple[str, ...],
+        *,
+        capture: bool | None = None,
+        log: Path | None = None,
+    ) -> Process:
+        del command, capture, log
+        return cast(Process, object())
 
 
-def test_every_public_rclone_method_has_a_same_named_rcloneimpl_method() -> None:
-    rclone_methods = _public_instance_methods(Rclone)
-    assert rclone_methods, "expected Rclone to have public instance methods"
-
-    missing = [name for name in rclone_methods if not hasattr(RcloneImpl, name)]
-
-    assert missing == []
+def test_package_root_reexports_concrete_client() -> None:
+    assert PublicRclone is Rclone
 
 
-# Pre-existing, real asymmetries between the two signatures, found by this
-# test rather than designed - recorded here instead of silently ignored, so
-# the test still catches new drift everywhere else. Each is a narrower or
-# reordered forward, not a positional-argument bug: every `Rclone` call site
-# below passes its arguments by keyword, so RcloneImpl.write_text's reversed
-# parameter order is harmless at runtime.
-#
-# - write_text: Rclone's (text, dst) vs RcloneImpl's (dst, text) - same
-#   parameters, different order.
-# - write_bytes: Rclone doesn't forward RcloneImpl's optional `verbose`.
-# - serve_http: Rclone hardcodes `cache_mode="minimal"` rather than exposing
-#   it, and doesn't expose `serve_http_log` at all.
-_KNOWN_PARTIAL_FORWARDS = frozenset({"write_text", "write_bytes", "serve_http"})
+def test_public_operations_remain_available() -> None:
+    assert set(vars(Rclone)) >= PUBLIC_OPERATION_NAMES
 
 
-def test_rclone_method_signatures_match_rcloneimpl_counterparts() -> None:
-    rclone_methods = _public_instance_methods(Rclone)
-
-    mismatches: dict[str, tuple[list[str], list[str]]] = {}
-    for name, rclone_method in rclone_methods.items():
-        if name in _KNOWN_PARTIAL_FORWARDS:
-            continue
-        impl_method = getattr(RcloneImpl, name)
-        rclone_params = list(inspect.signature(rclone_method).parameters)
-        impl_params = list(inspect.signature(impl_method).parameters)
-        if rclone_params != impl_params:
-            mismatches[name] = (rclone_params, impl_params)
-
-    assert mismatches == {}
+def test_write_text_uses_public_parameter_order() -> None:
+    assert tuple(inspect.signature(Rclone.write_text).parameters) == ("self", "text", "dst")
 
 
-def test_known_partial_forwards_only_expose_parameters_rcloneimpl_actually_has() -> None:
-    """Even for the documented exceptions, `Rclone` must never expose a
-    parameter name `RcloneImpl` doesn't have - that would be a real drift,
-    not just a narrower/reordered forward.
-    """
-    rclone_methods = _public_instance_methods(Rclone)
+def test_write_bytes_keeps_curated_public_contract() -> None:
+    assert tuple(inspect.signature(Rclone.write_bytes).parameters) == ("self", "data", "dst")
 
-    for name in _KNOWN_PARTIAL_FORWARDS:
-        rclone_method = rclone_methods[name]
-        impl_method = getattr(RcloneImpl, name)
-        rclone_params = set(inspect.signature(rclone_method).parameters)
-        impl_params = set(inspect.signature(impl_method).parameters)
-        assert rclone_params <= impl_params, (
-            f"{name}: Rclone exposes parameters RcloneImpl doesn't have: "
-            f"{rclone_params - impl_params}"
+
+def test_serve_http_keeps_curated_public_contract() -> None:
+    assert tuple(inspect.signature(Rclone.serve_http).parameters) == (
+        "self",
+        "src",
+        "addr",
+        "other_args",
+    )
+
+
+def test_custom_backend_does_not_require_cli_executable_resolution() -> None:
+    backend = RecordingBackend()
+
+    rclone = Rclone(Config(None), backend=backend)
+
+    assert rclone._backend is backend
+
+
+def test_write_text_forwards_public_argument_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rclone = Rclone(Config(None), backend=RecordingBackend())
+    calls: list[tuple[bytes, str]] = []
+    monkeypatch.setattr(
+        rclone,
+        "write_bytes",
+        lambda data, dst: calls.append((data, dst)),
+    )
+
+    rclone.write_text("content", "remote:bucket/file.txt")
+
+    assert calls == [(b"content", "remote:bucket/file.txt")]
+
+
+def test_write_bytes_builds_copy_command_for_non_s3_destination() -> None:
+    backend = RecordingBackend()
+    rclone = Rclone(Config(None), backend=backend)
+
+    rclone.write_bytes(b"content", "remote:bucket/file.bin")
+
+    command = backend.commands[0]
+    assert command[0] == "copyto"
+    assert command[2:] == (
+        "remote:bucket/file.bin",
+        FLAG_S3_NO_CHECK_BUCKET,
+        "--no-traverse",
+    )
+
+
+def test_serve_http_uses_curated_cache_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rclone = Rclone(Config(None), backend=RecordingBackend())
+    calls: list[tuple[Any, ...]] = []
+    expected = cast(HttpServer, object())
+
+    def launch(*args: Any, **kwargs: Any) -> HttpServer:
+        calls.append((*args, kwargs))
+        return expected
+
+    monkeypatch.setattr("rclone_kit.client.launch_http_server", launch)
+
+    result = rclone.serve_http(
+        "remote:bucket",
+        addr="localhost:8080",
+        other_args=["--read-only"],
+    )
+
+    assert result is expected
+    assert calls == [
+        (
+            rclone._backend,
+            "remote:bucket",
+            "minimal",
+            {
+                "addr": "localhost:8080",
+                "other_args": ["--read-only"],
+            },
         )
+    ]

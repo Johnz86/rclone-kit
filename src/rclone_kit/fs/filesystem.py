@@ -4,11 +4,37 @@ import shutil
 import warnings
 from collections.abc import Generator
 from pathlib import Path, PurePath, PurePosixPath
-from typing import Self
+from typing import Protocol, Self
 
-from rclone_kit.config import Config
+from rclone_kit.completed_process import CompletedProcess
 from rclone_kit.exceptions import FilesystemError, HttpFetchError
+from rclone_kit.fs.walk import fs_walk
 from rclone_kit.fs.walk_threaded_walker import FSWalker
+from rclone_kit.http_server import HttpServer
+
+
+class RemoteFSAccess(Protocol):
+    """High-level capabilities used by the remote filesystem adapter."""
+
+    def serve_http(
+        self,
+        src: str,
+        addr: str | None = None,
+        other_args: list[str] | None = None,
+    ) -> HttpServer: ...
+
+    def is_s3(self, dst: str) -> bool: ...
+
+    def copy_file_s3(self, src: Path, dst: str, verbose: bool | None = None) -> None: ...
+
+    def copy_to(self, src: str, dst: str) -> CompletedProcess: ...
+
+    def read_bytes(self, src: str) -> bytes: ...
+
+    def write_bytes(self, data: bytes, dst: str) -> None: ...
+
+    def delete_files(self, files: str) -> CompletedProcess: ...
+
 
 logger = logging.getLogger(__name__)
 
@@ -153,27 +179,12 @@ class RealFS(FS):
 
 
 class RemoteFS(FS):
-    @staticmethod
-    def from_rclone_config(src: str, rclone_conf: Path | Config | str | dict | None) -> "RemoteFS":
-        if isinstance(rclone_conf, (str, dict)):
-            rclone_conf = Config(text=rclone_conf)
-        return RemoteFS(rclone_conf, src)
-
-    def __init__(self, rclone_conf: Path | Config | None, src: str) -> None:
-        from rclone_kit import HttpServer, Rclone
-
+    def __init__(self, rclone: RemoteFSAccess, src: str) -> None:
         super().__init__()
         self.src = src
         self.shutdown = False
         self.server: HttpServer | None = None
-        if rclone_conf is None:
-            from rclone_kit.config import find_conf_file
-
-            rclone_conf = find_conf_file()
-            if rclone_conf is None:
-                raise FileNotFoundError("rclone.conf not found")
-        self.rclone_conf = rclone_conf
-        self.rclone: Rclone = Rclone(rclone_conf)
+        self.rclone = rclone
         self.server = self.rclone.serve_http(src=src)
 
     def root(self) -> "FSPath":
@@ -199,8 +210,6 @@ class RemoteFS(FS):
         return str(PurePosixPath(path).relative_to(self.src))
 
     def copy(self, src: Path | str, dst: Path | str) -> None:
-        from rclone_kit.completed_process import CompletedProcess
-
         src = src if isinstance(src, Path) else Path(src)
 
         dst_remote_path = self._to_remote_path(dst)
@@ -241,8 +250,6 @@ class RemoteFS(FS):
         self.rclone.write_bytes(data, path)
 
     def exists(self, path: Path | str) -> bool:
-        from rclone_kit.http_server import HttpServer
-
         assert isinstance(self.server, HttpServer)
         path = self._to_str(path)
         dst_rel = self._to_remote_path(path)
@@ -251,13 +258,9 @@ class RemoteFS(FS):
     def mkdir(self, path: str, parents=True, exist_ok=True) -> None:
         del path, parents, exist_ok
 
-        import warnings
-
         warnings.warn("mkdir is not supported for remote backend", stacklevel=2)
 
     def is_dir(self, path: Path | str) -> bool:
-        from rclone_kit.http_server import HttpServer
-
         assert isinstance(self.server, HttpServer)
         path = self._to_remote_path(path)
         try:
@@ -267,8 +270,6 @@ class RemoteFS(FS):
         return True
 
     def is_file(self, path: Path | str) -> bool:
-        from rclone_kit.http_server import HttpServer
-
         assert isinstance(self.server, HttpServer)
         remote_path = self._to_remote_path(path)
         try:
@@ -278,8 +279,6 @@ class RemoteFS(FS):
         return False
 
     def ls(self, path: Path | str) -> tuple[list[str], list[str]]:
-        from rclone_kit.http_server import HttpServer
-
         assert isinstance(self.server, HttpServer)
         remote_path = self._to_remote_path(path)
         try:
@@ -378,8 +377,6 @@ class FSPath:
     def walk(
         self,
     ) -> "Generator[tuple[FSPath, list[str], list[str]]]":
-        from rclone_kit.fs.walk import fs_walk
-
         return fs_walk(self)
 
     def walk_begin(self, max_backlog: int = 8) -> FSWalker:

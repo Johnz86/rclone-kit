@@ -1,7 +1,7 @@
 """Unit tests for `rclone_kit.s3.multipart.upload_parts_resumable`'s
 temporary-directory exit-cleanup registry.
 
-`upload_parts_resumable()` itself needs a real `RcloneImpl`, HTTP server,
+`upload_parts_resumable()` itself needs a real `Rclone`, HTTP server,
 and executors to run end-to-end, so these tests exercise the registry
 (`_TMP_UPLOAD_DIRS`/`_cleanup_tmp_upload_dirs`) directly instead: the piece
 that replaced a per-call `atexit.register(...)` closure (one leaked

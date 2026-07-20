@@ -1,3 +1,4 @@
+import _thread
 from collections.abc import Generator
 from dataclasses import dataclass
 from enum import Enum
@@ -121,13 +122,9 @@ def _async_diff_stream_from_running_process(
                 print("UnicodeDecodeError")
                 continue
     except KeyboardInterrupt:
-        import _thread
-
         print("KeyboardInterrupt")
         _thread.interrupt_main()
     except Exception as e:
-        import _thread
-
         print(f"Error: {e}")
         _thread.interrupt_main()
     finally:

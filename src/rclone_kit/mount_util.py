@@ -11,7 +11,6 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Protocol
 
-from rclone_kit.mount import Mount
 from rclone_kit.process import Process
 from rclone_kit.util import format_command
 
@@ -36,6 +35,10 @@ _MOUNTS_FOR_GC: weakref.WeakSet = weakref.WeakSet()
 class MountStatus(Protocol):
     process: Process
     mount_path: Path
+
+
+class MountResource(MountStatus, Protocol):
+    def close(self, wait: bool = True) -> None: ...
 
 
 class MountPrerequisiteError(RuntimeError):
@@ -108,7 +111,7 @@ def ensure_mount_supported() -> None:
 
 def _cleanup_mounts() -> None:
     with ThreadPoolExecutor() as executor:
-        mount: Mount
+        mount: MountResource
         for mount in _MOUNTS_FOR_GC:
             executor.submit(mount.close)
 
@@ -156,12 +159,12 @@ def cache_dir_delete_on_exit(cache_dir: Path) -> None:
             warnings.warn(f"Error removing cache directory {cache_dir}: {e}", stacklevel=2)
 
 
-def add_mount_for_gc(mount: Mount) -> None:
+def add_mount_for_gc(mount: MountResource) -> None:
 
     _MOUNTS_FOR_GC.add(mount)
 
 
-def remove_mount_for_gc(mount: Mount) -> None:
+def remove_mount_for_gc(mount: MountResource) -> None:
     _MOUNTS_FOR_GC.discard(mount)
 
 
@@ -278,7 +281,7 @@ def _rmtree_ignore_mounts(path):
     os.rmdir(path)
 
 
-def clean_mount(mount: Mount | Path, verbose: bool = False, wait=True) -> None:
+def clean_mount(mount: MountStatus | Path, verbose: bool = False, wait=True) -> None:
     """
     Clean up a mount path across Linux, macOS, and Windows.
 
@@ -292,12 +295,13 @@ def clean_mount(mount: Mount | Path, verbose: bool = False, wait=True) -> None:
         if verbose:
             logger.info(msg)
 
-    proc = mount.process if isinstance(mount, Mount) else None
+    proc = None if isinstance(mount, Path) else mount.process
+
     if proc is not None and proc.poll() is None:
         verbose_print(f"Terminating mount process {proc.pid}")
         proc.kill()
 
-    mount_path = mount.mount_path if isinstance(mount, Mount) else mount
+    mount_path = mount if isinstance(mount, Path) else mount.mount_path
     try:
         mount_exists = mount_path.exists()
     except OSError:

@@ -1,0 +1,11 @@
+"""Shared rclone command-line flag constants."""
+
+FLAG_CHECKERS = "--checkers"
+FLAG_FAST_LIST = "--fast-list"
+FLAG_FILES_FROM = "--files-from"
+FLAG_LOW_LEVEL_RETRIES = "--low-level-retries"
+FLAG_MULTI_THREAD_STREAMS = "--multi-thread-streams"
+FLAG_PROGRESS = "--progress"
+FLAG_S3_NO_CHECK_BUCKET = "--s3-no-check-bucket"
+FLAG_TRANSFERS = "--transfers"
+FLAG_VFS_CACHE_MODE = "--vfs-cache-mode"

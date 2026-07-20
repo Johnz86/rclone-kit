@@ -4,13 +4,13 @@ from typing import cast
 
 import pytest
 
+from rclone_kit.client import Rclone
 from rclone_kit.exceptions import MergeStateError
-from rclone_kit.rclone_impl import RcloneImpl
 from rclone_kit.s3.multipart.merge_state import MergeState, MergeStateJson, Part
 
 
-def _stub_rclone_impl() -> RcloneImpl:
-    return object.__new__(RcloneImpl)
+def _stub_rclone() -> Rclone:
+    return object.__new__(Rclone)
 
 
 def test_part_from_json_raises_merge_state_error_on_missing_field() -> None:
@@ -36,7 +36,7 @@ def test_merge_state_from_json_raises_merge_state_error_for_malformed_part() -> 
         },
     )
     with pytest.raises(MergeStateError):
-        MergeState.from_json(rclone_impl=_stub_rclone_impl(), data=data)
+        MergeState.from_json(rclone=_stub_rclone(), data=data)
 
 
 def test_merge_state_from_json_builds_merge_state() -> None:
@@ -48,5 +48,5 @@ def test_merge_state_from_json_builds_merge_state() -> None:
         "finished": [],
         "all": [{"part_number": 1, "s3_key": "key"}],
     }
-    merge_state = MergeState.from_json(rclone_impl=_stub_rclone_impl(), data=data)
+    merge_state = MergeState.from_json(rclone=_stub_rclone(), data=data)
     assert merge_state.all_parts == [Part(part_number=1, s3_key="key")]

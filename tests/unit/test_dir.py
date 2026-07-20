@@ -8,13 +8,13 @@ directory separator) silently corrupts any path segment containing one.
 
 from typing import cast
 
+from rclone_kit.client import Rclone
 from rclone_kit.dir import Dir
-from rclone_kit.rclone_impl import RcloneImpl
 from rclone_kit.remote import Remote
 from rclone_kit.rpath import RPath
 
 _BACKSLASH_NAME = "weird" + chr(92) + "name.txt"
-_FAKE_RCLONE = cast(RcloneImpl, object())
+_FAKE_RCLONE = cast(Rclone, object())
 
 
 def _remote() -> Remote:

@@ -19,10 +19,10 @@ from typing import cast
 
 import pytest
 
+from rclone_kit.client import Rclone
 from rclone_kit.detail.walk import walk, walk_runner_breadth_first, walk_runner_depth_first
 from rclone_kit.dir import Dir
 from rclone_kit.dir_listing import DirListing
-from rclone_kit.rclone_impl import RcloneImpl
 from rclone_kit.remote import Remote
 from rclone_kit.rpath import RPath
 from rclone_kit.types import Order
@@ -35,14 +35,14 @@ _TOTAL_DIR_COUNT = len(_ALL_NON_ROOT_NAMES) + 1  # + root itself
 
 
 class _FakeTreeRclone:
-    """Fakes just enough of `RcloneImpl.ls` to drive `Dir.ls()` against an
+    """Fakes just enough of `Rclone.ls` to drive `Dir.ls()` against an
     in-memory nested-dict directory tree. Only ever lists one level at a
     time (`.dirs` = immediate children of the requested path), matching how
     both walkers actually call `Dir.ls()`.
     """
 
     def __init__(self, tree: dict) -> None:
-        self.remote = Remote(name="remote", rclone=cast(RcloneImpl, self))
+        self.remote = Remote(name="remote", rclone=cast(Rclone, self))
         self._tree = tree
 
     def root(self) -> Dir:
@@ -55,7 +55,7 @@ class _FakeTreeRclone:
             mod_time="",
             is_dir=True,
         )
-        rpath.set_rclone(cast(RcloneImpl, self))
+        rpath.set_rclone(cast(Rclone, self))
         return Dir(rpath)
 
     def _subtree(self, path: str) -> dict:
@@ -77,7 +77,7 @@ class _FakeTreeRclone:
                 mod_time="",
                 is_dir=True,
             )
-            rpath.set_rclone(cast(RcloneImpl, self))
+            rpath.set_rclone(cast(Rclone, self))
             rpaths.append(rpath)
         return DirListing(rpaths)
 
@@ -132,8 +132,8 @@ def test_walker_respects_max_depth(walker) -> None:
 @pytest.mark.parametrize("breadth_first", [True, False], ids=["breadth_first", "depth_first"])
 def test_walk_generator_yields_every_directory(breadth_first: bool) -> None:
     """End-to-end through the public `walk()` generator (the background
-    `Thread` + blocking `out_queue.get()` consumer that `RcloneImpl.walk`
-    actually uses), not just the runner functions directly.
+    `Thread` + blocking `out_queue.get()` consumer that `Rclone.walk`
+        actually uses), not just the runner functions directly.
     """
     root = _FakeTreeRclone(_TREE).root()
 

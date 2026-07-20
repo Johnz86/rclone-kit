@@ -6,6 +6,8 @@ This module provides functionality for S3 multipart uploads, including copying p
 from existing S3 objects using upload_part_copy.
 """
 
+from __future__ import annotations
+
 import json
 import logging
 import os
@@ -18,12 +20,12 @@ from threading import Semaphore, Thread
 from typing import Self, cast
 
 from rclone_kit.exceptions import MergeStateError, S3MergeError
-from rclone_kit.rclone_impl import RcloneImpl
 from rclone_kit.s3.create import (
     BaseClient,
     S3Config,
     create_s3_client,
 )
+from rclone_kit.s3.multipart.access import MultipartAccess
 from rclone_kit.s3.multipart.finished_piece import FinishedPiece
 from rclone_kit.s3.multipart.info_json import InfoJson
 from rclone_kit.s3.multipart.merge_state import MergeState, MergeStateJson, Part
@@ -225,13 +227,13 @@ def _begin_upload(
 
 
 class WriteMergeStateThread(Thread):
-    def __init__(self, rclone_impl: RcloneImpl, merge_state: MergeState, verbose: bool):
+    def __init__(self, rclone: MultipartAccess, merge_state: MergeState, verbose: bool):
         super().__init__(daemon=True)
         assert isinstance(merge_state, MergeState)
         self.verbose = verbose
         self.merge_state = merge_state
         self.merge_path = merge_state.merge_path
-        self.rclone_impl = rclone_impl
+        self.rclone = rclone
         self.queue: Queue[FinishedPiece | EndOfStream] = Queue()
         self._closed = False
         self.start()
@@ -263,7 +265,7 @@ class WriteMergeStateThread(Thread):
 
             json_str = self.merge_state.to_json_str()
             try:
-                self.rclone_impl.write_text(self.merge_path, json_str)
+                self.rclone.write_text(text=json_str, dst=self.merge_path)
             except KeyboardInterrupt:
                 raise
             except Exception as error:
@@ -298,7 +300,7 @@ class WriteMergeStateThread(Thread):
             )
 
 
-def _cleanup_merge(rclone: RcloneImpl, info: InfoJson) -> None:
+def _cleanup_merge(rclone: MultipartAccess, info: InfoJson) -> None:
     """Verify the merged upload matches expectations, then purge temp parts."""
     size = info.size
     dst = info.dst
@@ -323,13 +325,13 @@ def _get_merge_path(info_path: str) -> str:
 
 
 def _begin_or_resume_merge(
-    rclone: RcloneImpl,
+    rclone: MultipartAccess,
     info: InfoJson,
     verbose: bool = False,
     max_workers: int = DEFAULT_MAX_WORKERS,
-) -> "S3MultiPartMerger":
+) -> S3MultiPartMerger:
     merger: S3MultiPartMerger = S3MultiPartMerger(
-        rclone_impl=rclone,
+        rclone=rclone,
         info=info,
         verbose=verbose,
         max_workers=max_workers,
@@ -350,7 +352,7 @@ def _begin_or_resume_merge(
     if merge_json_text is not None:
         merge_data = cast(MergeStateJson, json.loads(merge_json_text))
         try:
-            merge_state = MergeState.from_json(rclone_impl=rclone, data=merge_data)
+            merge_state = MergeState.from_json(rclone=rclone, data=merge_data)
         except (KeyError, MergeStateError) as error:
             warnings.warn(f"Failed to resume merge: {error}, starting new merge", stacklevel=2)
         else:
@@ -402,15 +404,15 @@ def _begin_or_resume_merge(
 class S3MultiPartMerger:
     def __init__(
         self,
-        rclone_impl: RcloneImpl,
+        rclone: MultipartAccess,
         info: InfoJson,
         s3_config: S3Config | None = None,
         verbose: bool = False,
         max_workers: int = DEFAULT_MAX_WORKERS,
     ) -> None:
-        self.rclone_impl: RcloneImpl = rclone_impl
+        self.rclone = rclone
         self.info = info
-        self.s3_creds = rclone_impl.get_s3_credentials(remote=info.dst)
+        self.s3_creds = rclone.get_s3_credentials(remote=info.dst)
         self.verbose = verbose
         s3_config = s3_config or S3Config(
             verbose=verbose,
@@ -426,8 +428,8 @@ class S3MultiPartMerger:
 
     @staticmethod
     def create(
-        rclone: RcloneImpl, info: InfoJson, max_workers: int, verbose: bool
-    ) -> "S3MultiPartMerger":
+        rclone: MultipartAccess, info: InfoJson, max_workers: int, verbose: bool
+    ) -> S3MultiPartMerger:
         return _begin_or_resume_merge(
             rclone=rclone, info=info, max_workers=max_workers, verbose=verbose
         )
@@ -440,7 +442,7 @@ class S3MultiPartMerger:
         assert self.state is not None
         assert self.write_thread is None
         self.write_thread = WriteMergeStateThread(
-            rclone_impl=self.rclone_impl,
+            rclone=self.rclone,
             merge_state=self.state,
             verbose=self.verbose,
         )
@@ -460,7 +462,7 @@ class S3MultiPartMerger:
             verbose=self.verbose,
         )
         self.state = MergeState(
-            rclone_impl=self.rclone_impl,
+            rclone=self.rclone,
             merge_path=merge_path,
             upload_id=upload_id,
             bucket=bucket,
@@ -501,7 +503,7 @@ class S3MultiPartMerger:
             self.write_thread.close()
 
     def cleanup(self) -> None:
-        _cleanup_merge(rclone=self.rclone_impl, info=self.info)
+        _cleanup_merge(rclone=self.rclone, info=self.info)
 
     def close(self) -> None:
         """Stop the write thread if one was started. Idempotent."""
@@ -519,7 +521,7 @@ class S3MultiPartMerger:
 
 
 def s3_server_side_multi_part_merge(
-    rclone: RcloneImpl,
+    rclone: MultipartAccess,
     info_path: str,
     max_workers: int = DEFAULT_MAX_WORKERS,
     verbose: bool = False,

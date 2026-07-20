@@ -6,8 +6,57 @@
 """
 
 import os
+import subprocess
 import unittest
 from collections.abc import Sequence
+from pathlib import Path
+from typing import Protocol
+
+from rclone_kit.process import Process
+
+
+class ClientExecution(Protocol):
+    """Legacy private execution hooks exposed by a high-level test client."""
+
+    def _run(
+        self,
+        cmd: list[str],
+        check: bool = False,
+        capture: bool | Path | None = None,
+    ) -> subprocess.CompletedProcess[str]: ...
+
+    def _launch_process(
+        self,
+        cmd: list[str],
+        capture: bool | None = None,
+        log: Path | None = None,
+    ) -> Process: ...
+
+
+class ClientBackendAdapter:
+    """Adapt monkeypatched client hooks to the structural backend contract."""
+
+    def __init__(self, client: ClientExecution) -> None:
+        self.client = client
+
+    def run(
+        self,
+        command: tuple[str, ...],
+        *,
+        check: bool = False,
+        capture: bool | Path | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        return self.client._run(list(command), check=check, capture=capture)
+
+    def launch(
+        self,
+        command: tuple[str, ...],
+        *,
+        capture: bool | None = None,
+        log: Path | None = None,
+    ) -> Process:
+        return self.client._launch_process(list(command), capture=capture, log=log)
+
 
 CLOUD_TEST_KEY_PREFIX = "rclone-kit-test/"
 CLOUD_TEST_REMOTE_ROOT = "dst:rclone-kit-unit-test"

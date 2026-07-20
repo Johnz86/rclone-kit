@@ -1,9 +1,10 @@
+import _thread
 import random
 from collections.abc import Generator
 from queue import Queue
 from threading import Thread
 
-from rclone_kit import Dir
+from rclone_kit.dir import Dir
 from rclone_kit.dir_listing import DirListing
 from rclone_kit.remote import Remote
 from rclone_kit.types import Order
@@ -42,8 +43,6 @@ def walk_runner_breadth_first(
                     queue.put((child, next_depth))
         out_queue.put(None)
     except KeyboardInterrupt:
-        import _thread
-
         out_queue.put(None)
 
         _thread.interrupt_main()
@@ -87,8 +86,6 @@ def walk_runner_depth_first(
                 stack.extend((subdir, next_depth) for subdir in reversed(dirlisting.dirs))
         out_queue.put(None)
     except KeyboardInterrupt:
-        import _thread
-
         out_queue.put(None)
         _thread.interrupt_main()
 

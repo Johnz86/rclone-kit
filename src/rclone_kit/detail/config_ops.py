@@ -1,36 +1,32 @@
+from __future__ import annotations
+
 import logging
 import subprocess
 from pathlib import Path
 
-from rclone_kit.config import Parsed, Section
+from rclone_kit.backend import RcloneBackend
+from rclone_kit.config import Config, Parsed, Section
+from rclone_kit.config_discovery import parse_rclone_paths
 from rclone_kit.exceptions import RcloneCommandError
-from rclone_kit.rclone_impl import RcloneImpl
 from rclone_kit.s3.types import S3Credentials, S3Provider
+from rclone_kit.types import S3PathInfo
 from rclone_kit.util import get_verbose
 
 logger = logging.getLogger(__name__)
 
 
-def _parse_paths(src: str) -> list[Path]:
-    """Parse the `Label: value` lines printed by `rclone config paths`."""
-    paths: list[Path] = []
-    for line in src.splitlines():
-        _label, separator, value = line.partition(":")
-        if not separator:
-            continue
-        paths.append(Path(value.strip()))
-    return paths
-
-
-def obscure_password(self: RcloneImpl, password: str) -> str:
+def obscure_password(backend: RcloneBackend, password: str) -> str:
     """Obscure a password for use in rclone config files."""
     cmd_list: list[str] = ["obscure", password]
-    cp = self._run(cmd_list)
+    cp = backend.run(tuple(cmd_list))
     return cp.stdout.strip()
 
 
 def fetch_config_paths(
-    self: RcloneImpl, remote: str | None = None, obscure: bool = False, no_obscure: bool = False
+    backend: RcloneBackend,
+    remote: str | None = None,
+    obscure: bool = False,
+    no_obscure: bool = False,
 ) -> list[Path]:
     """Return the filesystem paths reported by `rclone config paths`:
     the config file, cache directory, and temp directory, in that fixed
@@ -48,17 +44,20 @@ def fetch_config_paths(
     cmd_list: list[str] = ["config", "paths"]
 
     try:
-        cp = self._run(cmd_list, capture=True, check=True)
+        cp = backend.run(tuple(cmd_list), capture=True, check=True)
     except subprocess.CalledProcessError as error:
         raise RcloneCommandError("config paths", error.stderr or "", error) from error
     stdout: str | bytes = cp.stdout
     if isinstance(stdout, bytes):
         stdout = stdout.decode("utf-8")
-    return _parse_paths(stdout)
+    return parse_rclone_paths(stdout).present_paths()
 
 
 def fetch_config_show(
-    self: RcloneImpl, remote: str | None = None, obscure: bool = False, no_obscure: bool = False
+    backend: RcloneBackend,
+    remote: str | None = None,
+    obscure: bool = False,
+    no_obscure: bool = False,
 ) -> str:
     """Return the configuration text reported by `rclone config show`.
 
@@ -77,21 +76,19 @@ def fetch_config_show(
     if no_obscure:
         cmd_list.append("--no-obscure")
     try:
-        cp = self._run(cmd_list, capture=True, check=True)
+        cp = backend.run(tuple(cmd_list), capture=True, check=True)
     except subprocess.CalledProcessError as error:
         raise RcloneCommandError("config show", error.stderr or "", error) from error
     stdout = cp.stdout
     return stdout.decode("utf-8") if isinstance(stdout, bytes) else stdout
 
 
-def check_is_s3(self: RcloneImpl, dst: str) -> bool:
+def check_is_s3(config: Config, dst: str) -> bool:
     """Check if a remote is an S3 remote."""
-    from rclone_kit.util import S3PathInfo
-
     try:
         path_info: S3PathInfo = S3PathInfo.from_str(dst)
         remote = path_info.remote
-        parsed: Parsed = self.config.parse()
+        parsed: Parsed = config.parse()
         sections: dict[str, Section] = parsed.sections
         if remote not in sections:
             return False
@@ -105,11 +102,7 @@ def check_is_s3(self: RcloneImpl, dst: str) -> bool:
         return False
 
 
-def fetch_s3_credentials(
-    self: RcloneImpl, remote: str, verbose: bool | None = None
-) -> S3Credentials:
-    from rclone_kit.util import S3PathInfo
-
+def fetch_s3_credentials(config: Config, remote: str, verbose: bool | None = None) -> S3Credentials:
     verbose = get_verbose(verbose)
     path_info: S3PathInfo = S3PathInfo.from_str(remote)
 
@@ -117,7 +110,7 @@ def fetch_s3_credentials(
     bucket_name = path_info.bucket
 
     remote = path_info.remote
-    parsed: Parsed = self.config.parse()
+    parsed: Parsed = config.parse()
     sections: dict[str, Section] = parsed.sections
     if remote not in sections:
         raise ValueError(

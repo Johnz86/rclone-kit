@@ -7,9 +7,9 @@ from typing import Any, cast
 
 import pytest
 
+from rclone_kit.client import Rclone
 from rclone_kit.completed_process import CompletedProcess
 from rclone_kit.exceptions import S3MergeError
-from rclone_kit.rclone_impl import RcloneImpl
 from rclone_kit.s3.multipart.info_json import InfoJson
 from rclone_kit.s3.multipart.merge_state import MergeState, Part
 from rclone_kit.s3.multipart.upload_parts_server_side_merge import (
@@ -23,13 +23,13 @@ from rclone_kit.s3.multipart.upload_parts_server_side_merge import (
 from rclone_kit.s3.types import S3Credentials, S3Provider
 
 
-def _stub_rclone_impl() -> RcloneImpl:
-    return object.__new__(RcloneImpl)
+def _stub_rclone_impl() -> Rclone:
+    return object.__new__(Rclone)
 
 
 def _stub_merge_state() -> MergeState:
     return MergeState(
-        rclone_impl=_stub_rclone_impl(),
+        rclone=_stub_rclone_impl(),
         merge_path="merge.json",
         upload_id="upload-id",
         bucket="bucket",
@@ -123,7 +123,7 @@ def test_cleanup_merge_raises_s3_merge_error_when_purge_fails(
 
 def _stub_merger() -> S3MultiPartMerger:
     merger = cast(S3MultiPartMerger, object.__new__(S3MultiPartMerger))
-    merger.rclone_impl = _stub_rclone_impl()
+    merger.rclone = _stub_rclone_impl()
     merger.state = _stub_merge_state()
     merger.write_thread = None
     merger.client = cast(Any, object())
@@ -135,7 +135,9 @@ def _stub_merger() -> S3MultiPartMerger:
 
 def test_write_merge_state_thread_close_is_idempotent_with_nothing_queued() -> None:
     thread = WriteMergeStateThread(
-        rclone_impl=_stub_rclone_impl(), merge_state=_stub_merge_state(), verbose=False
+        rclone=_stub_rclone_impl(),
+        merge_state=_stub_merge_state(),
+        verbose=False,
     )
 
     thread.close()
@@ -219,7 +221,7 @@ def test_merge_closes_write_thread_after_completion_failure(
     rclone = _stub_rclone_impl()
     monkeypatch.setattr(rclone, "write_text", lambda *_args, **_kwargs: None)
     merger = _stub_merger()
-    merger.rclone_impl = rclone
+    merger.rclone = rclone
     merger.client = cast(Any, _CompletionFailingS3Client())
 
     with pytest.raises(S3MergeError, match="Failed to complete multipart upload"):

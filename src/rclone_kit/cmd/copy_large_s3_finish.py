@@ -2,7 +2,7 @@ import argparse
 from dataclasses import dataclass
 from pathlib import Path
 
-from rclone_kit import Rclone
+from rclone_kit.client import Rclone
 from rclone_kit.s3.multipart.upload_parts_server_side_merge import (
     s3_server_side_multi_part_merge,
 )
@@ -63,7 +63,10 @@ def main() -> int:
     rclone = Rclone(rclone_conf=args.config_path)
     info_path = _get_info_path(src=args.src)
     s3_server_side_multi_part_merge(
-        rclone=rclone.impl, info_path=info_path, max_workers=5, verbose=args.verbose
+        rclone=rclone,
+        info_path=info_path,
+        max_workers=5,
+        verbose=args.verbose,
     )
     return 0
 

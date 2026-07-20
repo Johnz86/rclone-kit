@@ -1,9 +1,4 @@
-"""Unit tests for `rclone_kit.detail.listing_ops`, extracted from
-`RcloneImpl` as part of the public-facade-split roadmap phase. `RcloneImpl`
-methods delegate to these functions unchanged, so these tests exercise the
-actual logic; `test_rclone_impl_contracts.py` covers that the delegation
-itself still works.
-"""
+"""Unit tests for listing operations used by the public client."""
 
 import json
 import subprocess
@@ -14,6 +9,9 @@ from typing import cast
 
 import pytest
 
+from helpers import ClientBackendAdapter
+from rclone_kit.client import Rclone
+from rclone_kit.command_flags import FLAG_CHECKERS, FLAG_FAST_LIST, FLAG_FILES_FROM
 from rclone_kit.detail.listing_ops import (
     check_exists,
     check_is_synced,
@@ -31,7 +29,6 @@ from rclone_kit.diff import DiffOption, DiffType
 from rclone_kit.dir_listing import DirListing
 from rclone_kit.file import File
 from rclone_kit.process import Process
-from rclone_kit.rclone_impl import FLAG_CHECKERS, FLAG_FAST_LIST, FLAG_FILES_FROM, RcloneImpl
 from rclone_kit.remote import Remote
 from rclone_kit.types import SizeResult, SizeSuffix
 
@@ -70,8 +67,10 @@ _LSJSON_TWO_FILES = json.dumps(
 )
 
 
-def _bare_rclone_impl() -> RcloneImpl:
-    return object.__new__(RcloneImpl)
+def _bare_rclone_impl() -> Rclone:
+    rclone = object.__new__(Rclone)
+    rclone._backend = ClientBackendAdapter(rclone)
+    return rclone
 
 
 def test_fetch_ls_with_none_src_lists_remotes_as_root_dirs() -> None:
@@ -79,7 +78,7 @@ def test_fetch_ls_with_none_src_lists_remotes_as_root_dirs() -> None:
     remotes = [Remote(name="remoteA", rclone=rclone), Remote(name="remoteB", rclone=rclone)]
     rclone.listremotes = lambda: remotes
 
-    result = fetch_ls(rclone, None)
+    result = fetch_ls(rclone._backend, rclone, None)
 
     assert [d.remote.name for d in result.dirs] == ["remoteA", "remoteB"]
     assert all(d.path.path == "" for d in result.dirs)
@@ -96,7 +95,7 @@ def test_fetch_ls_builds_expected_command_vector() -> None:
 
     rclone._run = run
 
-    result = fetch_ls(rclone, "remote:bucket", max_depth=2)
+    result = fetch_ls(rclone._backend, rclone, "remote:bucket", max_depth=2)
 
     assert commands == [["lsjson", "--max-depth", "2", "remote:bucket"]]
     assert [f.path.name for f in result.files] == ["a.txt"]
@@ -164,7 +163,7 @@ def test_fetch_listremotes_strips_trailing_colon() -> None:
         [], 0, stdout="remoteA:\nremoteB:\n", stderr=""
     )
 
-    result = fetch_listremotes(rclone)
+    result = fetch_listremotes(rclone._backend, rclone)
 
     assert [r.name for r in result] == ["remoteA", "remoteB"]
 
@@ -203,7 +202,7 @@ def test_check_is_synced_true_when_check_succeeds() -> None:
 
     rclone._run = run
 
-    assert check_is_synced(rclone, "src:bucket", "dst:bucket") is True
+    assert check_is_synced(rclone._backend, "src:bucket", "dst:bucket") is True
     assert commands == [["check", "src:bucket", "dst:bucket"]]
 
 
@@ -215,7 +214,7 @@ def test_check_is_synced_false_on_called_process_error() -> None:
 
     rclone._run = run
 
-    assert check_is_synced(rclone, "src:bucket", "dst:bucket") is False
+    assert check_is_synced(rclone._backend, "src:bucket", "dst:bucket") is False
 
 
 def test_fetch_size_file_raises_file_not_found_for_missing_path() -> None:
@@ -250,7 +249,7 @@ def test_fetch_size_file_returns_size_of_single_match() -> None:
 def test_fetch_size_files_empty_input_returns_empty_result() -> None:
     rclone = _bare_rclone_impl()
 
-    result = fetch_size_files(rclone, "remote:bucket", [])
+    result = fetch_size_files(rclone._backend, rclone, "remote:bucket", [])
 
     assert result == SizeResult(prefix="remote:bucket", total_size=0, file_sizes={})
 
@@ -265,7 +264,7 @@ def test_fetch_size_files_single_file_delegates_to_size_file() -> None:
 
     rclone.size_file = size_file
 
-    result = fetch_size_files(rclone, "remote:bucket", ["a.txt"])
+    result = fetch_size_files(rclone._backend, rclone, "remote:bucket", ["a.txt"])
 
     assert calls == ["remote:bucket/a.txt"]
     assert result == SizeResult(prefix="remote:bucket", total_size=42, file_sizes={"a.txt": 42})
@@ -282,7 +281,12 @@ def test_fetch_size_files_builds_expected_command_vector_and_aggregates() -> Non
 
     rclone._run = run
 
-    result = fetch_size_files(rclone, "remote:bucket", ["a.txt", "b.txt"])
+    result = fetch_size_files(
+        rclone._backend,
+        rclone,
+        "remote:bucket",
+        ["a.txt", "b.txt"],
+    )
 
     assert len(commands) == 1
     cmd = commands[0]
@@ -300,7 +304,13 @@ def test_fetch_size_files_fast_list_warns() -> None:
     )
 
     with pytest.warns(UserWarning, match="fast-list"):
-        fetch_size_files(rclone, "remote:bucket", ["a.txt", "b.txt"], fast_list=True)
+        fetch_size_files(
+            rclone._backend,
+            rclone,
+            "remote:bucket",
+            ["a.txt", "b.txt"],
+            fast_list=True,
+        )
 
 
 def test_print_contents_prints_read_text_result(capsys: pytest.CaptureFixture[str]) -> None:
@@ -331,7 +341,7 @@ def test_stream_diff_builds_expected_command_vector_and_streams_items() -> None:
 
     rclone._launch_process = launch_process
 
-    items = list(stream_diff(rclone, "src:bucket", "dst:bucket", checkers=5))
+    items = list(stream_diff(rclone._backend, "src:bucket", "dst:bucket", checkers=5))
 
     assert commands == [
         [
@@ -364,7 +374,14 @@ def test_stream_diff_missing_on_dst_adds_one_way_flag() -> None:
 
     rclone._launch_process = launch_process
 
-    list(stream_diff(rclone, "src:bucket", "dst:bucket", diff_option=DiffOption.MISSING_ON_DST))
+    list(
+        stream_diff(
+            rclone._backend,
+            "src:bucket",
+            "dst:bucket",
+            diff_option=DiffOption.MISSING_ON_DST,
+        )
+    )
 
     assert "--one-way" in commands[0]
     assert "--size-only" in commands[0]

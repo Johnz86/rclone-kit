@@ -24,7 +24,7 @@ def _fake_fs_walk_many(_fspath: FSPath):
 
 
 def test_close_is_idempotent(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("rclone_kit.fs.walk.fs_walk", _fake_fs_walk_empty)
+    monkeypatch.setattr("rclone_kit.fs.walk_threaded.fs_walk", _fake_fs_walk_empty)
     walker = FSWalkThread(cast(FSPath, "root"))
 
     walker.close()
@@ -34,7 +34,7 @@ def test_close_is_idempotent(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_close_unblocks_worker_blocked_on_full_queue(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("rclone_kit.fs.walk.fs_walk", _fake_fs_walk_many)
+    monkeypatch.setattr("rclone_kit.fs.walk_threaded.fs_walk", _fake_fs_walk_many)
     walker = FSWalkThread(cast(FSPath, "root"), max_backlog=1)
 
     walker.close()
@@ -51,7 +51,7 @@ def test_fswalker_close_before_enter_is_a_noop() -> None:
 def test_fswalker_exit_stops_worker_even_when_not_fully_consumed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("rclone_kit.fs.walk.fs_walk", _fake_fs_walk_many)
+    monkeypatch.setattr("rclone_kit.fs.walk_threaded.fs_walk", _fake_fs_walk_many)
 
     with FSWalker(fspath=cast(FSPath, "root"), max_backlog=1) as walker:
         next(iter(walker))

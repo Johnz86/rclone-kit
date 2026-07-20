@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import random
 import subprocess
 import warnings
@@ -7,12 +9,14 @@ from fnmatch import fnmatch
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from rclone_kit.access import ListingAccess
+from rclone_kit.backend import RcloneBackend
+from rclone_kit.command_flags import FLAG_CHECKERS, FLAG_FAST_LIST, FLAG_FILES_FROM
 from rclone_kit.convert import convert_to_str
 from rclone_kit.diff import DiffItem, DiffOption, diff_stream_from_running_process
 from rclone_kit.dir import Dir
 from rclone_kit.dir_listing import DirListing
 from rclone_kit.file import File
-from rclone_kit.rclone_impl import FLAG_CHECKERS, FLAG_FAST_LIST, FLAG_FILES_FROM, RcloneImpl
 from rclone_kit.remote import Remote
 from rclone_kit.rpath import RPath
 from rclone_kit.types import ListingOption, Order, SizeResult, SizeSuffix
@@ -22,7 +26,8 @@ _MIN_FILES_FOR_BATCH_LISTING = 2
 
 
 def fetch_ls(
-    self: RcloneImpl,
+    backend: RcloneBackend,
+    access: ListingAccess,
     src: Dir | Remote | str | None = None,
     max_depth: int | None = None,
     glob: str | None = None,
@@ -31,7 +36,7 @@ def fetch_ls(
 ) -> DirListing:
     """List files in the given path."""
     if src is None:
-        list_remotes: list[Remote] = self.listremotes()
+        list_remotes: list[Remote] = access.listremotes()
         dirs: list[Dir] = [Dir(remote) for remote in list_remotes]
         for d in dirs:
             d.path.path = ""
@@ -39,7 +44,7 @@ def fetch_ls(
         return DirListing(rpaths)
 
     if isinstance(src, str):
-        src = Dir(to_path(src, self))
+        src = Dir(to_path(src, access))
 
     cmd = ["lsjson"]
     if max_depth is not None:
@@ -55,7 +60,7 @@ def fetch_ls(
     remote = src.remote if isinstance(src, Dir) else src
     assert isinstance(remote, Remote)
 
-    cp = self._run(cmd, check=True)
+    cp = backend.run(tuple(cmd), check=True)
     text = cp.stdout
     parent_path: str | None = None
     if isinstance(src, Dir):
@@ -63,7 +68,7 @@ def fetch_ls(
     paths: list[RPath] = RPath.from_json_str(text, remote, parent_path=parent_path)
 
     for o in paths:
-        o.set_rclone(self)
+        o.set_rclone(access)
 
     if glob is not None:
         paths = [p for p in paths if fnmatch(p.path, glob)]
@@ -75,75 +80,79 @@ def fetch_ls(
     return DirListing(paths)
 
 
-def print_contents(self: RcloneImpl, src: str) -> None:
+def print_contents(access: ListingAccess, src: str) -> None:
     """Print the contents of a file."""
-    print(self.read_text(src))
+    print(access.read_text(src))
 
 
-def fetch_stat(self: RcloneImpl, src: str) -> File:
+def fetch_stat(access: ListingAccess, src: str) -> File:
     """Get the status of a file or directory.
 
     Raises FileNotFoundError if `src` does not exist.
     """
-    dirlist: DirListing = self.ls(src)
+    dirlist: DirListing = access.ls(src)
     if len(dirlist.files) == 0:
         raise FileNotFoundError(f"File not found: {src}")
     return dirlist.files[0]
 
 
-def fetch_listremotes(self: RcloneImpl) -> list[Remote]:
+def fetch_listremotes(backend: RcloneBackend, access: ListingAccess) -> list[Remote]:
     cmd = ["listremotes"]
-    cp = self._run(cmd)
+    cp = backend.run(tuple(cmd))
     text: str = cp.stdout
     tmp = text.splitlines()
     tmp = [t.strip() for t in tmp]
 
     tmp = [t.replace(":", "") for t in tmp]
-    out = [Remote(name=t, rclone=self) for t in tmp]
+    out = [Remote(name=t, rclone=access) for t in tmp]
     return out
 
 
-def check_exists(self: RcloneImpl, src: Dir | Remote | str | File) -> bool:
+def check_exists(access: ListingAccess, src: Dir | Remote | str | File) -> bool:
     """Check if a file or directory exists."""
     arg: str = convert_to_str(src)
     assert isinstance(arg, str)
     try:
-        dir_listing = self.ls(arg)
+        dir_listing = access.ls(arg)
 
         return len(dir_listing.dirs) > 0 or len(dir_listing.files) > 0
     except subprocess.CalledProcessError:
         return False
 
 
-def check_is_synced(self: RcloneImpl, src: str | Dir, dst: str | Dir) -> bool:
+def check_is_synced(backend: RcloneBackend, src: str | Dir, dst: str | Dir) -> bool:
     """Check if two directories are in sync."""
     src = convert_to_str(src)
     dst = convert_to_str(dst)
     cmd_list: list[str] = ["check", str(src), str(dst)]
     try:
-        self._run(cmd_list, check=True)
+        backend.run(tuple(cmd_list), check=True)
         return True
     except subprocess.CalledProcessError:
         return False
 
 
-def fetch_modtime(self: RcloneImpl, src: str) -> str:
+def fetch_modtime(access: ListingAccess, src: str) -> str:
     """Get the modification time of a file or directory."""
-    return self.stat(src).mod_time()
+    return access.stat(src).mod_time()
 
 
-def fetch_modtime_dt(self: RcloneImpl, src: str) -> datetime:
+def fetch_modtime_dt(access: ListingAccess, src: str) -> datetime:
     """Get the modification time of a file or directory."""
-    return self.stat(src).mod_time_dt()
+    return access.stat(src).mod_time_dt()
 
 
-def fetch_size_file(self: RcloneImpl, src: str) -> SizeSuffix:
+def fetch_size_file(access: ListingAccess, src: str) -> SizeSuffix:
     """Get the size of a file or directory.
 
     Raises FileNotFoundError if no file matches `src`, or ValueError
     if more than one file matches.
     """
-    dirlist: DirListing = self.ls(src, listing_option=ListingOption.FILES_ONLY, max_depth=0)
+    dirlist: DirListing = access.ls(
+        src,
+        listing_option=ListingOption.FILES_ONLY,
+        max_depth=0,
+    )
     if len(dirlist.files) == 0:
         raise FileNotFoundError(f"File not found: {src}")
     if len(dirlist.files) > 1:
@@ -152,7 +161,8 @@ def fetch_size_file(self: RcloneImpl, src: str) -> SizeSuffix:
 
 
 def fetch_size_files(
-    self: RcloneImpl,
+    backend: RcloneBackend,
+    access: ListingAccess,
     src: str,
     files: list[str],
     fast_list: bool = False,
@@ -167,7 +177,7 @@ def fetch_size_files(
         return SizeResult(prefix=src, total_size=0, file_sizes={})
     if len(files) < _MIN_FILES_FOR_BATCH_LISTING:
         full_path = f"{src}/{files[0]}"
-        tmp = self.size_file(full_path)
+        tmp = access.size_file(full_path)
         return SizeResult(prefix=src, total_size=tmp.as_int(), file_sizes={files[0]: tmp.as_int()})
     if fast_list or (other_args and FLAG_FAST_LIST in other_args):
         warnings.warn(
@@ -186,7 +196,7 @@ def fetch_size_files(
             cmd.append(FLAG_FAST_LIST)
         if other_args:
             cmd += other_args
-        cp = self._run(cmd, check=check)
+        cp = backend.run(tuple(cmd), check=check)
 
         if cp.returncode != 0:
             if check:
@@ -198,7 +208,7 @@ def fetch_size_files(
         remote_name = pieces[0]
         parent_path: str | None
         parent_path = pieces[1] if len(pieces) > 1 else None
-        remote = Remote(name=remote_name, rclone=self)
+        remote = Remote(name=remote_name, rclone=access)
         paths: list[RPath] = RPath.from_json_str(stdout, remote, parent_path=parent_path)
 
         all_files += [File(p) for p in paths]
@@ -227,7 +237,7 @@ def fetch_size_files(
 
 
 def stream_diff(
-    self: RcloneImpl,
+    backend: RcloneBackend,
     src: str,
     dst: str,
     min_size: str | None = None,
@@ -271,7 +281,7 @@ def stream_diff(
         cmd += ["--one-way"]
     if other_args:
         cmd += other_args
-    proc = self._launch_process(cmd, capture=True)
+    proc = backend.launch(tuple(cmd), capture=True)
     item: DiffItem
     for item in diff_stream_from_running_process(
         running_process=proc, src_slug=src, dst_slug=dst, diff_option=diff_option

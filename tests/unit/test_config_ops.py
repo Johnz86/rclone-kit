@@ -1,21 +1,17 @@
-"""Unit tests for `rclone_kit.detail.config_ops`, extracted from
-`RcloneImpl` as part of the public-facade-split roadmap phase. `RcloneImpl`
-methods delegate to these functions unchanged, so these tests exercise the
-actual logic; `test_rclone_impl_contracts.py` and `test_config_discovery.py`
-cover that the delegation itself still works.
-"""
+"""Unit tests for configuration operations used by the public client."""
 
 import subprocess
 
 import pytest
 
+from helpers import ClientBackendAdapter
+from rclone_kit.client import Rclone
 from rclone_kit.config import Config
 from rclone_kit.detail.config_ops import (
     check_is_s3,
     fetch_s3_credentials,
     obscure_password,
 )
-from rclone_kit.rclone_impl import RcloneImpl
 from rclone_kit.s3.types import S3Provider
 
 _CONFIG_TEXT = """
@@ -36,55 +32,53 @@ type = local
 """
 
 
-def _rclone_with_config() -> RcloneImpl:
-    rclone = object.__new__(RcloneImpl)
-    rclone.config = Config(_CONFIG_TEXT)
-    return rclone
+def _config() -> Config:
+    return Config(_CONFIG_TEXT)
 
 
 def test_check_is_s3_true_for_s3_and_b2_remotes() -> None:
-    rclone = _rclone_with_config()
+    config = _config()
 
-    assert check_is_s3(rclone, "do-remote:bucket/key.txt") is True
-    assert check_is_s3(rclone, "b2-remote:bucket/key.txt") is True
+    assert check_is_s3(config, "do-remote:bucket/key.txt") is True
+    assert check_is_s3(config, "b2-remote:bucket/key.txt") is True
 
 
 def test_check_is_s3_false_for_non_s3_remote() -> None:
-    rclone = _rclone_with_config()
+    config = _config()
 
-    assert check_is_s3(rclone, "local-remote:bucket/key.txt") is False
+    assert check_is_s3(config, "local-remote:bucket/key.txt") is False
 
 
 def test_check_is_s3_false_for_unknown_remote() -> None:
-    rclone = _rclone_with_config()
+    config = _config()
 
-    assert check_is_s3(rclone, "missing-remote:bucket/key.txt") is False
+    assert check_is_s3(config, "missing-remote:bucket/key.txt") is False
 
 
 def test_check_is_s3_false_for_malformed_path() -> None:
-    rclone = _rclone_with_config()
+    config = _config()
 
-    assert check_is_s3(rclone, "not-a-valid-s3-path") is False
+    assert check_is_s3(config, "not-a-valid-s3-path") is False
 
 
 def test_fetch_s3_credentials_raises_for_unknown_remote() -> None:
-    rclone = _rclone_with_config()
+    config = _config()
 
     with pytest.raises(ValueError, match="not found in rclone config"):
-        fetch_s3_credentials(rclone, "missing-remote:bucket/key.txt")
+        fetch_s3_credentials(config, "missing-remote:bucket/key.txt")
 
 
 def test_fetch_s3_credentials_raises_for_non_s3_remote() -> None:
-    rclone = _rclone_with_config()
+    config = _config()
 
     with pytest.raises(ValueError, match="is not an S3 remote"):
-        fetch_s3_credentials(rclone, "local-remote:bucket/key.txt")
+        fetch_s3_credentials(config, "local-remote:bucket/key.txt")
 
 
 def test_fetch_s3_credentials_uses_explicit_provider() -> None:
-    rclone = _rclone_with_config()
+    config = _config()
 
-    creds = fetch_s3_credentials(rclone, "do-remote:bucket/key.txt")
+    creds = fetch_s3_credentials(config, "do-remote:bucket/key.txt")
 
     assert creds.bucket_name == "bucket"
     assert creds.provider == S3Provider.DIGITAL_OCEAN
@@ -94,9 +88,9 @@ def test_fetch_s3_credentials_uses_explicit_provider() -> None:
 
 
 def test_fetch_s3_credentials_defaults_provider_for_b2() -> None:
-    rclone = _rclone_with_config()
+    config = _config()
 
-    creds = fetch_s3_credentials(rclone, "b2-remote:bucket/key.txt")
+    creds = fetch_s3_credentials(config, "b2-remote:bucket/key.txt")
 
     assert creds.provider == S3Provider.BACKBLAZE
     assert creds.access_key_id == "accountid"
@@ -104,7 +98,8 @@ def test_fetch_s3_credentials_defaults_provider_for_b2() -> None:
 
 
 def test_obscure_password_builds_expected_command_vector() -> None:
-    rclone = object.__new__(RcloneImpl)
+    rclone = object.__new__(Rclone)
+    backend = ClientBackendAdapter(rclone)
     commands: list[list[str]] = []
 
     def run(cmd: list[str], check: bool = False, capture=None) -> subprocess.CompletedProcess[str]:
@@ -114,7 +109,7 @@ def test_obscure_password_builds_expected_command_vector() -> None:
 
     rclone._run = run
 
-    result = obscure_password(rclone, "hunter2")
+    result = obscure_password(backend, "hunter2")
 
     assert commands == [["obscure", "hunter2"]]
     assert result == "obscured-value"

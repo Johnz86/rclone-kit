@@ -1,3 +1,4 @@
+import _thread
 import contextlib
 import random
 import time
@@ -7,8 +8,8 @@ from concurrent.futures import ThreadPoolExecutor
 from queue import Empty, Queue
 from threading import Thread
 
-from rclone_kit import Dir
 from rclone_kit.detail.walk import walk_runner_depth_first
+from rclone_kit.dir import Dir
 from rclone_kit.dir_listing import DirListing
 from rclone_kit.types import ListingOption, Order
 
@@ -100,8 +101,6 @@ def async_diff_dir_walk_task(
             src=src, dst=dst, max_depth=max_depth, out_queue=out_queue, order=order
         )
     except Exception:
-        import _thread
-
         _thread.interrupt_main()
         raise
     finally:

@@ -114,13 +114,11 @@ select = [
 #                                 signatures. Renaming a keyword-visible
 #                                 parameter is a breaking change; deferred
 #                                 alongside the FBT API cleanup above.
-#   PLC0415                    - This codebase relies on function-local imports
-#                                 throughout to avoid circular imports and to
-#                                 keep optional/heavy dependencies (boto3,
-#                                 sqlmodel, psycopg2) lazy, per the project's
-#                                 lazy-optional-dependency requirement. Moving
-#                                 them to module scope would reintroduce import
-#                                 cycles and eager-import optional extras.
+#   PLC0415                    - Retained only for explicit lazy boundaries:
+#                                 optional database/S3 dependencies and
+#                                 platform-exclusive file-lock modules
+#                                 (`msvcrt`/`fcntl`). Project-internal cycle
+#                                 workarounds have been removed.
 #   PLR0911, PLR0912, PLR0913,
 #   PLR0915                    - Function complexity metrics (too many
 #                                 arguments/branches/statements/returns) flag

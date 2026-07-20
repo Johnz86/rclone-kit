@@ -19,9 +19,9 @@ completely.
 
 from typing import cast
 
+from rclone_kit.client import Rclone
 from rclone_kit.dir import Dir
 from rclone_kit.dir_listing import DirListing
-from rclone_kit.rclone_impl import RcloneImpl
 from rclone_kit.remote import Remote
 from rclone_kit.rpath import RPath
 from rclone_kit.scan_missing_folders import scan_missing_folders
@@ -29,7 +29,7 @@ from rclone_kit.types import ListingOption, Order
 
 
 class _FakeTreeRclone:
-    """Fakes just enough of `RcloneImpl.ls` to drive `Dir.ls()` against an
+    """Fakes just enough of `Rclone.ls` to drive `Dir.ls()` against an
     in-memory nested-dict directory tree, including rclone's real
     `lsjson --max-depth N` behavior of returning a flattened listing of
     every directory within N levels (not just the immediate children) -
@@ -38,7 +38,7 @@ class _FakeTreeRclone:
     """
 
     def __init__(self, remote_name: str, tree: dict) -> None:
-        self.remote = Remote(name=remote_name, rclone=cast(RcloneImpl, self))
+        self.remote = Remote(name=remote_name, rclone=cast(Rclone, self))
         self._tree = tree
 
     def root(self) -> Dir:
@@ -51,7 +51,7 @@ class _FakeTreeRclone:
             mod_time="",
             is_dir=True,
         )
-        rpath.set_rclone(cast(RcloneImpl, self))
+        rpath.set_rclone(cast(Rclone, self))
         return Dir(rpath)
 
     def _subtree(self, path: str) -> dict:
@@ -93,7 +93,7 @@ class _FakeTreeRclone:
                     mod_time="",
                     is_dir=True,
                 )
-                rpath.set_rclone(cast(RcloneImpl, self))
+                rpath.set_rclone(cast(Rclone, self))
                 rpaths.append(rpath)
                 if remaining is None or remaining > 1:
                     next_remaining = None if remaining is None else remaining - 1

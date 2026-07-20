@@ -6,6 +6,7 @@ from threading import Lock
 
 from botocore.client import BaseClient
 
+from rclone_kit.chunk_store import get_chunk_tmpdir
 from rclone_kit.s3.multipart.finished_piece import FinishedPiece
 from rclone_kit.s3.multipart.upload_info import UploadInfo
 from rclone_kit.types import EndOfStream, SizeSuffix
@@ -61,8 +62,6 @@ class UploadState:
             self._save_no_lock()
 
     def __post_init__(self):
-        from rclone_kit.chunk_store import get_chunk_tmpdir
-
         if self.peristant is None:
             object_name = self.upload_info.object_name
             chunk_size = self.upload_info.chunk_size

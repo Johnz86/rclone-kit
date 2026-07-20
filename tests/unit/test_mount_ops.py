@@ -1,6 +1,4 @@
-"""Unit tests for `rclone_kit.detail.mount_ops`, extracted from `RcloneImpl`
-as part of the public-facade-split roadmap phase. `RcloneImpl.mount`/
-`mount_s3` delegate to these functions unchanged.
+"""Unit tests for mount operations used by the public client.
 
 `launch_s3_mount`'s VFS-flag-building logic (the part actually worth
 testing) had no unit coverage before this - only a real, network-dependent
@@ -10,13 +8,13 @@ cloud test exercised it end-to-end.
 from pathlib import Path
 from typing import Any, cast
 
+from rclone_kit.client import Rclone
 from rclone_kit.detail.mount_ops import launch_s3_mount
 from rclone_kit.mount import Mount
-from rclone_kit.rclone_impl import RcloneImpl
 
 
-def _rclone_recording_mount() -> tuple[RcloneImpl, dict[str, Any]]:
-    rclone = object.__new__(RcloneImpl)
+def _rclone_recording_mount() -> tuple[Rclone, dict[str, Any]]:
+    rclone = object.__new__(Rclone)
     captured: dict[str, Any] = {}
 
     def mount(*args: Any, **kwargs: Any) -> Mount:

@@ -6,6 +6,8 @@ from threading import Lock
 
 from rclone_kit.chunk_store import get_chunk_tmpdir
 from rclone_kit.s3.multipart.file_info import S3FileInfo
+from rclone_kit.types import SizeSuffix
+from rclone_kit.util import random_str
 
 logger = logging.getLogger(__name__)
 
@@ -56,8 +58,6 @@ def _register_exit_cleanup_handlers() -> None:
 
 class FilePart:
     def __init__(self, payload: Path | bytes | Exception, extra: S3FileInfo) -> None:
-        from rclone_kit.util import random_str
-
         self.extra = extra
         self._lock = Lock()
         self._disposed = False
@@ -134,7 +134,5 @@ class FilePart:
         self.dispose()
 
     def __repr__(self):
-        from rclone_kit.types import SizeSuffix
-
         payload_str = "err" if self.is_error() else f"{SizeSuffix(self.n_bytes())}"
         return f"FilePart(payload={payload_str}, extra={self.extra})"

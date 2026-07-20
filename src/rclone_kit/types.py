@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Self
 
+_MIN_S3_PATH_PARTS = 2
+
 
 class ModTimeStrategy(Enum):
     USE_SERVER_MODTIME = "use-server-modtime"
@@ -30,9 +32,16 @@ class S3PathInfo:
 
     @staticmethod
     def from_str(src: str) -> "S3PathInfo":
-        from rclone_kit.util import split_s3_path
+        if ":" not in src:
+            raise ValueError(f"Invalid S3 path: {src}")
 
-        return split_s3_path(src)
+        remote, path = src.split(":", 1)
+        parts = [part.strip() for part in path.split("/") if part.strip()]
+        if len(parts) < _MIN_S3_PATH_PARTS:
+            raise ValueError(f"Invalid S3 path: {path}")
+        bucket = parts[0]
+        key = "/".join(parts[1:])
+        return S3PathInfo(remote=remote, bucket=bucket, key=key)
 
 
 @dataclass

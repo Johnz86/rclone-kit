@@ -2,6 +2,7 @@ import _thread
 import contextlib
 import logging
 import os
+import threading
 import traceback
 import warnings
 from collections.abc import Callable
@@ -144,8 +145,6 @@ def upload_runner(
     queue_upload: Queue[FilePart | EndOfStream],
     cancel_chunker_event: Event,
 ) -> None:
-
-    import threading
 
     semaphore = threading.Semaphore(upload_threads)
     with ThreadPoolExecutor(max_workers=upload_threads) as executor:

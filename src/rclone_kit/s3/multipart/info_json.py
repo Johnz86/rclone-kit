@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import hashlib
 import json
 import os
@@ -5,7 +7,7 @@ import warnings
 from datetime import datetime
 
 from rclone_kit.dir_listing import DirListing
-from rclone_kit.rclone_impl import RcloneImpl
+from rclone_kit.s3.multipart.access import MultipartAccess
 from rclone_kit.types import (
     PartInfo,
     SizeSuffix,
@@ -13,21 +15,21 @@ from rclone_kit.types import (
 
 
 def _fetch_all_names(
-    self: RcloneImpl,
+    access: MultipartAccess,
     src: str,
 ) -> list[str]:
-    dl: DirListing = self.ls(src)
+    dl: DirListing = access.ls(src)
     files = dl.files
     filenames: list[str] = [f.name for f in files]
     filtered: list[str] = [f for f in filenames if f.startswith("part.")]
     return filtered
 
 
-def _get_info_json(self: RcloneImpl, src: str | None, src_info: str) -> dict:
+def _get_info_json(access: MultipartAccess, src: str | None, src_info: str) -> dict:
     data: dict
     if src is None:
         try:
-            text = self.read_text(src_info)
+            text = access.read_text(src_info)
         except KeyboardInterrupt:
             raise
         except Exception as error:
@@ -35,7 +37,7 @@ def _get_info_json(self: RcloneImpl, src: str | None, src_info: str) -> dict:
         data = json.loads(text)
         return data
 
-    src_stat = self.stat(src)
+    src_stat = access.stat(src)
 
     now: datetime = datetime.now()
     new_data = {
@@ -52,7 +54,7 @@ def _get_info_json(self: RcloneImpl, src: str | None, src_info: str) -> dict:
     }
 
     try:
-        text = self.read_text(src_info)
+        text = access.read_text(src_info)
     except KeyboardInterrupt:
         raise
     except Exception as error:
@@ -67,7 +69,7 @@ def _get_info_json(self: RcloneImpl, src: str | None, src_info: str) -> dict:
         return new_data
 
 
-def _save_info_json(self: RcloneImpl, src: str, data: dict) -> None:
+def _save_info_json(access: MultipartAccess, src: str, data: dict) -> None:
     data = data.copy()
     data["new"] = False
 
@@ -83,11 +85,11 @@ def _save_info_json(self: RcloneImpl, src: str, data: dict) -> None:
     h.update(str_data.encode("utf-8"))
     data["hash"] = h.hexdigest()
     json_str = json.dumps(data, indent=0)
-    self.write_text(dst=src, text=json_str)
+    access.write_text(text=json_str, dst=src)
 
 
 class InfoJson:
-    def __init__(self, rclone: RcloneImpl, src: str | None, src_info: str) -> None:
+    def __init__(self, rclone: MultipartAccess, src: str | None, src_info: str) -> None:
         self.rclone = rclone
         self.src = src
         self.src_info = src_info

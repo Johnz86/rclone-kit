@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import subprocess
 import time
 import warnings
@@ -13,14 +12,49 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING
 
-from rclone_kit import Dir
+from rclone_kit.backend import CliRcloneBackend, RcloneBackend
+from rclone_kit.command_flags import FLAG_FAST_LIST
 from rclone_kit.completed_process import CompletedProcess
 from rclone_kit.config import Config
+from rclone_kit.config_discovery import find_conf_file
+from rclone_kit.detail.config_ops import (
+    check_is_s3,
+    fetch_config_paths,
+    fetch_config_show,
+    fetch_s3_credentials,
+    obscure_password,
+)
+from rclone_kit.detail.copy_file_parts_resumable import copy_file_parts_resumable
+from rclone_kit.detail.listing_ops import (
+    check_exists,
+    check_is_synced,
+    fetch_listremotes,
+    fetch_ls,
+    fetch_modtime,
+    fetch_modtime_dt,
+    fetch_size_file,
+    fetch_size_files,
+    fetch_stat,
+    print_contents,
+    stream_diff,
+)
+from rclone_kit.detail.mount_ops import launch_mount, launch_s3_mount
+from rclone_kit.detail.serve_ops import launch_http_server, launch_webdav_server
+from rclone_kit.detail.transfer_ops import (
+    copy_between_remotes,
+    copy_byte_range,
+    copy_directory,
+    copy_file_to,
+    copy_files_partitioned,
+    copy_tree,
+    delete_files_partitioned,
+    purge_dir,
+)
 from rclone_kit.detail.walk import walk
 from rclone_kit.diff import DiffItem, DiffOption
+from rclone_kit.dir import Dir
 from rclone_kit.dir_listing import DirListing
 from rclone_kit.exceptions import RcloneCommandError
-from rclone_kit.exec import RcloneExec
 from rclone_kit.file import File
 from rclone_kit.file_stream import FilesStream
 from rclone_kit.fs.filesystem import FSPath, RemoteFS
@@ -30,11 +64,14 @@ from rclone_kit.optional_dependency import MissingOptionalDependencyError
 from rclone_kit.process import Process
 from rclone_kit.remote import Remote
 from rclone_kit.rpath import RPath
+from rclone_kit.s3.types import S3UploadTarget
+from rclone_kit.scan_missing_folders import scan_missing_folders
 from rclone_kit.types import (
     ListingOption,
     ModTimeStrategy,
     Order,
     PartInfo,
+    S3PathInfo,
     SizeResult,
     SizeSuffix,
 )
@@ -42,6 +79,7 @@ from rclone_kit.util import (
     get_rclone_exe,
     get_verbose,
     to_path,
+    upgrade_rclone,
 )
 
 if TYPE_CHECKING:
@@ -49,22 +87,6 @@ if TYPE_CHECKING:
     from rclone_kit.s3.types import S3Credentials
 
 logger = logging.getLogger(__name__)
-
-FLAG_CHECKERS = "--checkers"
-FLAG_FAST_LIST = "--fast-list"
-FLAG_FILES_FROM = "--files-from"
-FLAG_LOW_LEVEL_RETRIES = "--low-level-retries"
-FLAG_MULTI_THREAD_STREAMS = "--multi-thread-streams"
-FLAG_PROGRESS = "--progress"
-FLAG_S3_NO_CHECK_BUCKET = "--s3-no-check-bucket"
-FLAG_TRANSFERS = "--transfers"
-FLAG_VFS_CACHE_MODE = "--vfs-cache-mode"
-
-
-def rclone_verbose(verbose: bool | None) -> bool:
-    if verbose is not None:
-        os.environ["RCLONE_KIT_VERBOSE"] = "1" if verbose else "0"
-    return bool(int(os.getenv("RCLONE_KIT_VERBOSE", "0")))
 
 
 def _to_rclone_conf(config: Config | Path | None) -> Config:
@@ -77,33 +99,49 @@ def _to_rclone_conf(config: Config | Path | None) -> Config:
         return config
 
 
-class RcloneImpl:
-    def __init__(self, rclone_conf: Path | Config | None, rclone_exe: Path | None = None) -> None:
+class Rclone:
+    """Curated high-level API for rclone operations."""
+
+    @staticmethod
+    def upgrade_rclone() -> Path:
+        """Download and install the verified rclone executable."""
+        return upgrade_rclone()
+
+    @staticmethod
+    def find_rclone_conf() -> Path | None:
+        """Find the rclone configuration file using standard discovery."""
+        return find_conf_file()
+
+    def __init__(
+        self,
+        rclone_conf: Path | Config | None,
+        rclone_exe: Path | None = None,
+        *,
+        backend: RcloneBackend | None = None,
+    ) -> None:
         if isinstance(rclone_conf, Path) and not rclone_conf.exists():
             raise ValueError(f"Rclone config file not found: {rclone_conf}")
-        rclone_exe = get_rclone_exe(rclone_exe)
+        if backend is None:
+            resolved_executable = get_rclone_exe(rclone_exe)
+            if rclone_conf is None:
+                maybe_path = find_conf_file(rclone_exe=resolved_executable)
+                if not isinstance(maybe_path, Path):
+                    warnings.warn("Rclone config file not found", stacklevel=2)
+                rclone_conf = _to_rclone_conf(maybe_path)
+            backend = CliRcloneBackend(rclone_conf, resolved_executable)
 
-        self._exec = RcloneExec(None, get_rclone_exe(rclone_exe))
-        if rclone_conf is None:
-            from rclone_kit.config import find_conf_file
-
-            maybe_path = find_conf_file(self)
-            if not isinstance(maybe_path, Path):
-                warnings.warn("Rclone config file not found", stacklevel=2)
-            rclone_conf = _to_rclone_conf(maybe_path)
-
-        self._exec = RcloneExec(rclone_conf, get_rclone_exe(rclone_exe))
+        self._backend = backend
         self.config: Config = _to_rclone_conf(rclone_conf)
 
     def _run(
         self, cmd: list[str], check: bool = False, capture: bool | Path | None = None
     ) -> subprocess.CompletedProcess[str]:
-        return self._exec.execute(cmd, check=check, capture=capture)
+        return self._backend.run(tuple(cmd), check=check, capture=capture)
 
     def _launch_process(
         self, cmd: list[str], capture: bool | None = None, log: Path | None = None
     ) -> Process:
-        return self._exec.launch_process(cmd, capture=capture, log=log)
+        return self._backend.launch(tuple(cmd), capture=capture, log=log)
 
     def _get_tmp_mount_dir(self) -> Path:
         return Path("tmp_mnts")
@@ -119,7 +157,7 @@ class RcloneImpl:
         return self._launch_process(cmd, capture=False)
 
     def filesystem(self, src: str) -> RemoteFS:
-        return RemoteFS(self.config, src)
+        return RemoteFS(self, src)
 
     def cwd(self, src: str) -> FSPath:
         return self.filesystem(src).cwd()
@@ -167,9 +205,7 @@ class RcloneImpl:
 
     def obscure(self, password: str) -> str:
         """Obscure a password for use in rclone config files."""
-        from rclone_kit.detail.config_ops import obscure_password
-
-        return obscure_password(self, password)
+        return obscure_password(self._backend, password)
 
     def ls_stream(
         self,
@@ -242,9 +278,8 @@ class RcloneImpl:
         Returns:
             List of File objects found at the path
         """
-        from rclone_kit.detail.listing_ops import fetch_ls
-
         return fetch_ls(
+            self._backend,
             self,
             src,
             max_depth=max_depth,
@@ -255,8 +290,6 @@ class RcloneImpl:
 
     def print(self, src: str) -> None:
         """Print the contents of a file."""
-        from rclone_kit.detail.listing_ops import print_contents
-
         print_contents(self, src)
 
     def stat(self, src: str) -> File:
@@ -264,26 +297,18 @@ class RcloneImpl:
 
         Raises FileNotFoundError if `src` does not exist.
         """
-        from rclone_kit.detail.listing_ops import fetch_stat
-
         return fetch_stat(self, src)
 
     def modtime(self, src: str) -> str:
         """Get the modification time of a file or directory."""
-        from rclone_kit.detail.listing_ops import fetch_modtime
-
         return fetch_modtime(self, src)
 
     def modtime_dt(self, src: str) -> datetime:
         """Get the modification time of a file or directory."""
-        from rclone_kit.detail.listing_ops import fetch_modtime_dt
-
         return fetch_modtime_dt(self, src)
 
     def listremotes(self) -> list[Remote]:
-        from rclone_kit.detail.listing_ops import fetch_listremotes
-
-        return fetch_listremotes(self)
+        return fetch_listremotes(self._backend, self)
 
     def diff(
         self,
@@ -299,10 +324,8 @@ class RcloneImpl:
     ) -> Generator[DiffItem]:
         """Be extra careful with the src and dst values. If you are off by one
         parent directory, you will get a huge amount of false diffs."""
-        from rclone_kit.detail.listing_ops import stream_diff
-
         yield from stream_diff(
-            self,
+            self._backend,
             src,
             dst,
             min_size=min_size,
@@ -379,8 +402,6 @@ class RcloneImpl:
         Yields:
             Dir: each directory present under `src` but missing under `dst`
         """
-        from rclone_kit.scan_missing_folders import scan_missing_folders
-
         src_dir = Dir(to_path(src, self))
         dst_dir = Dir(to_path(dst, self))
         yield from scan_missing_folders(src=src_dir, dst=dst_dir, max_depth=max_depth, order=order)
@@ -410,9 +431,14 @@ class RcloneImpl:
         Warning - slow.
 
         """
-        from rclone_kit.detail.transfer_ops import copy_file_to
-
-        return copy_file_to(self, src, dst, check=check, verbose=verbose, other_args=other_args)
+        return copy_file_to(
+            self._backend,
+            src,
+            dst,
+            check=check,
+            verbose=verbose,
+            other_args=other_args,
+        )
 
     def copy_files(
         self,
@@ -438,10 +464,8 @@ class RcloneImpl:
         Args:
             payload: Dictionary of source and destination file paths
         """
-        from rclone_kit.detail.transfer_ops import copy_files_partitioned
-
         return copy_files_partitioned(
-            self,
+            self._backend,
             src,
             dst,
             files,
@@ -478,10 +502,8 @@ class RcloneImpl:
             src: Source directory
             dst: Destination directory
         """
-        from rclone_kit.detail.transfer_ops import copy_tree
-
         return copy_tree(
-            self,
+            self._backend,
             src,
             dst,
             check=check,
@@ -495,9 +517,7 @@ class RcloneImpl:
 
     def purge(self, src: Dir | str) -> CompletedProcess:
         """Purge a directory"""
-        from rclone_kit.detail.transfer_ops import purge_dir
-
-        return purge_dir(self, src)
+        return purge_dir(self._backend, src)
 
     def delete_files(
         self,
@@ -509,10 +529,8 @@ class RcloneImpl:
         other_args: list[str] | None = None,
     ) -> CompletedProcess:
         """Delete a directory"""
-        from rclone_kit.detail.transfer_ops import delete_files_partitioned
-
         return delete_files_partitioned(
-            self,
+            self._backend,
             files,
             check=check,
             rmdirs=rmdirs,
@@ -523,15 +541,11 @@ class RcloneImpl:
 
     def exists(self, src: Dir | Remote | str | File) -> bool:
         """Check if a file or directory exists."""
-        from rclone_kit.detail.listing_ops import check_exists
-
         return check_exists(self, src)
 
     def is_synced(self, src: str | Dir, dst: str | Dir) -> bool:
         """Check if two directories are in sync."""
-        from rclone_kit.detail.listing_ops import check_is_synced
-
-        return check_is_synced(self, src, dst)
+        return check_is_synced(self._backend, src, dst)
 
     def _s3_client(self, src: str, verbose: bool | None = None) -> S3Client:
         """Get an S3 client."""
@@ -555,9 +569,6 @@ class RcloneImpl:
 
         Raises ValueError if `dst` is not an S3 remote.
         """
-        from rclone_kit.s3.types import S3UploadTarget
-        from rclone_kit.util import S3PathInfo
-
         if not self.is_s3(dst):
             raise ValueError(f"Destination is not an S3 remote: {dst}")
         s3_client = self._s3_client(dst, verbose=verbose)
@@ -573,9 +584,7 @@ class RcloneImpl:
 
     def is_s3(self, dst: str) -> bool:
         """Check if a remote is an S3 remote."""
-        from rclone_kit.detail.config_ops import check_is_s3
-
-        return check_is_s3(self, dst)
+        return check_is_s3(self.config, dst)
 
     def copy_file_s3_resumable(
         self,
@@ -586,16 +595,12 @@ class RcloneImpl:
         merge_threads: int = 4,
     ) -> None:
         """Copy parts of a file from source to destination."""
-        from rclone_kit.detail.copy_file_parts_resumable import (
-            copy_file_parts_resumable,
-        )
-
         if dst.endswith("/"):
             dst = dst[:-1]
         dst_dir = f"{dst}-parts"
 
         copy_file_parts_resumable(
-            self=self,
+            access=self,
             src=src,
             dst_dir=dst_dir,
             part_infos=part_infos,
@@ -605,30 +610,26 @@ class RcloneImpl:
 
     def write_text(
         self,
-        dst: str,
         text: str,
+        dst: str,
     ) -> None:
         """Write text to a file."""
-        self.write_bytes(dst=dst, data=text.encode("utf-8"))
+        self.write_bytes(data=text.encode("utf-8"), dst=dst)
 
     def write_bytes(
         self,
+        data: bytes,
         dst: str,
-        data: bytes | Path,
-        verbose: bool | None = None,
     ) -> None:
         """Write bytes to a file.
 
         Raises RcloneCommandError if the underlying rclone command fails.
         """
-        if isinstance(data, Path):
-            data = data.read_bytes()
-
         with TemporaryDirectory() as tmpdir:
             tmpfile = Path(tmpdir) / "file.bin"
             tmpfile.write_bytes(data)
             if self.is_s3(dst):
-                self.copy_file_s3(tmpfile, dst, verbose=verbose)
+                self.copy_file_s3(tmpfile, dst)
                 return
 
             try:
@@ -665,14 +666,10 @@ class RcloneImpl:
         Raises FileNotFoundError if no file matches `src`, or ValueError
         if more than one file matches.
         """
-        from rclone_kit.detail.listing_ops import fetch_size_file
-
         return fetch_size_file(self, src)
 
     def get_s3_credentials(self, remote: str, verbose: bool | None = None) -> S3Credentials:
-        from rclone_kit.detail.config_ops import fetch_s3_credentials
-
-        return fetch_s3_credentials(self, remote, verbose=verbose)
+        return fetch_s3_credentials(self.config, remote, verbose=verbose)
 
     def copy_bytes(
         self,
@@ -686,25 +683,19 @@ class RcloneImpl:
 
         Raises RcloneCommandError if the underlying rclone command fails.
         """
-        from rclone_kit.detail.transfer_ops import copy_byte_range
-
-        copy_byte_range(self, src, offset, length, outfile, other_args=other_args)
+        copy_byte_range(self._backend, src, offset, length, outfile, other_args=other_args)
 
     def copy_dir(
         self, src: str | Dir, dst: str | Dir, args: list[str] | None = None
     ) -> CompletedProcess:
         """Copy a directory from source to destination."""
-        from rclone_kit.detail.transfer_ops import copy_directory
-
-        return copy_directory(self, src, dst, args=args)
+        return copy_directory(self._backend, src, dst, args=args)
 
     def copy_remote(
         self, src: Remote, dst: Remote, args: list[str] | None = None
     ) -> CompletedProcess:
         """Copy a remote to another remote."""
-        from rclone_kit.detail.transfer_ops import copy_between_remotes
-
-        return copy_between_remotes(self, src, dst, args=args)
+        return copy_between_remotes(self._backend, src, dst, args=args)
 
     def mount(
         self,
@@ -735,10 +726,8 @@ class RcloneImpl:
                 operating-system mount facility rclone's `mount` subcommand
                 requires (WinFsp on Windows, FUSE on Linux)
         """
-        from rclone_kit.detail.mount_ops import launch_mount
-
         return launch_mount(
-            self,
+            self._backend,
             src,
             outdir,
             allow_writes=allow_writes,
@@ -775,8 +764,6 @@ class RcloneImpl:
             src: Remote or directory to mount
             outdir: Local path to mount to
         """
-        from rclone_kit.detail.mount_ops import launch_s3_mount
-
         return launch_s3_mount(
             self,
             url,
@@ -817,10 +804,8 @@ class RcloneImpl:
         Raises:
             ValueError: If the NFS server fails to start
         """
-        from rclone_kit.detail.serve_ops import launch_webdav_server
-
         return launch_webdav_server(
-            self,
+            self._backend,
             src,
             user,
             password,
@@ -832,9 +817,7 @@ class RcloneImpl:
     def serve_http(
         self,
         src: str,
-        cache_mode: str | None,
         addr: str | None = None,
-        serve_http_log: Path | None = None,
         other_args: list[str] | None = None,
     ) -> HttpServer:
         """Serve a remote or directory via HTTP.
@@ -843,14 +826,11 @@ class RcloneImpl:
             src: Remote or directory to serve
             addr: Network address and port to serve on (default: localhost:8080)
         """
-        from rclone_kit.detail.serve_ops import launch_http_server
-
         return launch_http_server(
-            self,
+            self._backend,
             src,
-            cache_mode,
+            "minimal",
             addr=addr,
-            serve_http_log=serve_http_log,
             other_args=other_args,
         )
 
@@ -869,9 +849,12 @@ class RcloneImpl:
             RcloneCommandError: if the underlying `rclone config paths`
                 invocation fails.
         """
-        from rclone_kit.detail.config_ops import fetch_config_paths
-
-        return fetch_config_paths(self, remote=remote, obscure=obscure, no_obscure=no_obscure)
+        return fetch_config_paths(
+            self._backend,
+            remote=remote,
+            obscure=obscure,
+            no_obscure=no_obscure,
+        )
 
     def config_show(
         self, remote: str | None = None, obscure: bool = False, no_obscure: bool = False
@@ -883,9 +866,12 @@ class RcloneImpl:
             RcloneCommandError: if the underlying `rclone config show`
                 invocation fails.
         """
-        from rclone_kit.detail.config_ops import fetch_config_show
-
-        return fetch_config_show(self, remote=remote, obscure=obscure, no_obscure=no_obscure)
+        return fetch_config_show(
+            self._backend,
+            remote=remote,
+            obscure=obscure,
+            no_obscure=no_obscure,
+        )
 
     def size_files(
         self,
@@ -897,9 +883,8 @@ class RcloneImpl:
         verbose: bool | None = None,
     ) -> SizeResult:
         """Get the size of a list of files. Example of files items: "remote:bucket/to/file"."""
-        from rclone_kit.detail.listing_ops import fetch_size_files
-
         return fetch_size_files(
+            self._backend,
             self,
             src,
             files,

@@ -5,8 +5,8 @@ import unittest
 import pytest
 
 from helpers import CLOUD_TEST_KEY_PREFIX, CLOUD_TEST_REMOTE_ROOT
-from rclone_kit import Config
-from rclone_kit.fs.filesystem import FSPath, RemoteFS
+from rclone_kit import Config, Rclone
+from rclone_kit.fs.filesystem import FSPath
 
 
 @pytest.mark.cloud
@@ -19,7 +19,7 @@ class RcloneRemoteFSTester(unittest.TestCase):
 
     def test_create_and_move_remote_fs(self) -> None:
         """Test create and move functionality."""
-        fs = RemoteFS.from_rclone_config(CLOUD_TEST_REMOTE_ROOT, self.config)
+        fs = Rclone(self.config).filesystem(CLOUD_TEST_REMOTE_ROOT)
         with fs.cwd() as cwd:
             remote_tester: FSPath = cwd / f"{CLOUD_TEST_KEY_PREFIX}remote_tester"
             remote_tester.rmtree(ignore_errors=True)
@@ -43,7 +43,7 @@ class RcloneRemoteFSTester(unittest.TestCase):
     )
     def test_create_and_remove_remote_fs(self) -> None:
         """Test create and remove functionality."""
-        fs = RemoteFS.from_rclone_config(CLOUD_TEST_REMOTE_ROOT, self.config)
+        fs = Rclone(self.config).filesystem(CLOUD_TEST_REMOTE_ROOT)
         with fs.cwd() as cwd:
             remote_tester: FSPath = cwd / f"{CLOUD_TEST_KEY_PREFIX}remote_tester"
             try:
