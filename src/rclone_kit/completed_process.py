@@ -41,11 +41,9 @@ class CompletedProcess:
         return "\n".join(tmp)
 
     @property
-    def returncode(self) -> int | None:
+    def returncode(self) -> int:
         for cp in self.completed:
             rtn = cp.returncode
-            if rtn is None:
-                return None
             if rtn != 0:
                 return rtn
         return 0
