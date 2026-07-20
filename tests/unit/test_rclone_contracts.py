@@ -28,7 +28,7 @@ from rclone_kit.remote import Remote
 from rclone_kit.types import ListingOption, Order, SizeResult
 
 
-def _bare_rclone_impl() -> Rclone:
+def _bare_rclone() -> Rclone:
     rclone = object.__new__(Rclone)
     rclone._backend = ClientBackendAdapter(rclone)
     return rclone
@@ -91,7 +91,7 @@ LS_LISTING_OPTION_CASES = [
 
 
 def test_stat_raises_file_not_found_for_missing_path() -> None:
-    rclone = _bare_rclone_impl()
+    rclone = _bare_rclone()
     rclone.ls = lambda *_args, **_kwargs: DirListing([])
 
     with pytest.raises(FileNotFoundError):
@@ -99,7 +99,7 @@ def test_stat_raises_file_not_found_for_missing_path() -> None:
 
 
 def test_read_bytes_raises_rclone_command_error_when_copy_fails() -> None:
-    rclone = _bare_rclone_impl()
+    rclone = _bare_rclone()
 
     def copy_to(*_args, **_kwargs):
         raise subprocess.CalledProcessError(1, ["rclone", "copyto"], stderr="boom")
@@ -111,7 +111,7 @@ def test_read_bytes_raises_rclone_command_error_when_copy_fails() -> None:
 
 
 def test_config_show_raises_rclone_command_error_on_failed_command() -> None:
-    rclone = _bare_rclone_impl()
+    rclone = _bare_rclone()
 
     def run(*_args, **_kwargs):
         raise subprocess.CalledProcessError(1, ["rclone", "config", "show"], stderr="boom")
@@ -123,7 +123,7 @@ def test_config_show_raises_rclone_command_error_on_failed_command() -> None:
 
 
 def test_size_files_empty_input_returns_empty_result() -> None:
-    rclone = _bare_rclone_impl()
+    rclone = _bare_rclone()
 
     result = rclone.size_files("remote:bucket", [])
 
@@ -131,14 +131,14 @@ def test_size_files_empty_input_returns_empty_result() -> None:
 
 
 def test_copy_files_empty_input_does_not_execute_rclone() -> None:
-    rclone = _bare_rclone_impl()
+    rclone = _bare_rclone()
     rclone._run = lambda *_args, **_kwargs: pytest.fail("rclone must not run")
 
     assert rclone.copy_files("src:bucket", "dst:bucket", []) == []
 
 
 def test_delete_files_empty_input_does_not_execute_rclone() -> None:
-    rclone = _bare_rclone_impl()
+    rclone = _bare_rclone()
     rclone._run = lambda *_args, **_kwargs: pytest.fail("rclone must not run")
 
     result = rclone.delete_files([])
@@ -148,7 +148,7 @@ def test_delete_files_empty_input_does_not_execute_rclone() -> None:
 
 
 def test_copy_files_does_not_mutate_caller_arguments() -> None:
-    rclone = _bare_rclone_impl()
+    rclone = _bare_rclone()
     commands: list[list[str]] = []
 
     def run(
@@ -181,7 +181,7 @@ def test_mount_respects_explicit_false_for_links(
         "Mount",
         SimpleNamespace,
     )
-    rclone = _bare_rclone_impl()
+    rclone = _bare_rclone()
     commands: list[list[str]] = []
 
     def launch(
@@ -206,7 +206,7 @@ def test_mount_respects_explicit_false_for_links(
 
 
 def test_copy_to_builds_expected_command_vector() -> None:
-    rclone = _bare_rclone_impl()
+    rclone = _bare_rclone()
     commands: list[list[str]] = []
     rclone._run = _recording_run(commands)
 
@@ -218,7 +218,7 @@ def test_copy_to_builds_expected_command_vector() -> None:
 
 
 def test_copy_builds_expected_command_vector_with_defaults() -> None:
-    rclone = _bare_rclone_impl()
+    rclone = _bare_rclone()
     commands: list[list[str]] = []
     rclone._run = _recording_run(commands)
 
@@ -241,7 +241,7 @@ def test_copy_builds_expected_command_vector_with_defaults() -> None:
 
 
 def test_copy_files_builds_expected_command_vector() -> None:
-    rclone = _bare_rclone_impl()
+    rclone = _bare_rclone()
     commands: list[list[str]] = []
     rclone._run = _recording_run(commands)
 
@@ -272,7 +272,7 @@ def test_copy_files_builds_expected_command_vector() -> None:
 
 
 def test_delete_files_builds_expected_command_vector() -> None:
-    rclone = _bare_rclone_impl()
+    rclone = _bare_rclone()
     commands: list[list[str]] = []
     rclone._run = _recording_run(commands)
     files = ["remote:bucket/a.txt", "remote:bucket/b.txt"]
@@ -292,7 +292,7 @@ def test_delete_files_builds_expected_command_vector() -> None:
 
 
 def test_copy_bytes_builds_expected_command_vector(tmp_path: Path) -> None:
-    rclone = _bare_rclone_impl()
+    rclone = _bare_rclone()
     commands: list[list[str]] = []
     rclone._run = _recording_run(commands)
 
@@ -302,7 +302,7 @@ def test_copy_bytes_builds_expected_command_vector(tmp_path: Path) -> None:
 
 
 def test_ls_with_none_src_lists_remotes_as_root_dirs() -> None:
-    rclone = _bare_rclone_impl()
+    rclone = _bare_rclone()
     remotes = [Remote(name="remoteA", rclone=rclone), Remote(name="remoteB", rclone=rclone)]
     rclone.listremotes = lambda: remotes
 
@@ -313,7 +313,7 @@ def test_ls_with_none_src_lists_remotes_as_root_dirs() -> None:
 
 
 def test_ls_builds_expected_command_vector_for_str_src() -> None:
-    rclone = _bare_rclone_impl()
+    rclone = _bare_rclone()
     commands: list[list[str]] = []
 
     def run(cmd: list[str], check: bool = False, capture=None):
@@ -330,7 +330,7 @@ def test_ls_builds_expected_command_vector_for_str_src() -> None:
 
 
 def test_ls_negative_max_depth_adds_recursive_flag() -> None:
-    rclone = _bare_rclone_impl()
+    rclone = _bare_rclone()
     commands: list[list[str]] = []
 
     def run(cmd: list[str], check: bool = False, capture=None):
@@ -347,7 +347,7 @@ def test_ls_negative_max_depth_adds_recursive_flag() -> None:
 
 @pytest.mark.parametrize("case", LS_LISTING_OPTION_CASES, ids=["all", "dirs_only", "files_only"])
 def test_ls_listing_option_adds_expected_flag(case: LsListingOptionCase) -> None:
-    rclone = _bare_rclone_impl()
+    rclone = _bare_rclone()
     commands: list[list[str]] = []
 
     def run(cmd: list[str], check: bool = False, capture=None):
@@ -367,7 +367,7 @@ def test_ls_listing_option_adds_expected_flag(case: LsListingOptionCase) -> None
 
 
 def test_ls_glob_filters_results_client_side() -> None:
-    rclone = _bare_rclone_impl()
+    rclone = _bare_rclone()
     rclone._run = lambda *_args, **_kwargs: subprocess.CompletedProcess(
         [], 0, stdout=_LSJSON_TWO_FILES, stderr=""
     )
@@ -378,7 +378,7 @@ def test_ls_glob_filters_results_client_side() -> None:
 
 
 def test_ls_reverse_order_reverses_results() -> None:
-    rclone = _bare_rclone_impl()
+    rclone = _bare_rclone()
     rclone._run = lambda *_args, **_kwargs: subprocess.CompletedProcess(
         [], 0, stdout=_LSJSON_TWO_FILES, stderr=""
     )
@@ -389,7 +389,7 @@ def test_ls_reverse_order_reverses_results() -> None:
 
 
 def test_ls_random_order_preserves_result_set() -> None:
-    rclone = _bare_rclone_impl()
+    rclone = _bare_rclone()
     rclone._run = lambda *_args, **_kwargs: subprocess.CompletedProcess(
         [], 0, stdout=_LSJSON_TWO_FILES, stderr=""
     )
@@ -400,7 +400,7 @@ def test_ls_random_order_preserves_result_set() -> None:
 
 
 def test_size_files_single_file_delegates_to_size_file() -> None:
-    rclone = _bare_rclone_impl()
+    rclone = _bare_rclone()
     calls: list[str] = []
 
     def size_file(src: str):
@@ -419,7 +419,7 @@ def test_size_files_single_file_delegates_to_size_file() -> None:
 
 def test_size_files_builds_expected_command_vector_and_aggregates(tmp_path: Path) -> None:
     del tmp_path
-    rclone = _bare_rclone_impl()
+    rclone = _bare_rclone()
     commands: list[list[str]] = []
 
     def run(cmd: list[str], check: bool = False, capture=None):
@@ -441,7 +441,7 @@ def test_size_files_builds_expected_command_vector_and_aggregates(tmp_path: Path
 
 
 def test_size_files_fast_list_warns() -> None:
-    rclone = _bare_rclone_impl()
+    rclone = _bare_rclone()
     rclone._run = lambda *_args, **_kwargs: subprocess.CompletedProcess(
         [], 0, stdout=_LSJSON_TWO_FILES, stderr=""
     )
@@ -451,7 +451,7 @@ def test_size_files_fast_list_warns() -> None:
 
 
 def test_diff_builds_expected_command_vector_and_streams_items() -> None:
-    rclone = _bare_rclone_impl()
+    rclone = _bare_rclone()
     commands: list[list[str]] = []
 
     def launch_process(
@@ -485,7 +485,7 @@ def test_diff_builds_expected_command_vector_and_streams_items() -> None:
 
 
 def test_diff_missing_on_dst_adds_one_way_flag() -> None:
-    rclone = _bare_rclone_impl()
+    rclone = _bare_rclone()
     commands: list[list[str]] = []
 
     def launch_process(
@@ -504,7 +504,7 @@ def test_diff_missing_on_dst_adds_one_way_flag() -> None:
 
 
 def test_copy_files_partitions_across_multiple_workers() -> None:
-    rclone = _bare_rclone_impl()
+    rclone = _bare_rclone()
     commands: list[list[str]] = []
     file_contents: dict[str, str] = {}
 
@@ -535,7 +535,7 @@ def test_copy_files_partitions_across_multiple_workers() -> None:
 
 
 def test_copy_files_partition_failure_raises_after_running_all_partitions() -> None:
-    rclone = _bare_rclone_impl()
+    rclone = _bare_rclone()
     commands: list[list[str]] = []
 
     def run(cmd: list[str], check: bool = False, capture=None):
@@ -558,7 +558,7 @@ def test_copy_files_partition_failure_raises_after_running_all_partitions() -> N
 
 
 def test_delete_files_partitions_across_multiple_workers() -> None:
-    rclone = _bare_rclone_impl()
+    rclone = _bare_rclone()
     commands: list[list[str]] = []
     files = ["remoteA:bucketA/a.txt", "remoteB:bucketB/b.txt"]
     expected_groups = group_files(list(files))
@@ -574,7 +574,7 @@ def test_delete_files_partitions_across_multiple_workers() -> None:
 
 
 def test_delete_files_partition_failure_raises_after_running_all_partitions() -> None:
-    rclone = _bare_rclone_impl()
+    rclone = _bare_rclone()
     commands: list[list[str]] = []
     files = ["remoteA:bucketA/a.txt", "remoteB:bucketB/b.txt"]
 

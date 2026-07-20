@@ -67,14 +67,14 @@ _LSJSON_TWO_FILES = json.dumps(
 )
 
 
-def _bare_rclone_impl() -> Rclone:
+def _bare_rclone() -> Rclone:
     rclone = object.__new__(Rclone)
     rclone._backend = ClientBackendAdapter(rclone)
     return rclone
 
 
 def test_fetch_ls_with_none_src_lists_remotes_as_root_dirs() -> None:
-    rclone = _bare_rclone_impl()
+    rclone = _bare_rclone()
     remotes = [Remote(name="remoteA", rclone=rclone), Remote(name="remoteB", rclone=rclone)]
     rclone.listremotes = lambda: remotes
 
@@ -85,7 +85,7 @@ def test_fetch_ls_with_none_src_lists_remotes_as_root_dirs() -> None:
 
 
 def test_fetch_ls_builds_expected_command_vector() -> None:
-    rclone = _bare_rclone_impl()
+    rclone = _bare_rclone()
     commands: list[list[str]] = []
 
     def run(cmd: list[str], check: bool = False, capture=None):
@@ -102,7 +102,7 @@ def test_fetch_ls_builds_expected_command_vector() -> None:
 
 
 def test_fetch_stat_raises_file_not_found_for_missing_path() -> None:
-    rclone = _bare_rclone_impl()
+    rclone = _bare_rclone()
     rclone.ls = lambda *_args, **_kwargs: DirListing([])
 
     with pytest.raises(FileNotFoundError):
@@ -110,7 +110,7 @@ def test_fetch_stat_raises_file_not_found_for_missing_path() -> None:
 
 
 def test_fetch_stat_returns_first_matching_file() -> None:
-    rclone = _bare_rclone_impl()
+    rclone = _bare_rclone()
 
     def run(*_args, **_kwargs):
         return subprocess.CompletedProcess([], 0, stdout=_LSJSON_ONE_FILE, stderr="")
@@ -123,7 +123,7 @@ def test_fetch_stat_returns_first_matching_file() -> None:
 
 
 def test_fetch_modtime_delegates_to_stat() -> None:
-    rclone = _bare_rclone_impl()
+    rclone = _bare_rclone()
 
     class _FakeFile:
         def mod_time(self) -> str:
@@ -141,7 +141,7 @@ def test_fetch_modtime_delegates_to_stat() -> None:
 def test_fetch_modtime_dt_delegates_to_stat() -> None:
     from datetime import datetime
 
-    rclone = _bare_rclone_impl()
+    rclone = _bare_rclone()
     expected = datetime.fromisoformat("2024-01-01T00:00:00+00:00")
 
     class _FakeFile:
@@ -158,7 +158,7 @@ def test_fetch_modtime_dt_delegates_to_stat() -> None:
 
 
 def test_fetch_listremotes_strips_trailing_colon() -> None:
-    rclone = _bare_rclone_impl()
+    rclone = _bare_rclone()
     rclone._run = lambda *_args, **_kwargs: subprocess.CompletedProcess(
         [], 0, stdout="remoteA:\nremoteB:\n", stderr=""
     )
@@ -169,7 +169,7 @@ def test_fetch_listremotes_strips_trailing_colon() -> None:
 
 
 def test_check_exists_true_when_listing_returns_entries() -> None:
-    rclone = _bare_rclone_impl()
+    rclone = _bare_rclone()
 
     def run(*_args, **_kwargs):
         return subprocess.CompletedProcess([], 0, stdout=_LSJSON_ONE_FILE, stderr="")
@@ -180,7 +180,7 @@ def test_check_exists_true_when_listing_returns_entries() -> None:
 
 
 def test_check_exists_false_on_called_process_error() -> None:
-    rclone = _bare_rclone_impl()
+    rclone = _bare_rclone()
 
     def run(*_args, **_kwargs):
         raise subprocess.CalledProcessError(1, ["rclone", "lsjson"])
@@ -191,7 +191,7 @@ def test_check_exists_false_on_called_process_error() -> None:
 
 
 def test_check_is_synced_true_when_check_succeeds() -> None:
-    rclone = _bare_rclone_impl()
+    rclone = _bare_rclone()
     commands: list[list[str]] = []
 
     def run(cmd: list[str], check: bool = False, capture=None):
@@ -207,7 +207,7 @@ def test_check_is_synced_true_when_check_succeeds() -> None:
 
 
 def test_check_is_synced_false_on_called_process_error() -> None:
-    rclone = _bare_rclone_impl()
+    rclone = _bare_rclone()
 
     def run(*_args, **_kwargs):
         raise subprocess.CalledProcessError(1, ["rclone", "check"])
@@ -218,7 +218,7 @@ def test_check_is_synced_false_on_called_process_error() -> None:
 
 
 def test_fetch_size_file_raises_file_not_found_for_missing_path() -> None:
-    rclone = _bare_rclone_impl()
+    rclone = _bare_rclone()
     rclone._run = lambda *_args, **_kwargs: subprocess.CompletedProcess(
         [], 0, stdout="[]", stderr=""
     )
@@ -228,7 +228,7 @@ def test_fetch_size_file_raises_file_not_found_for_missing_path() -> None:
 
 
 def test_fetch_size_file_raises_value_error_for_multiple_matches() -> None:
-    rclone = _bare_rclone_impl()
+    rclone = _bare_rclone()
     rclone._run = lambda *_args, **_kwargs: subprocess.CompletedProcess(
         [], 0, stdout=_LSJSON_TWO_FILES, stderr=""
     )
@@ -238,7 +238,7 @@ def test_fetch_size_file_raises_value_error_for_multiple_matches() -> None:
 
 
 def test_fetch_size_file_returns_size_of_single_match() -> None:
-    rclone = _bare_rclone_impl()
+    rclone = _bare_rclone()
     rclone._run = lambda *_args, **_kwargs: subprocess.CompletedProcess(
         [], 0, stdout=_LSJSON_ONE_FILE, stderr=""
     )
@@ -247,7 +247,7 @@ def test_fetch_size_file_returns_size_of_single_match() -> None:
 
 
 def test_fetch_size_files_empty_input_returns_empty_result() -> None:
-    rclone = _bare_rclone_impl()
+    rclone = _bare_rclone()
 
     result = fetch_size_files(rclone._backend, rclone, "remote:bucket", [])
 
@@ -255,7 +255,7 @@ def test_fetch_size_files_empty_input_returns_empty_result() -> None:
 
 
 def test_fetch_size_files_single_file_delegates_to_size_file() -> None:
-    rclone = _bare_rclone_impl()
+    rclone = _bare_rclone()
     calls: list[str] = []
 
     def size_file(src: str) -> SizeSuffix:
@@ -271,7 +271,7 @@ def test_fetch_size_files_single_file_delegates_to_size_file() -> None:
 
 
 def test_fetch_size_files_builds_expected_command_vector_and_aggregates() -> None:
-    rclone = _bare_rclone_impl()
+    rclone = _bare_rclone()
     commands: list[list[str]] = []
 
     def run(cmd: list[str], check: bool = False, capture=None):
@@ -298,7 +298,7 @@ def test_fetch_size_files_builds_expected_command_vector_and_aggregates() -> Non
 
 
 def test_fetch_size_files_fast_list_warns() -> None:
-    rclone = _bare_rclone_impl()
+    rclone = _bare_rclone()
     rclone._run = lambda *_args, **_kwargs: subprocess.CompletedProcess(
         [], 0, stdout=_LSJSON_TWO_FILES, stderr=""
     )
@@ -314,7 +314,7 @@ def test_fetch_size_files_fast_list_warns() -> None:
 
 
 def test_print_contents_prints_read_text_result(capsys: pytest.CaptureFixture[str]) -> None:
-    rclone = _bare_rclone_impl()
+    rclone = _bare_rclone()
 
     def read_text(src: str) -> str:
         del src
@@ -328,7 +328,7 @@ def test_print_contents_prints_read_text_result(capsys: pytest.CaptureFixture[st
 
 
 def test_stream_diff_builds_expected_command_vector_and_streams_items() -> None:
-    rclone = _bare_rclone_impl()
+    rclone = _bare_rclone()
     commands: list[list[str]] = []
 
     def launch_process(
@@ -362,7 +362,7 @@ def test_stream_diff_builds_expected_command_vector_and_streams_items() -> None:
 
 
 def test_stream_diff_missing_on_dst_adds_one_way_flag() -> None:
-    rclone = _bare_rclone_impl()
+    rclone = _bare_rclone()
     commands: list[list[str]] = []
 
     def launch_process(

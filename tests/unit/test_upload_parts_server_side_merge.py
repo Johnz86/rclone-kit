@@ -23,13 +23,13 @@ from rclone_kit.s3.multipart.upload_parts_server_side_merge import (
 from rclone_kit.s3.types import S3Credentials, S3Provider
 
 
-def _stub_rclone_impl() -> Rclone:
+def _stub_rclone() -> Rclone:
     return object.__new__(Rclone)
 
 
 def _stub_merge_state() -> MergeState:
     return MergeState(
-        rclone=_stub_rclone_impl(),
+        rclone=_stub_rclone(),
         merge_path="merge.json",
         upload_id="upload-id",
         bucket="bucket",
@@ -85,7 +85,7 @@ def test_complete_multipart_upload_raises_s3_merge_error() -> None:
 def test_cleanup_merge_raises_file_not_found_when_destination_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    rclone = _stub_rclone_impl()
+    rclone = _stub_rclone()
     monkeypatch.setattr(rclone, "exists", lambda _src: False)
 
     with pytest.raises(FileNotFoundError):
@@ -95,7 +95,7 @@ def test_cleanup_merge_raises_file_not_found_when_destination_missing(
 def test_cleanup_merge_raises_value_error_on_size_mismatch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    rclone = _stub_rclone_impl()
+    rclone = _stub_rclone()
     monkeypatch.setattr(rclone, "exists", lambda _src: True)
     monkeypatch.setattr(rclone, "size_file", lambda _src: 1)
 
@@ -106,7 +106,7 @@ def test_cleanup_merge_raises_value_error_on_size_mismatch(
 def test_cleanup_merge_raises_s3_merge_error_when_purge_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    rclone = _stub_rclone_impl()
+    rclone = _stub_rclone()
     monkeypatch.setattr(rclone, "exists", lambda _src: True)
     monkeypatch.setattr(rclone, "size_file", lambda _src: 100)
     monkeypatch.setattr(
@@ -123,7 +123,7 @@ def test_cleanup_merge_raises_s3_merge_error_when_purge_fails(
 
 def _stub_merger() -> S3MultiPartMerger:
     merger = cast(S3MultiPartMerger, object.__new__(S3MultiPartMerger))
-    merger.rclone = _stub_rclone_impl()
+    merger.rclone = _stub_rclone()
     merger.state = _stub_merge_state()
     merger.write_thread = None
     merger.client = cast(Any, object())
@@ -135,7 +135,7 @@ def _stub_merger() -> S3MultiPartMerger:
 
 def test_write_merge_state_thread_close_is_idempotent_with_nothing_queued() -> None:
     thread = WriteMergeStateThread(
-        rclone=_stub_rclone_impl(),
+        rclone=_stub_rclone(),
         merge_state=_stub_merge_state(),
         verbose=False,
     )
@@ -218,7 +218,7 @@ def test_merge_closes_write_thread_after_completion_failure(
     point from part-copy retry exhaustion, so merge() must close the write
     thread on this path too.
     """
-    rclone = _stub_rclone_impl()
+    rclone = _stub_rclone()
     monkeypatch.setattr(rclone, "write_text", lambda *_args, **_kwargs: None)
     merger = _stub_merger()
     merger.rclone = rclone
@@ -268,7 +268,7 @@ def test_begin_or_resume_merge_falls_back_to_fresh_merge_on_corrupt_state(
     raises `KeyError`/`MergeStateError`, which `_begin_or_resume_merge` treats as "no
     usable prior state" and falls back to starting a fresh merge instead.
     """
-    rclone = _stub_rclone_impl()
+    rclone = _stub_rclone()
     monkeypatch.setattr(rclone, "get_s3_credentials", lambda **_kwargs: _fake_s3_credentials())
     monkeypatch.setattr(rclone, "read_text", lambda _path: "{}")
     monkeypatch.setattr(
@@ -312,7 +312,7 @@ def test_begin_or_resume_merge_resumes_from_valid_prior_state(
     state's already-finished parts are preserved, only the remaining part
     is left to copy, and no new multipart upload is created.
     """
-    rclone = _stub_rclone_impl()
+    rclone = _stub_rclone()
     monkeypatch.setattr(rclone, "get_s3_credentials", lambda **_kwargs: _fake_s3_credentials())
     monkeypatch.setattr(rclone, "read_text", lambda _path: _valid_merge_state_json())
     monkeypatch.setattr(

@@ -19,7 +19,7 @@ class _FakeProcess:
         return self._poll_result
 
 
-def _bare_rclone_impl() -> Rclone:
+def _bare_rclone() -> Rclone:
     rclone = object.__new__(Rclone)
     rclone._backend = ClientBackendAdapter(rclone)
     return rclone
@@ -29,7 +29,7 @@ def test_launch_http_server_builds_expected_command_vector(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr("rclone_kit.detail.serve_ops.time.sleep", lambda _s: None)
-    rclone = _bare_rclone_impl()
+    rclone = _bare_rclone()
     commands: list[tuple[list[str], Path | None]] = []
 
     def launch(cmd: list[str], capture: bool | None = None, log: Path | None = None) -> Process:
@@ -67,7 +67,7 @@ def test_launch_http_server_includes_log_flags_when_serve_http_log_set(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr("rclone_kit.detail.serve_ops.time.sleep", lambda _s: None)
-    rclone = _bare_rclone_impl()
+    rclone = _bare_rclone()
     commands: list[list[str]] = []
     log_path = tmp_path / "serve.log"
 
@@ -93,7 +93,7 @@ def test_launch_http_server_raises_when_process_fails_to_start(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr("rclone_kit.detail.serve_ops.time.sleep", lambda _s: None)
-    rclone = _bare_rclone_impl()
+    rclone = _bare_rclone()
     rclone._launch_process = lambda *_args, **_kwargs: cast(Process, _FakeProcess(1))
 
     with pytest.raises(ValueError, match="HTTP serve process failed to start"):
@@ -109,7 +109,7 @@ def test_launch_webdav_server_builds_expected_command_vector(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr("rclone_kit.detail.serve_ops.time.sleep", lambda _s: None)
-    rclone = _bare_rclone_impl()
+    rclone = _bare_rclone()
     commands: list[list[str]] = []
 
     def launch(cmd: list[str], capture: bool | None = None, log: Path | None = None) -> Process:
@@ -143,7 +143,7 @@ def test_launch_webdav_server_raises_when_process_fails_to_start(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr("rclone_kit.detail.serve_ops.time.sleep", lambda _s: None)
-    rclone = _bare_rclone_impl()
+    rclone = _bare_rclone()
     rclone._launch_process = lambda *_args, **_kwargs: cast(Process, _FakeProcess(1))
 
     with pytest.raises(ValueError, match="NFS serve process failed to start"):
