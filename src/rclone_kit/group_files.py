@@ -99,10 +99,7 @@ class TreeNode:
         if self.child_nodes:
             msg += "\n"
             for child in self.child_nodes.values():
-                if isinstance(child, TreeNode):
-                    msg += child.__repr__(indent + 2)
-                else:
-                    msg += f"{leftpad}  {child}\n"
+                msg += child.__repr__(indent + 2)
         return msg
 
 
