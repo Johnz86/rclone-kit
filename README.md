@@ -42,7 +42,7 @@ listing = rclone.ls("dst:my-bucket/data", glob="*.png")
 for file in listing.files:
     print(file.path)
 
-rclone.copy("local:/data/incoming", "dst:my-bucket/data")
+rclone.copy("/data/incoming", "dst:my-bucket/data", check=True)
 ```
 
 Already have an `rclone.conf` on disk? Point `RCLONE_CONFIG` at it and pass
@@ -95,4 +95,6 @@ uv run pytest tests/integration
 
 Run `uv run ruff format .` and `uv run ruff check --fix .` before committing.
 
-See `docs/implementation_and_build_pipeline.md` for the implementation, contribution workflow, and build pipeline. See `docs/release_process.md` for release recording and publishing.
+See `docs/production_usage.md` for deployment patterns and complete feature
+examples. Maintainers should also read `docs/code_style.md`,
+`docs/implementation_and_build_pipeline.md`, and `docs/release_process.md`.
