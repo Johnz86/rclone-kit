@@ -90,7 +90,15 @@ def fetch_stat(access: ListingAccess, src: str) -> File:
 
     Raises FileNotFoundError if `src` does not exist.
     """
-    dirlist: DirListing = access.ls(src)
+    try:
+        dirlist: DirListing = access.ls(src)
+    except subprocess.CalledProcessError as error:
+        # On a backend with real hierarchical directories (Drive, SFTP,
+        # local, ...), `ls()` on a nonexistent leaf path fails outright
+        # rather than returning an empty listing, unlike S3-style prefixes
+        # - see `check_exists()` below, which already handles this the
+        # same way for the same reason.
+        raise FileNotFoundError(f"File not found: {src}") from error
     if len(dirlist.files) == 0:
         raise FileNotFoundError(f"File not found: {src}")
     return dirlist.files[0]
@@ -148,11 +156,15 @@ def fetch_size_file(access: ListingAccess, src: str) -> SizeSuffix:
     Raises FileNotFoundError if no file matches `src`, or ValueError
     if more than one file matches.
     """
-    dirlist: DirListing = access.ls(
-        src,
-        listing_option=ListingOption.FILES_ONLY,
-        max_depth=0,
-    )
+    try:
+        dirlist: DirListing = access.ls(
+            src,
+            listing_option=ListingOption.FILES_ONLY,
+            max_depth=0,
+        )
+    except subprocess.CalledProcessError as error:
+        # See the matching comment in fetch_stat() above.
+        raise FileNotFoundError(f"File not found: {src}") from error
     if len(dirlist.files) == 0:
         raise FileNotFoundError(f"File not found: {src}")
     if len(dirlist.files) > 1:
