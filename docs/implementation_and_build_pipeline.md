@@ -331,9 +331,6 @@ The suites have different purposes:
     uv run pytest tests/live/gdrive -m live_gdrive
     ```
 
-    See `remote_oauth_authorization_plan.md` for a fully automated,
-    service-side equivalent of the manual OAuth setup step.
-
   Both suites' `pytest_collection_modifyitems` deselect their tests unless
   the caller passes the matching `-m live_s3`/`-m live_gdrive`, so a bare
   `pytest` run (which would otherwise sweep both directories in via
