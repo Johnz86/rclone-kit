@@ -15,12 +15,20 @@ class S3Provider(Enum):
 
     @staticmethod
     def from_str(value: str) -> "S3Provider":
-        """Convert string to S3Provider."""
+        """Map an rclone `provider` config string to a `S3Provider`.
+
+        Only Backblaze B2 needs a distinct S3 client (unsigned payloads, a
+        default endpoint) - see `create_s3_client`. Every other provider
+        string - AWS, DigitalOcean, Ceph, MinIO, Wasabi, or any other
+        S3-compatible endpoint rclone supports - uses the same generic
+        client, so anything not recognized as Backblaze or DigitalOcean
+        falls back to the generic `S3` provider instead of raising.
+        """
         if value == "b2":
             return S3Provider.BACKBLAZE
         if value == "DigitalOcean":
             return S3Provider.DIGITAL_OCEAN
-        raise ValueError(f"Unknown S3Provider: {value}")
+        return S3Provider.S3
 
 
 @dataclass
