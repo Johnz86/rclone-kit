@@ -300,26 +300,80 @@ The suites have different purposes:
   Mount tests additionally require WinFsp on Windows or FUSE and a usable
   unmount command on Linux. Cloud tests are not part of required pull-request
   CI.
-- `tests/live` exercises the real implementation end-to-end against one
-  actual, fully configured remote, rather than the parametrized
-  environment-variable providers `tests/cloud` covers. It requires
-  `rclone-test.conf` at the repository root - gitignored, never committed -
-  with a `[kinit-s3]` remote (see the exact format in
-  `tests/live/conftest.py`'s missing-config message). It never runs by
-  default: every test carries the `live` marker, and a bare `pytest` run (or
-  any run without `-m live`) deselects the whole directory. Run it
-  explicitly with:
+- `tests/live` exercises the real implementation end-to-end against actual,
+  fully configured remotes, rather than the parametrized environment-variable
+  providers `tests/cloud` covers. Each backend gets its own subdirectory,
+  marker, and config file, so any one of them can be run independently of the
+  others as more providers are added - a contributor with only one backend
+  configured never needs the other's config file present. Neither is part of
+  required pull-request CI.
 
-  ```bash
-  uv run pytest tests/live -m live
-  ```
+  - `tests/live/s3` covers a live Ceph/S3-compatible backend. It requires
+    `rclone-test.conf` at the repository root - gitignored, never committed -
+    with a `[kinit-s3]` remote (see the exact format in
+    `tests/live/s3/conftest.py`'s missing-config message). Run it explicitly
+    with:
 
-  Requesting `-m live` without `rclone-test.conf` present stops the session
-  immediately with a message describing the file to create, instead of
-  letting every test fail individually. All writes and deletes are scoped to
-  the dedicated `rclone-kit-live-test` bucket, created automatically on first
-  use; nothing else on the remote is ever touched. Like cloud tests, this
-  suite is not part of required pull-request CI.
+    ```bash
+    uv run pytest tests/live/s3 -m live_s3
+    ```
+
+  - `tests/live/gdrive` covers a live Google Drive remote and proves the
+    same general (non-S3-optimized) API against a structurally different
+    backend - Drive has no bucket concept, stricter per-user rate limits,
+    and real hierarchical folders instead of S3-style prefixes. It requires
+    `rclone-gdrive.conf` at the repository root (see
+    `tests/live/gdrive/conftest.py`'s missing-config message for the setup
+    command; PowerShell needs the `&` call operator for a quoted executable
+    path). Run it explicitly with:
+
+    ```bash
+    uv run pytest tests/live/gdrive -m live_gdrive
+    ```
+
+    See `remote_oauth_authorization_plan.md` for a fully automated,
+    service-side equivalent of the manual OAuth setup step.
+
+  Both suites' `pytest_collection_modifyitems` deselect their tests unless
+  the caller passes the matching `-m live_s3`/`-m live_gdrive`, so a bare
+  `pytest` run (which would otherwise sweep both directories in via
+  `testpaths`) collects zero tests from either. Once a suite's marker is
+  explicitly requested, it hard-stops the session with `pytest.exit()` if
+  its own config file is missing, rather than letting every test fail
+  individually. All writes and deletes are scoped to a dedicated bucket
+  (`rclone-kit-live-test`, S3) or folder (`rclone-kit-live-test`, Drive);
+  nothing else on either remote is ever touched.
+
+  Each suite's `conftest.py` module is literally named `conftest`, same as
+  its sibling's - test files must reach shared constants through the
+  `live_remote_name`/`live_test_root`/`live_test_bucket` fixtures each
+  `conftest.py` defines, never through `from conftest import ...`. A plain
+  Python import resolves through the process-wide `sys.modules["conftest"]`
+  cache rather than pytest's own per-directory conftest resolution, so once
+  both suites are loaded in the same session - which a bare `pytest` run
+  does for collection alone, even when both end up deselected - whichever
+  sibling's `conftest.py` happened to import first silently wins for both
+  (confirmed live: it swapped `LIVE_REMOTE` between the two suites before
+  the fixture-based fix). This constraint carries forward to every future
+  provider added under `tests/live/`.
+
+  Live-testing Drive surfaced two real gaps in the generic (non-S3) listing
+  path, both rooted in the same fact: `ls()` on a nonexistent leaf path
+  fails outright on a backend with real hierarchical directories (Drive,
+  SFTP, local, ...) instead of returning an empty listing the way it does
+  for an S3-style prefix, since S3 has no real "directory" to fail to
+  resolve. `fetch_stat()`/`fetch_size_file()` (`operations/listing_ops.py`)
+  are fixed: they now catch that `CalledProcessError` and raise the
+  documented `FileNotFoundError`, the same way `check_exists()` already did
+  - `tests/live/gdrive/test_live_gdrive_ls_and_stat.py`'s missing-object
+  tests exercise this directly. `scan_missing_folders()`'s background
+  thread still silently swallows the same exception instead of propagating
+  it when a dst root doesn't exist at all, yielding an empty (wrong) result
+  rather than raising or reporting the whole dst as missing - tracked, not
+  fixed, in the "Improvement roadmap" table below;
+  `test_scan_missing_folders_finds_the_nested_directory_before_any_copy`
+  routes around it by writing a sibling file first so the dst root exists,
+  and says so in its own docstring.
 
 Run the canonical platform build as well when changing packaging, the build
 backend, runtime artifact code, entry points, dependencies, licenses, or
@@ -635,6 +689,7 @@ future session, they will have moved again.
 | Release publication | Done: `.github/workflows/release.yaml` builds, verifies, and publishes both certified wheels to PyPI via trusted publishing (OIDC, no stored token) on `v*` tags, gated by the `pypi-release` GitHub Environment. See `docs/release_process.md`. Artifact attestations (`actions/attest-build-provenance` or equivalent) are not yet added. | Add build provenance attestations to the `publish` job's uploaded wheels if supply-chain verification beyond trusted publishing becomes a requirement. | A published wheel carries a verifiable attestation, not just a trusted-publishing OIDC trail. |
 | Build isolation | Smoke tests poison proxies but do not enforce network denial. | Run them in a network-disabled container or namespace where supported. | A deliberate network attempt fails while the bundled executable still runs. |
 | Source distributions | An sdist cannot yet build a complete certified wheel. | Keep wheel-only releases, or add a verified artifact input/download hook and test sdist-to-wheel builds on every target. | A built-from-sdist wheel passes the same verifier and smoke test. |
+| `scan_missing_folders()` on hierarchical backends | Found live against `tests/live/gdrive`, related to but distinct from the now-fixed `fetch_stat()`/`fetch_size_file()` gap: when the dst root doesn't exist at all on a backend with real directories (Drive, SFTP, local, ...), the underlying `ls()` call's `CalledProcessError` happens inside `scan_missing_folders()`'s background `ThreadPoolExecutor` worker and is never propagated to the generator - the thread just crashes (a bare traceback to stderr), and the generator silently yields an empty result instead of raising or reporting the whole dst as missing. | Make the worker thread propagate a real listing failure to the generator (raise, or explicitly detect a missing dst root and yield it as entirely missing) instead of dropping it. | A unit test with a fake backend that raises "directory not found" for a missing dst root proves `scan_missing_folders()` either raises or correctly reports the whole dst as missing, not silently empty. |
 
 Keep improvement pull requests small. Establish the contract with tests,
 change one boundary, preserve compatibility, and remove the old path only
