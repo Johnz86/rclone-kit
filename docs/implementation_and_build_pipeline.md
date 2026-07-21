@@ -300,6 +300,26 @@ The suites have different purposes:
   Mount tests additionally require WinFsp on Windows or FUSE and a usable
   unmount command on Linux. Cloud tests are not part of required pull-request
   CI.
+- `tests/live` exercises the real implementation end-to-end against one
+  actual, fully configured remote, rather than the parametrized
+  environment-variable providers `tests/cloud` covers. It requires
+  `rclone-test.conf` at the repository root - gitignored, never committed -
+  with a `[kinit-s3]` remote (see the exact format in
+  `tests/live/conftest.py`'s missing-config message). It never runs by
+  default: every test carries the `live` marker, and a bare `pytest` run (or
+  any run without `-m live`) deselects the whole directory. Run it
+  explicitly with:
+
+  ```bash
+  uv run pytest tests/live -m live
+  ```
+
+  Requesting `-m live` without `rclone-test.conf` present stops the session
+  immediately with a message describing the file to create, instead of
+  letting every test fail individually. All writes and deletes are scoped to
+  the dedicated `rclone-kit-live-test` bucket, created automatically on first
+  use; nothing else on the remote is ever touched. Like cloud tests, this
+  suite is not part of required pull-request CI.
 
 Run the canonical platform build as well when changing packaging, the build
 backend, runtime artifact code, entry points, dependencies, licenses, or
