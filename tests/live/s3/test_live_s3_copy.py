@@ -10,7 +10,7 @@ import pytest
 
 from rclone_kit import Rclone
 
-pytestmark = pytest.mark.live
+pytestmark = pytest.mark.live_s3
 
 
 def test_copy_to_transfers_a_single_file(

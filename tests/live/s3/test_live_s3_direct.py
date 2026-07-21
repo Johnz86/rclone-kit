@@ -13,10 +13,9 @@ from pathlib import Path
 
 import pytest
 
-from conftest import LIVE_TEST_BUCKET
 from rclone_kit import PartInfo, Rclone, SizeSuffix
 
-pytestmark = pytest.mark.live
+pytestmark = pytest.mark.live_s3
 
 pytest.importorskip("boto3")
 
@@ -36,13 +35,13 @@ def test_copy_file_s3_uploads_a_local_file_directly(
 
 
 def test_get_s3_credentials_resolves_the_configured_remote(
-    live_rclone: Rclone, live_test_prefix: str
+    live_rclone: Rclone, live_test_prefix: str, live_test_bucket: str
 ) -> None:
     credentials = live_rclone.get_s3_credentials(live_test_prefix)
 
     assert credentials.access_key_id
     assert credentials.secret_access_key
-    assert credentials.bucket_name == LIVE_TEST_BUCKET
+    assert credentials.bucket_name == live_test_bucket
 
 
 def test_copy_file_s3_resumable_uploads_a_multipart_file(

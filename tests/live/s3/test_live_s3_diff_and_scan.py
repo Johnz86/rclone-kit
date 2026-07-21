@@ -8,9 +8,9 @@ from pathlib import Path
 
 import pytest
 
-from rclone_kit import Dir, DiffItem, DiffOption, DiffType, Rclone
+from rclone_kit import DiffItem, DiffOption, DiffType, Dir, Rclone
 
-pytestmark = pytest.mark.live
+pytestmark = pytest.mark.live_s3
 
 
 def test_diff_reports_equal_after_a_full_copy(

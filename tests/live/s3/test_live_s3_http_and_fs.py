@@ -10,7 +10,7 @@ import pytest
 
 from rclone_kit import Range, Rclone
 
-pytestmark = pytest.mark.live
+pytestmark = pytest.mark.live_s3
 
 
 def test_serve_http_reports_size_and_serves_full_and_ranged_content(

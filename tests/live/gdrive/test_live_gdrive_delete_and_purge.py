@@ -10,7 +10,7 @@ import pytest
 
 from rclone_kit import Rclone
 
-pytestmark = pytest.mark.live
+pytestmark = pytest.mark.live_gdrive
 
 
 def test_delete_files_removes_a_single_path(live_rclone: Rclone, live_test_prefix: str) -> None:

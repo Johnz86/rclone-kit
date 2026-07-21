@@ -7,15 +7,13 @@ than a disposable test prefix.
 
 import pytest
 
-from conftest import LIVE_REMOTE
 from rclone_kit import Rclone
 
+pytestmark = pytest.mark.live_s3
 
-pytestmark = pytest.mark.live
 
-
-def test_ls_lists_the_remote_root(live_rclone: Rclone) -> None:
-    listing = live_rclone.ls(f"{LIVE_REMOTE}:", max_depth=0)
+def test_ls_lists_the_remote_root(live_rclone: Rclone, live_remote_name: str) -> None:
+    listing = live_rclone.ls(f"{live_remote_name}:", max_depth=0)
 
     assert len(listing.dirs) > 0
 

@@ -226,7 +226,8 @@ markers = [
     "cloud: requires external cloud credentials",
     "mount: requires operating-system mount support",
     "network: requires non-loopback network access",
-    "live: exercises the real implementation against tests/../rclone-test.conf; run explicitly with `pytest -m live`",
+    "live_s3: exercises the real implementation against a real S3/Ceph remote via rclone-test.conf; run explicitly with `pytest -m live_s3`",
+    "live_gdrive: exercises the real implementation against a real Google Drive remote via rclone-gdrive.conf; run explicitly with `pytest -m live_gdrive`",
 ]
 
 [project.scripts]

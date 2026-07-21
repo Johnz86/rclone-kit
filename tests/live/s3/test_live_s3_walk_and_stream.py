@@ -10,7 +10,7 @@ import pytest
 
 from rclone_kit import DirListing, FileItem, Rclone
 
-pytestmark = pytest.mark.live
+pytestmark = pytest.mark.live_s3
 
 
 def test_walk_visits_every_directory_in_the_tree(

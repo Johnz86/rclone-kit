@@ -6,22 +6,23 @@ of read-only introspection methods every other live test relies on.
 
 import pytest
 
-from conftest import LIVE_REMOTE, LIVE_TEST_ROOT
 from rclone_kit import Rclone
 
-pytestmark = pytest.mark.live
+pytestmark = pytest.mark.live_s3
 
 
-def test_listremotes_reports_the_configured_remote(live_rclone: Rclone) -> None:
+def test_listremotes_reports_the_configured_remote(
+    live_rclone: Rclone, live_remote_name: str
+) -> None:
     remote_names = [remote.name for remote in live_rclone.listremotes()]
 
-    assert LIVE_REMOTE in remote_names
+    assert live_remote_name in remote_names
 
 
-def test_configured_remote_is_s3(live_rclone: Rclone) -> None:
+def test_configured_remote_is_s3(live_rclone: Rclone, live_test_root: str) -> None:
     """`is_s3()` needs a full object path, not a bare bucket root -
     `S3PathInfo.from_str` requires a bucket *and* a key."""
-    assert live_rclone.is_s3(f"{LIVE_TEST_ROOT}/probe-path.txt") is True
+    assert live_rclone.is_s3(f"{live_test_root}/probe-path.txt") is True
 
 
 def test_config_paths_reports_the_real_config_file(live_rclone: Rclone) -> None:

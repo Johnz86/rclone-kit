@@ -10,7 +10,7 @@ import pytest
 
 from rclone_kit import Rclone, SizeSuffix
 
-pytestmark = pytest.mark.live
+pytestmark = pytest.mark.live_s3
 
 
 def test_write_text_then_read_text_round_trips(live_rclone: Rclone, live_test_prefix: str) -> None:
