@@ -281,11 +281,20 @@ def stream_diff(
         cmd += ["--one-way"]
     if other_args:
         cmd += other_args
-    proc = backend.launch(tuple(cmd), capture=True)
-    item: DiffItem
-    for item in diff_stream_from_running_process(
-        running_process=proc, src_slug=src, dst_slug=dst, diff_option=diff_option
-    ):
-        if item is None:
-            break
-        yield item
+    with TemporaryDirectory() as tmpdir:
+        # `launch(capture=True)` merges stderr into stdout, so without a
+        # dedicated `--log-file`, rclone's own INFO/ERROR/NOTICE lines
+        # interleave with the `--missing-on-dst`/`--missing-on-src` report
+        # (also written to stdout via the trailing `-`), making the report's
+        # plain per-line paths indistinguishable from rclone's own logging.
+        # Routing that logging to a private file instead leaves stdout with
+        # only the report content.
+        log_path = Path(tmpdir) / "rclone-check.log"
+        proc = backend.launch(tuple(cmd), capture=True, log=log_path)
+        item: DiffItem
+        for item in diff_stream_from_running_process(
+            running_process=proc, src_slug=src, dst_slug=dst, diff_option=diff_option
+        ):
+            if item is None:
+                break
+            yield item

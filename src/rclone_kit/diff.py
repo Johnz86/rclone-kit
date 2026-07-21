@@ -49,14 +49,15 @@ class DiffItem:
 
 
 def _parse_missing_on_src_dst(line: str) -> str | None:
-    if line.endswith("does-not-exist"):
-        parts = line.split(" : ", 1)
-        if len(parts) < 1:
-            return None
-        right = parts[1]
-        file_path = right.split(":", 1)[0]
-        return file_path.strip()
-    return None
+    """A `--missing-on-dst`/`--missing-on-src` report line is a bare
+    relative path, one per line, with nothing else on it.
+
+    This only works because `stream_diff` gives rclone's own logging a
+    dedicated `--log-file` rather than letting it merge into stdout - the
+    stream this function reads from carries only the report itself.
+    """
+    stripped = line.strip()
+    return stripped or None
 
 
 def _classify_diff(
