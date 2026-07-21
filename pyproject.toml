@@ -226,6 +226,7 @@ markers = [
     "cloud: requires external cloud credentials",
     "mount: requires operating-system mount support",
     "network: requires non-loopback network access",
+    "live: exercises the real implementation against tests/../rclone-test.conf; run explicitly with `pytest -m live`",
 ]
 
 [project.scripts]
