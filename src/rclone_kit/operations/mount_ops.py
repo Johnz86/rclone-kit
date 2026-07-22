@@ -95,6 +95,25 @@ def launch_mount(
     return mount
 
 
+def _add_flag(
+    other_args: list[str],
+    flag: str,
+    value: str | None = None,
+    *,
+    skip_if_present: bool = True,
+) -> None:
+    """Append `flag` (and `value`, if given) to `other_args`.
+
+    A no-op when `skip_if_present` and `flag` is already present, so callers
+    never override a flag the caller explicitly passed in `other_args`.
+    """
+    if skip_if_present and flag in other_args:
+        return
+    other_args.append(flag)
+    if value is not None:
+        other_args.append(value)
+
+
 def launch_s3_mount(
     access: MountAccess,
     url: str,
@@ -116,30 +135,27 @@ def launch_s3_mount(
     other_args = other_args or []
     if modtime_strategy is not None:
         other_args.append(f"--{modtime_strategy.value}")
-    if (vfs_cache_mode in {"full", "writes"}) and (
-        transfers is not None and FLAG_TRANSFERS not in other_args
-    ):
-        other_args.append(FLAG_TRANSFERS)
-        other_args.append(str(transfers))
-    if dir_cache_time is not None and "--dir-cache-time" not in other_args:
-        other_args.append("--dir-cache-time")
-        other_args.append(dir_cache_time)
-    if vfs_disk_space_total_size is not None and "--vfs-cache-max-size" not in other_args:
-        other_args.append("--vfs-cache-max-size")
-        other_args.append(vfs_disk_space_total_size)
-    if vfs_refresh and "--vfs-refresh" not in other_args:
-        other_args.append("--vfs-refresh")
-    if attribute_timeout is not None and "--attr-timeout" not in other_args:
-        other_args.append("--attr-timeout")
-        other_args.append(attribute_timeout)
+    if (vfs_cache_mode in {"full", "writes"}) and transfers is not None:
+        _add_flag(other_args, FLAG_TRANSFERS, str(transfers))
+    if dir_cache_time is not None:
+        _add_flag(other_args, "--dir-cache-time", dir_cache_time)
+    if vfs_disk_space_total_size is not None:
+        _add_flag(other_args, "--vfs-cache-max-size", vfs_disk_space_total_size)
+    if vfs_refresh:
+        _add_flag(other_args, "--vfs-refresh")
+    if attribute_timeout is not None:
+        _add_flag(other_args, "--attr-timeout", attribute_timeout)
     if vfs_read_chunk_streams:
-        other_args.append("--vfs-read-chunk-streams")
-        other_args.append(str(vfs_read_chunk_streams))
+        _add_flag(
+            other_args,
+            "--vfs-read-chunk-streams",
+            str(vfs_read_chunk_streams),
+            skip_if_present=False,
+        )
     if vfs_read_chunk_size:
-        other_args.append("--vfs-read-chunk-size")
-        other_args.append(vfs_read_chunk_size)
+        _add_flag(other_args, "--vfs-read-chunk-size", vfs_read_chunk_size, skip_if_present=False)
     if vfs_fast_fingerprint:
-        other_args.append("--vfs-fast-fingerprint")
+        _add_flag(other_args, "--vfs-fast-fingerprint", skip_if_present=False)
 
     other_args = other_args if other_args else None
     return access.mount(
