@@ -14,19 +14,6 @@ class Args:
     src: str
     verbose: bool
 
-    def __repr__(self):
-        return f"Args(config_path={self.config_path}, src={self.src}, verbose={self.verbose})"
-
-    def __str__(self):
-        return repr(self)
-
-
-def list_files(rclone: Rclone, path: str):
-    """List files in a remote path."""
-    for dirlisting in rclone.walk(path):
-        for file in dirlisting.files:
-            print(file.path)
-
 
 def _parse_args() -> Args:
     parser = argparse.ArgumentParser(description="List files in a remote path.")

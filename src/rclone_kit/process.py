@@ -35,7 +35,6 @@ def _spawn_bytes_mode(cmd: list[str], kwargs: dict) -> subprocess.Popen[bytes]:
 
 @dataclass
 class ProcessArgs:
-    cmd: list[str]
     rclone_conf: Path | Config | None
     rclone_exe: Path
     cmd_list: list[str]

@@ -69,7 +69,6 @@ class MergeState:
     ) -> None:
         self.rclone = rclone
         self.merge_path: str = merge_path
-        self.merge_parts_path: str = f"{merge_path}/merge"
         self.upload_id: str = upload_id
         self.bucket: str = bucket
         self.dst_key: str = dst_key
@@ -121,12 +120,3 @@ class MergeState:
 
     def __repr__(self):
         return self.to_json_str()
-
-    def write(self, rclone: MultipartAccess, dst: str) -> None:
-        json_str = self.to_json_str()
-        rclone.write_text(text=json_str, dst=dst)
-
-    def read(self, rclone: MultipartAccess, src: str) -> None:
-        json_str = rclone.read_text(src)
-        json_dict = json.loads(json_str)
-        self.finished = FinishedPiece.from_json_array(json_dict["finished"])

@@ -44,7 +44,7 @@ def _make_process(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Process:
     monkeypatch.setattr(process_module, "_spawn_bytes_mode", lambda _cmd, _kwargs: _FakePopen())
     exe = tmp_path / "rclone"
     exe.touch()
-    return Process(ProcessArgs(cmd=[], rclone_conf=None, rclone_exe=exe, cmd_list=["version"]))
+    return Process(ProcessArgs(rclone_conf=None, rclone_exe=exe, cmd_list=["version"]))
 
 
 def test_process_registers_itself_and_dispose_discards(

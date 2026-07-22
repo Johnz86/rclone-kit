@@ -95,7 +95,6 @@ assert on_exit_cleanup_id not in registered, (
 
 proc = Process(
     ProcessArgs(
-        cmd=[],
         rclone_conf=None,
         rclone_exe=Path(sys.executable),
         cmd_list=["--version"],

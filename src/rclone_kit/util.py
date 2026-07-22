@@ -24,7 +24,6 @@ from rclone_kit.process_tree import terminate_process_tree
 from rclone_kit.remote import Remote
 from rclone_kit.rpath import RPath
 from rclone_kit.runtime.rclone_binary import resolve_rclone_executable
-from rclone_kit.types import S3PathInfo
 
 if TYPE_CHECKING:
     from rclone_kit.access import DomainAccess
@@ -373,11 +372,6 @@ def rclone_execute(
         clear_temp_config_file(tmpfile)
         if process is not None:
             _LIVE_SUBPROCESSES.discard(process)
-
-
-def split_s3_path(path: str) -> S3PathInfo:
-    """Parse an rclone S3-style path into its remote, bucket, and key."""
-    return S3PathInfo.from_str(path)
 
 
 def random_str(length: int) -> str:

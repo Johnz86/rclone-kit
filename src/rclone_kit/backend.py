@@ -62,7 +62,6 @@ class CliRcloneBackend:
         log: Path | None = None,
     ) -> Process:
         args = ProcessArgs(
-            cmd=list(command),
             rclone_conf=self.rclone_config,
             rclone_exe=self.rclone_exe,
             cmd_list=list(command),

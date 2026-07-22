@@ -19,13 +19,6 @@ class Args:
     verbose: bool
 
 
-def list_files(rclone: Rclone, path: str):
-    """List files in a remote path."""
-    for dirlisting in rclone.walk(path):
-        for file in dirlisting.files:
-            print(file.path)
-
-
 def _parse_args() -> Args:
     parser = argparse.ArgumentParser(description="List files in a remote path.")
     parser.add_argument("src", help="File to copy")
