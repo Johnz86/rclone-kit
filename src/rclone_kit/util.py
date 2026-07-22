@@ -333,7 +333,6 @@ def rclone_execute(
     capture: bool | Path | None = None,
     verbose: bool | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    tmpfile: Path | None = None
     verbose = get_verbose(verbose)
 
     output_file: Path | None = None
@@ -347,9 +346,7 @@ def rclone_execute(
     process: subprocess.Popen[str] | None = None
     try:
         if isinstance(rclone_conf, Config):
-            tmpfile = make_temp_config_file()
-            tmpfile.write_text(rclone_conf.text, encoding="utf-8")
-            rclone_conf = tmpfile
+            rclone_conf = rclone_conf.materialize(make_temp_config_file)
 
         full_cmd = [str(rclone_exe.resolve())]
         if rclone_conf:
@@ -395,7 +392,6 @@ def rclone_execute(
     finally:
         if file_handle is not None:
             file_handle.close()
-        clear_temp_config_file(tmpfile)
         if process is not None:
             _LIVE_SUBPROCESSES.discard(process)
 

@@ -1,6 +1,9 @@
 import contextlib
 import json
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
+from threading import Lock
 
 from rclone_kit.exceptions import ConfigParseError
 
@@ -62,6 +65,8 @@ class Config:
                 json.JSONDecodeError, TypeError, AttributeError, AssertionError
             ):
                 self.text = _json_to_rclone_config_str_or_raise(self.text)
+        self._materialized_path: Path | None = None
+        self._materialize_lock = Lock()
 
     @staticmethod
     def from_json(json_data: dict) -> "Config":
@@ -73,6 +78,25 @@ class Config:
 
     def parse(self) -> Parsed:
         return Parsed.parse(self.text)
+
+    def materialize(self, make_temp_config_file: Callable[[], Path]) -> Path:
+        """Return a temp config file backing `self.text`, writing it at most once.
+
+        Repeated calls (from repeated `rclone_execute`/backend calls sharing
+        this same `Config` instance) reuse the same file instead of
+        mkdtemp-ing and writing identical content every time. Takes
+        `make_temp_config_file` as a parameter rather than importing
+        `rclone_kit.util` directly, since `util.py` already imports `Config`
+        from this module. The returned path outlives this call - cleanup is
+        `make_temp_config_file`'s caller's responsibility (process-exit
+        cleanup, in practice), not this method's.
+        """
+        with self._materialize_lock:
+            if self._materialized_path is None:
+                path = make_temp_config_file()
+                path.write_text(self.text, encoding="utf-8")
+                self._materialized_path = path
+            return self._materialized_path
 
 
 def parse_rclone_config(content: str) -> Parsed:
