@@ -26,7 +26,7 @@ from rclone_kit.file import File
 from rclone_kit.group_files import group_files
 from rclone_kit.remote import Remote
 from rclone_kit.types import SizeSuffix
-from rclone_kit.util import get_check, get_verbose
+from rclone_kit.util import get_check, get_verbose, write_files_from
 
 logger = logging.getLogger(__name__)
 
@@ -229,10 +229,8 @@ def copy_files_partitioned(
                     filelist: list[str] = []
                     filepath: Path
                     if isinstance(files, list):
-                        include_files_txt = Path(tmpdir) / "include_files.txt"
-                        include_files_txt.write_text("\n".join(files), encoding="utf-8")
                         filelist = list(files)
-                        filepath = Path(include_files_txt)
+                        filepath = write_files_from(tmpdir, files)
                     elif isinstance(files, Path):
                         filelist = [f.strip() for f in files.read_text().splitlines() if f.strip()]
                         filepath = files
@@ -339,8 +337,7 @@ def delete_files_partitioned(
                 files=remote_files, check=check, remote=remote
             ) -> subprocess.CompletedProcess[str]:
                 with TemporaryDirectory() as tmpdir:
-                    include_files_txt = Path(tmpdir) / "include_files.txt"
-                    include_files_txt.write_text("\n".join(files), encoding="utf-8")
+                    include_files_txt = write_files_from(tmpdir, files)
 
                     cmd_list: list[str] = [
                         "delete",

@@ -20,7 +20,7 @@ from rclone_kit.file import File
 from rclone_kit.remote import Remote
 from rclone_kit.rpath import RPath
 from rclone_kit.types import ListingOption, Order, SizeResult, SizeSuffix
-from rclone_kit.util import get_check, get_verbose, to_path
+from rclone_kit.util import get_check, get_verbose, to_path, write_files_from
 
 _MIN_FILES_FOR_BATCH_LISTING = 2
 
@@ -201,8 +201,7 @@ def fetch_size_files(
 
     cmd = ["lsjson", src, "--files-only", "-R"]
     with TemporaryDirectory() as tmpdir:
-        include_files_txt = Path(tmpdir) / "include_files.txt"
-        include_files_txt.write_text("\n".join(files), encoding="utf-8")
+        include_files_txt = write_files_from(tmpdir, files)
         cmd += [FLAG_FILES_FROM, str(include_files_txt)]
         if fast_list:
             cmd.append(FLAG_FAST_LIST)

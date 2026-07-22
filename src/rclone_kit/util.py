@@ -387,3 +387,13 @@ def rclone_execute(
 def random_str(length: int) -> str:
     alphabet = string.ascii_lowercase + string.digits
     return "".join(secrets.choice(alphabet) for _ in range(length))
+
+
+def write_files_from(tmpdir: Path | str, files: list[str]) -> Path:
+    """Write `files`, one per line, to `include_files.txt` inside `tmpdir`.
+
+    Returns the path to pass to rclone's `--files-from` flag.
+    """
+    include_files_txt = Path(tmpdir) / "include_files.txt"
+    include_files_txt.write_text("\n".join(files), encoding="utf-8")
+    return include_files_txt
