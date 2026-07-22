@@ -14,6 +14,7 @@ import tempfile
 import threading
 import warnings
 import weakref
+from collections.abc import Callable
 from pathlib import Path
 from threading import Lock
 from typing import TYPE_CHECKING, Any
@@ -42,7 +43,31 @@ _LIVE_SUBPROCESSES: weakref.WeakSet[subprocess.Popen[str]] = weakref.WeakSet()
 _FREE_PORT_RANGE_START = 10000
 _FREE_PORT_RANGE_END = 20000
 _FREE_PORT_MAX_ATTEMPTS = 20
-_exit_cleanup_lock = Lock()
+
+
+def make_atexit_registrar(*handlers: Callable[[], None]) -> Callable[[], None]:
+    """Build a thread-safe "register these `atexit` handlers exactly once" callable.
+
+    Each returned callable owns its own lock and a function-attribute
+    registration flag (the same lock-plus-flag idiom
+    `chunk_store.get_chunk_tmpdir` uses for its own first-use guard, stored
+    on the callable's own `__dict__` so tests can reset it), so independent
+    call sites - config cleanup, process cleanup, chunk-file cleanup - never
+    contend with each other, and concurrent callers of the same site only
+    ever trigger one `atexit.register` per handler.
+    """
+    lock = Lock()
+
+    def _register() -> None:
+        with lock:
+            state = _register.__dict__
+            if state.get("registered"):
+                return
+            for handler in handlers:
+                atexit.register(handler)
+            state["registered"] = True
+
+    return _register
 
 
 def _clean_configs(signum: int | None = None, _frame: object | None = None) -> None:
@@ -71,30 +96,15 @@ def _terminate_live_subprocesses() -> None:
         terminate_process_tree(process.pid)
 
 
-def _register_exit_cleanup_handlers() -> None:
-    """Register this module's `atexit` handlers, once, the first time either
-    tracked resource is created.
-
-    Called from `make_temp_config_file` and `rclone_execute` - the sole
-    producers of `_RCLONE_CONFIGS_LIST` and `_LIVE_SUBPROCESSES`
-    respectively - rather than at import time, so a process that merely
-    imports `rclone_kit` without ever creating a temp config file or
-    running an rclone subprocess never wires up either handler. Both
-    handlers are registered together, since either kind of tracked resource
-    existing is enough to make both worth draining at exit. Guarded by
-    `_exit_cleanup_lock` and a function-attribute flag (the same
-    lock-plus-flag idiom `chunk_store.get_chunk_tmpdir` uses for its own
-    first-use guard) so concurrent callers - `rclone_execute` runs from a
-    `ThreadPoolExecutor` in `copy_files`/`delete_files` - only ever trigger
-    one `atexit.register` call each.
-    """
-    with _exit_cleanup_lock:
-        state = _register_exit_cleanup_handlers.__dict__
-        if state.get("registered"):
-            return
-        atexit.register(_clean_configs)
-        atexit.register(_terminate_live_subprocesses)
-        state["registered"] = True
+# Registers this module's `atexit` handlers, once, the first time either
+# tracked resource is created. Called from `make_temp_config_file` and
+# `rclone_execute` - the sole producers of `_RCLONE_CONFIGS_LIST` and
+# `_LIVE_SUBPROCESSES` respectively - rather than at import time, so a
+# process that merely imports `rclone_kit` without ever creating a temp
+# config file or running an rclone subprocess never wires up either
+# handler. Both handlers are registered together, since either kind of
+# tracked resource existing is enough to make both worth draining at exit.
+_register_exit_cleanup_handlers = make_atexit_registrar(_clean_configs, _terminate_live_subprocesses)
 
 
 def register_signal_cleanup() -> None:

@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from rclone_kit import process as process_module
+from rclone_kit import util as util_module
 from rclone_kit.process import Process, ProcessArgs
 
 
@@ -74,7 +75,7 @@ def test_process_does_not_register_atexit_per_instance(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     register_calls: list[object] = []
-    monkeypatch.setattr(process_module.atexit, "register", register_calls.append)
+    monkeypatch.setattr(util_module.atexit, "register", register_calls.append)
     monkeypatch.setattr(process_module._register_exit_cleanup_handlers, "__dict__", {})
 
     _make_process(monkeypatch, tmp_path)
