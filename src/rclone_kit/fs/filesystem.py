@@ -1,5 +1,6 @@
 import abc
 import logging
+import os
 import shutil
 import warnings
 from collections.abc import Generator
@@ -127,9 +128,14 @@ class RealFS(FS):
         super().__init__()
 
     def ls(self, path: Path | str) -> tuple[list[str], list[str]]:
-        files_and_dirs = [str(p) for p in Path(path).iterdir()]
-        files = [f for f in files_and_dirs if Path(f).is_file()]
-        dirs = [d for d in files_and_dirs if Path(d).is_dir()]
+        files: list[str] = []
+        dirs: list[str] = []
+        with os.scandir(path) as entries:
+            for entry in entries:
+                if entry.is_file():
+                    files.append(entry.path)
+                if entry.is_dir():
+                    dirs.append(entry.path)
         return files, dirs
 
     def cwd(self) -> "FSPath":
