@@ -30,37 +30,25 @@ class S3Config:
         self.verbose = self.verbose or False
 
 
-def _create_backblaze_s3_client(s3_creds: S3Credentials, s3_config: S3Config) -> BaseClient:
-    """Create and return an S3 client."""
-    region_name = s3_creds.region_name
+def _create_s3_client(
+    s3_creds: S3Credentials,
+    s3_config: S3Config,
+    *,
+    default_endpoint: str | None = None,
+    normalize_schema_naive_endpoint: bool = False,
+    payload_signing_enabled: bool | None = None,
+) -> BaseClient:
+    """Create and return an S3 client, shared by every provider-specific builder."""
     access_key = s3_creds.access_key_id
     secret_key = s3_creds.secret_access_key
     endpoint_url = s3_creds.endpoint_url
-    endpoint_url = endpoint_url or _DEFAULT_BACKBLAZE_ENDPOINT
-    s3_config.resolve_defaults()
-    session = Session()
-    return session.client(
-        service_name="s3",
-        aws_access_key_id=access_key,
-        aws_secret_access_key=secret_key,
-        endpoint_url=endpoint_url,
-        config=Config(
-            signature_version="s3v4",
-            region_name=region_name,
-            max_pool_connections=s3_config.max_pool_connections,
-            read_timeout=s3_config.timeout_read,
-            connect_timeout=s3_config.timeout_connection,
-            s3={"payload_signing_enabled": False},
-        ),
-    )
-
-
-def _create_unknown_s3_client(s3_creds: S3Credentials, s3_config: S3Config) -> BaseClient:
-    """Create and return an S3 client."""
-    access_key = s3_creds.access_key_id
-    secret_key = s3_creds.secret_access_key
-    endpoint_url = s3_creds.endpoint_url
-    if (endpoint_url is not None) and not (endpoint_url.startswith("http")):
+    if default_endpoint is not None:
+        endpoint_url = endpoint_url or default_endpoint
+    if (
+        normalize_schema_naive_endpoint
+        and endpoint_url is not None
+        and not endpoint_url.startswith("http")
+    ):
         if s3_config.verbose:
             warnings.warn(
                 f"Endpoint URL is schema naive: {endpoint_url}, assuming HTTPS", stacklevel=2
@@ -68,19 +56,37 @@ def _create_unknown_s3_client(s3_creds: S3Credentials, s3_config: S3Config) -> B
         endpoint_url = f"https://{endpoint_url}"
     s3_config.resolve_defaults()
     session = Session()
+    config_kwargs: dict = {
+        "signature_version": "s3v4",
+        "region_name": s3_creds.region_name,
+        "max_pool_connections": s3_config.max_pool_connections,
+        "read_timeout": s3_config.timeout_read,
+        "connect_timeout": s3_config.timeout_connection,
+    }
+    if payload_signing_enabled is not None:
+        config_kwargs["s3"] = {"payload_signing_enabled": payload_signing_enabled}
     return session.client(
         service_name="s3",
         aws_access_key_id=access_key,
         aws_secret_access_key=secret_key,
         endpoint_url=endpoint_url,
-        config=Config(
-            signature_version="s3v4",
-            region_name=s3_creds.region_name,
-            max_pool_connections=s3_config.max_pool_connections,
-            read_timeout=s3_config.timeout_read,
-            connect_timeout=s3_config.timeout_connection,
-        ),
+        config=Config(**config_kwargs),
     )
+
+
+def _create_backblaze_s3_client(s3_creds: S3Credentials, s3_config: S3Config) -> BaseClient:
+    """Create and return an S3 client."""
+    return _create_s3_client(
+        s3_creds,
+        s3_config,
+        default_endpoint=_DEFAULT_BACKBLAZE_ENDPOINT,
+        payload_signing_enabled=False,
+    )
+
+
+def _create_unknown_s3_client(s3_creds: S3Credentials, s3_config: S3Config) -> BaseClient:
+    """Create and return an S3 client."""
+    return _create_s3_client(s3_creds, s3_config, normalize_schema_naive_endpoint=True)
 
 
 def create_s3_client(s3_creds: S3Credentials, s3_config: S3Config | None = None) -> BaseClient:
