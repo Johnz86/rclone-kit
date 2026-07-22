@@ -25,6 +25,12 @@ class DiffOption(Enum):
     ERROR = "error"
 
 
+_MISSING_ON_DIFF_TYPE = {
+    DiffOption.MISSING_ON_SRC: DiffType.MISSING_ON_SRC,
+    DiffOption.MISSING_ON_DST: DiffType.MISSING_ON_DST,
+}
+
+
 @dataclass
 class DiffItem:
     type: DiffType
@@ -58,12 +64,6 @@ def _parse_missing_on_src_dst(line: str) -> str | None:
     """
     stripped = line.strip()
     return stripped or None
-
-
-_MISSING_ON_DIFF_TYPE = {
-    DiffOption.MISSING_ON_SRC: DiffType.MISSING_ON_SRC,
-    DiffOption.MISSING_ON_DST: DiffType.MISSING_ON_DST,
-}
 
 
 def _classify_diff(

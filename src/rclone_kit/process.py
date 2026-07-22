@@ -170,9 +170,14 @@ def _cleanup_live_processes() -> None:
             executor.submit(process._atexit_terminate)
 
 
-# Registers this module's `atexit` handler, once, the first time a `Process`
-# is constructed. Called from `Process.__init__` - the sole producer of
-# `_LIVE_PROCESSES` - rather than at import time, so a process that merely
-# imports `rclone_kit` without ever mounting or serving anything never wires
-# up this handler.
-_register_exit_cleanup_handlers = make_atexit_registrar(_cleanup_live_processes)
+_register_exit_cleanup_handlers = make_atexit_registrar(
+    _cleanup_live_processes,
+    doc="""Register this module's `atexit` handler, once, the first time a
+    `Process` is constructed.
+
+    Called from `Process.__init__` - the sole producer of `_LIVE_PROCESSES`
+    - rather than at import time, so a process that merely imports
+    `rclone_kit` without ever mounting or serving anything never wires up
+    this handler.
+    """,
+)

@@ -32,13 +32,17 @@ def _on_exit_cleanup() -> None:
             warnings.warn(f"Cannot cleanup {path}: {e}", stacklevel=2)
 
 
-# Registers this module's `atexit` handler, once, the first time a chunk
-# file is staged for cleanup. Called from `_add_for_cleanup` - the sole
-# producer of `_CLEANUP_LIST` - rather than at import time, so a process
-# that merely imports `rclone_kit` without ever constructing a `FilePart`
-# backed by a chunk file (HTTP range fetch, S3 multipart) never wires up
-# this handler.
-_register_exit_cleanup_handlers = make_atexit_registrar(_on_exit_cleanup)
+_register_exit_cleanup_handlers = make_atexit_registrar(
+    _on_exit_cleanup,
+    doc="""Register this module's `atexit` handler, once, the first time a
+    chunk file is staged for cleanup.
+
+    Called from `_add_for_cleanup` - the sole producer of `_CLEANUP_LIST` -
+    rather than at import time, so a process that merely imports
+    `rclone_kit` without ever constructing a `FilePart` backed by a chunk
+    file (HTTP range fetch, S3 multipart) never wires up this handler.
+    """,
+)
 
 
 class FilePart:

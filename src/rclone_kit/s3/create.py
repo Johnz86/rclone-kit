@@ -1,6 +1,7 @@
 import logging
 import warnings
 from dataclasses import dataclass
+from typing import Any
 
 from boto3.session import Session
 from botocore.client import BaseClient
@@ -56,7 +57,7 @@ def _create_s3_client(
         endpoint_url = f"https://{endpoint_url}"
     s3_config.resolve_defaults()
     session = Session()
-    config_kwargs: dict = {
+    config_kwargs: dict[str, Any] = {
         "signature_version": "s3v4",
         "region_name": s3_creds.region_name,
         "max_pool_connections": s3_config.max_pool_connections,

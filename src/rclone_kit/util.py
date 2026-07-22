@@ -43,9 +43,10 @@ _LIVE_SUBPROCESSES: weakref.WeakSet[subprocess.Popen[str]] = weakref.WeakSet()
 _FREE_PORT_RANGE_START = 10000
 _FREE_PORT_RANGE_END = 20000
 _FREE_PORT_MAX_ATTEMPTS = 20
+_DEFAULT_CONFIG_FILENAME = "rclone.conf"
 
 
-def make_atexit_registrar(*handlers: Callable[[], None]) -> Callable[[], None]:
+def make_atexit_registrar(*handlers: Callable[[], None], doc: str) -> Callable[[], None]:
     """Build a thread-safe "register these `atexit` handlers exactly once" callable.
 
     Each returned callable owns its own lock and a function-attribute
@@ -54,7 +55,9 @@ def make_atexit_registrar(*handlers: Callable[[], None]) -> Callable[[], None]:
     on the callable's own `__dict__` so tests can reset it), so independent
     call sites - config cleanup, process cleanup, chunk-file cleanup - never
     contend with each other, and concurrent callers of the same site only
-    ever trigger one `atexit.register` per handler.
+    ever trigger one `atexit.register` per handler. `doc` becomes the
+    returned callable's docstring, since a bare module-level assignment has
+    nowhere else to carry the call site's own rationale.
     """
     lock = Lock()
 
@@ -67,6 +70,7 @@ def make_atexit_registrar(*handlers: Callable[[], None]) -> Callable[[], None]:
                 atexit.register(handler)
             state["registered"] = True
 
+    _register.__doc__ = doc
     return _register
 
 
@@ -96,16 +100,20 @@ def _terminate_live_subprocesses() -> None:
         terminate_process_tree(process.pid)
 
 
-# Registers this module's `atexit` handlers, once, the first time either
-# tracked resource is created. Called from `make_temp_config_file` and
-# `rclone_execute` - the sole producers of `_RCLONE_CONFIGS_LIST` and
-# `_LIVE_SUBPROCESSES` respectively - rather than at import time, so a
-# process that merely imports `rclone_kit` without ever creating a temp
-# config file or running an rclone subprocess never wires up either
-# handler. Both handlers are registered together, since either kind of
-# tracked resource existing is enough to make both worth draining at exit.
 _register_exit_cleanup_handlers = make_atexit_registrar(
-    _clean_configs, _terminate_live_subprocesses
+    _clean_configs,
+    _terminate_live_subprocesses,
+    doc="""Register this module's `atexit` handlers, once, the first time
+    either tracked resource is created.
+
+    Called from `make_temp_config_file` and `rclone_execute` - the sole
+    producers of `_RCLONE_CONFIGS_LIST` and `_LIVE_SUBPROCESSES`
+    respectively - rather than at import time, so a process that merely
+    imports `rclone_kit` without ever creating a temp config file or
+    running an rclone subprocess never wires up either handler. Both
+    handlers are registered together, since either kind of tracked
+    resource existing is enough to make both worth draining at exit.
+    """,
 )
 
 
@@ -262,9 +270,6 @@ def get_check(check: bool | None) -> bool:
         return check
 
     return bool(int(os.getenv("RCLONE_KIT_CHECK", "1")))
-
-
-_DEFAULT_CONFIG_FILENAME = "rclone.conf"
 
 
 def default_config_path(config: Path | None) -> Path:

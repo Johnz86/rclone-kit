@@ -175,6 +175,8 @@ class SizeSuffix:
         return SizeSuffix(other_int._size - self._size)
 
     def __floordiv__(self, other: "int | SizeSuffix") -> "SizeSuffix":
+        """Also serves as `__truediv__`: rclone-kit sizes are always
+        integral bytes, so "true" division is floor division here too."""
         other_int = SizeSuffix(other)
         if other_int._size == 0:
             raise ZeroDivisionError("Division by zero is undefined")
@@ -182,14 +184,13 @@ class SizeSuffix:
         return SizeSuffix(self._size // other_int._size)
 
     def __rfloordiv__(self, other: "int | SizeSuffix") -> "SizeSuffix":
+        """Also serves as `__rtruediv__` (see `__floordiv__`)."""
         other_int = SizeSuffix(other)
         if self._size == 0:
             raise ZeroDivisionError("Division by zero is undefined")
 
         return SizeSuffix(other_int._size // self._size)
 
-    # rclone-kit sizes are always integral bytes, so "true" division is
-    # floor division here too.
     __truediv__ = __floordiv__
     __rtruediv__ = __rfloordiv__
 
