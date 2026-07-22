@@ -56,9 +56,8 @@ class Dir:
     ) -> DirListing:
         """List files and directories in the given path."""
         assert self.path.rclone is not None
-        dir = Dir(self.path)
         return self.path.rclone.ls(
-            dir,
+            self,
             max_depth=max_depth,
             glob=glob,
             order=order,

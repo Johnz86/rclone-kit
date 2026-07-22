@@ -184,11 +184,11 @@ class DBRepo:
                 select(self.FileEntryModel).where(col(self.FileEntryModel.path).in_(update_paths))
             ).all()
 
-            id_map = {(entry.path, entry.name): entry.id for entry in db_entries}
+            id_map = {entry.path: entry.id for entry in db_entries}
 
             update_values = []
             for file in needs_update:
-                key = (file.path_no_remote, file.name)
+                key = file.path_no_remote
                 if key in id_map:
                     update_values.append(
                         {

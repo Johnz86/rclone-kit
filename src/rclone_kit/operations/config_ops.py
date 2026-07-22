@@ -109,7 +109,6 @@ def fetch_s3_credentials(config: Config, remote: str, verbose: bool | None = Non
     remote = path_info.remote
     bucket_name = path_info.bucket
 
-    remote = path_info.remote
     parsed: Parsed = config.parse()
     sections: dict[str, Section] = parsed.sections
     if remote not in sections:

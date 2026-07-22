@@ -1,3 +1,4 @@
+import contextlib
 import json
 from dataclasses import dataclass, field
 
@@ -57,12 +58,10 @@ class Config:
             self.text = _json_to_rclone_config_str_or_raise(text)
         else:
             self.text = text
-
-        try:
-            new_text = _json_to_rclone_config_str_or_raise(self.text)
-            self.text = new_text
-        except (json.JSONDecodeError, TypeError, AttributeError, AssertionError):
-            pass
+            with contextlib.suppress(
+                json.JSONDecodeError, TypeError, AttributeError, AssertionError
+            ):
+                self.text = _json_to_rclone_config_str_or_raise(self.text)
 
     @staticmethod
     def from_json(json_data: dict) -> "Config":

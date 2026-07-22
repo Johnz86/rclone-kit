@@ -21,7 +21,7 @@ def _suffix_clean_bad_parts(suffix: list[str]) -> list[str]:
     """Remove any bad parts from the suffix list."""
     out = []
     for part in suffix:
-        if part in ["", ""]:
+        if not part:
             continue
         if " " in part:
             continue

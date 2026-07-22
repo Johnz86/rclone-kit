@@ -174,20 +174,6 @@ class SizeSuffix:
         other_int = SizeSuffix(other)
         return SizeSuffix(other_int._size - self._size)
 
-    def __truediv__(self, other: "int | SizeSuffix") -> "SizeSuffix":
-        other_int = SizeSuffix(other)
-        if other_int._size == 0:
-            raise ZeroDivisionError("Division by zero is undefined")
-
-        return SizeSuffix(self._size // other_int._size)
-
-    def __rtruediv__(self, other: "int | SizeSuffix") -> "SizeSuffix":
-        other_int = SizeSuffix(other)
-        if self._size == 0:
-            raise ZeroDivisionError("Division by zero is undefined")
-
-        return SizeSuffix(other_int._size // self._size)
-
     def __floordiv__(self, other: "int | SizeSuffix") -> "SizeSuffix":
         other_int = SizeSuffix(other)
         if other_int._size == 0:
@@ -201,6 +187,11 @@ class SizeSuffix:
             raise ZeroDivisionError("Division by zero is undefined")
 
         return SizeSuffix(other_int._size // self._size)
+
+    # rclone-kit sizes are always integral bytes, so "true" division is
+    # floor division here too.
+    __truediv__ = __floordiv__
+    __rtruediv__ = __rfloordiv__
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, SizeSuffix) and not isinstance(other, int):
