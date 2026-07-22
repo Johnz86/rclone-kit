@@ -1,9 +1,10 @@
-"""Regression tests proving the four import-reachable `atexit` cleanup
+"""Regression tests proving the five import-reachable `atexit` cleanup
 handlers (`rclone_kit.util._clean_configs`/`_terminate_live_subprocesses`,
 `rclone_kit.process._cleanup_live_processes`,
-`rclone_kit.file_part._on_exit_cleanup`) register lazily, on first use of the
-resource they protect, rather than unconditionally at `import rclone_kit`
-time.
+`rclone_kit.file_part._on_exit_cleanup`,
+`rclone_kit.s3.multipart.upload_parts_resumable._cleanup_tmp_upload_dirs`)
+register lazily, on first use of the resource they protect, rather than
+unconditionally at `import rclone_kit` time.
 
 `atexit` registration state and module import state are both process-global
 and cannot be reset within a single interpreter, so proving "not registered
@@ -11,16 +12,19 @@ merely by import" requires a fresh subprocess - the same reason
 `scripts/smoke_test_installed_wheel.py` inspects import-time thread/process
 counts from a fresh interpreter rather than the current one. The probe
 script below spies on `atexit.register` before importing `rclone_kit`,
-confirms none of the four target handlers are registered by the bare
+confirms none of the five target handlers are registered by the bare
 import, then exercises each handler's sole registry producer in turn
 (`make_temp_config_file`, constructing a `Process`, constructing a
-`FilePart`) and confirms each one becomes registered only once its producer
-actually runs - and not before.
+`FilePart`, importing `upload_parts_resumable` itself - the module registers
+its handler at its own import time, rather than lazily on first use within
+the module, because that module is only ever imported function-locally at
+its one real call site in `operations/copy_file_parts_resumable.py`, so
+module import and first real use already coincide) and confirms each one
+becomes registered only once its producer actually runs - and not before.
 
-`mount_util._cleanup_mounts` and `upload_parts_resumable._cleanup_tmp_upload_dirs`
-are deliberately out of scope: both modules are already only ever imported
-lazily at their one real call site, so their registration already
-coincides with first use without needing this change.
+`mount_util._cleanup_mounts` is deliberately out of scope: that module is
+already only ever imported lazily at its one real call site, so its
+registration already coincides with first use without needing this change.
 """
 
 import subprocess
@@ -29,6 +33,7 @@ from pathlib import Path
 
 from rclone_kit.file_part import _on_exit_cleanup
 from rclone_kit.process import _cleanup_live_processes
+from rclone_kit.s3.multipart.upload_parts_resumable import _cleanup_tmp_upload_dirs
 from rclone_kit.util import _clean_configs, _terminate_live_subprocesses
 
 _SUBPROCESS_TIMEOUT_SECONDS = 30
@@ -43,12 +48,14 @@ _CLEAN_CONFIGS_ID = _handler_id(_clean_configs)
 _TERMINATE_LIVE_SUBPROCESSES_ID = _handler_id(_terminate_live_subprocesses)
 _CLEANUP_LIVE_PROCESSES_ID = _handler_id(_cleanup_live_processes)
 _ON_EXIT_CLEANUP_ID = _handler_id(_on_exit_cleanup)
+_CLEANUP_TMP_UPLOAD_DIRS_ID = _handler_id(_cleanup_tmp_upload_dirs)
 
 _TARGET_HANDLER_IDS = (
     _CLEAN_CONFIGS_ID,
     _TERMINATE_LIVE_SUBPROCESSES_ID,
     _CLEANUP_LIVE_PROCESSES_ID,
     _ON_EXIT_CLEANUP_ID,
+    _CLEANUP_TMP_UPLOAD_DIRS_ID,
 )
 
 _PROBE_SCRIPT = """
@@ -74,9 +81,13 @@ from rclone_kit.process import Process, ProcessArgs
 from rclone_kit.s3.multipart.file_info import S3FileInfo
 
 target_ids = __TARGET_IDS__
-clean_configs_id, terminate_live_subprocesses_id, cleanup_live_processes_id, on_exit_cleanup_id = (
-    target_ids
-)
+(
+    clean_configs_id,
+    terminate_live_subprocesses_id,
+    cleanup_live_processes_id,
+    on_exit_cleanup_id,
+    cleanup_tmp_upload_dirs_id,
+) = target_ids
 
 already_registered = set(target_ids) & set(registered)
 assert not already_registered, f"registered merely by import: {sorted(already_registered)}"
@@ -110,6 +121,31 @@ assert on_exit_cleanup_id not in registered, (
 
 FilePart(payload=b"probe-bytes", extra=S3FileInfo(upload_id="probe", part_number=1))
 assert on_exit_cleanup_id in registered, "FilePart construction did not register its handler"
+
+upload_parts_resumable_name = "rclone_kit.s3.multipart.upload_parts_resumable"
+assert upload_parts_resumable_name not in sys.modules, (
+    "upload_parts_resumable was imported by something above, before its own real use"
+)
+
+import rclone_kit.operations.copy_file_parts_resumable  # noqa: E402
+
+assert upload_parts_resumable_name not in sys.modules, (
+    "importing copy_file_parts_resumable's *module* must not import "
+    "upload_parts_resumable - the import lives inside the function body, "
+    "not at module top level, so it must stay deferred until the function "
+    "actually runs"
+)
+assert cleanup_tmp_upload_dirs_id not in registered, (
+    "importing copy_file_parts_resumable's module must not register the "
+    "upload_parts_resumable handler"
+)
+
+import rclone_kit.s3.multipart.upload_parts_resumable  # noqa: E402
+
+assert cleanup_tmp_upload_dirs_id in registered, (
+    "importing upload_parts_resumable (its one real call site's "
+    "function-local import) did not register its handler"
+)
 
 print("__SUCCESS_MARKER__")
 """
