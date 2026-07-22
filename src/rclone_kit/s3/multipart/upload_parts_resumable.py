@@ -63,27 +63,24 @@ def _register_exit_cleanup_handlers() -> None:
 _register_exit_cleanup_handlers()
 
 
-def _log(msg: str) -> None:
-    logger.info(msg)
+def _append_upload_log(filename: str, msg: str) -> None:
     if os.getenv("LOG_UPLOAD_S3_RESUMABLE") == "1":
-        log_path = Path("log") / "s3_resumable_upload.log"
+        log_path = Path("log") / filename
         with _LOCK:
             log_path.parent.mkdir(parents=True, exist_ok=True)
 
             with open(log_path, mode="a", encoding="utf-8") as f:
                 f.write(msg)
                 f.write("\n")
+
+
+def _log(msg: str) -> None:
+    logger.info(msg)
+    _append_upload_log("s3_resumable_upload.log", msg)
 
 
 def _log_completed_item(msg: str) -> None:
-    if os.getenv("LOG_UPLOAD_S3_RESUMABLE") == "1":
-        log_path = Path("log") / "s3_resumable_upload_completed.log"
-        with _LOCK:
-            log_path.parent.mkdir(parents=True, exist_ok=True)
-
-            with open(log_path, mode="a", encoding="utf-8") as f:
-                f.write(msg)
-                f.write("\n")
+    _append_upload_log("s3_resumable_upload_completed.log", msg)
 
 
 @dataclass
@@ -371,7 +368,6 @@ def upload_parts_resumable(
     full_path = os.path.join(dst_dir, src_name)
     if all_part_numbers_done:
         msg = f"Upload completed: {full_path} ({len(finished_parts)}/{len(all_part_numbers)})"
-        _log(msg)
         info_json.save()
     else:
         msg = f"Upload failed for {full_path} ({len(finished_parts)}/{len(all_part_numbers)})"
