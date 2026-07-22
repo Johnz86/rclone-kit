@@ -1,7 +1,7 @@
 import abc
 import logging
-import os
 import shutil
+import stat
 import warnings
 from collections.abc import Generator
 from pathlib import Path, PurePath, PurePosixPath
@@ -130,12 +130,15 @@ class RealFS(FS):
     def ls(self, path: Path | str) -> tuple[list[str], list[str]]:
         files: list[str] = []
         dirs: list[str] = []
-        with os.scandir(path) as entries:
-            for entry in entries:
-                if entry.is_file():
-                    files.append(entry.path)
-                if entry.is_dir():
-                    dirs.append(entry.path)
+        for entry in Path(path).iterdir():
+            try:
+                mode = entry.stat().st_mode
+            except OSError:
+                continue
+            if stat.S_ISREG(mode):
+                files.append(str(entry))
+            elif stat.S_ISDIR(mode):
+                dirs.append(str(entry))
         return files, dirs
 
     def cwd(self) -> "FSPath":
