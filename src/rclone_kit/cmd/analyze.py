@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from rclone_kit.client import Rclone
+from rclone_kit.util import validate_config_path_exists
 
 
 @dataclass
@@ -11,8 +12,7 @@ class Args:
     path: str
 
     def __post_init__(self):
-        if not self.config.exists():
-            raise FileNotFoundError(f"Config file not found: {self.config}")
+        validate_config_path_exists(self.config)
 
 
 def list_files(rclone: Rclone, path: str):

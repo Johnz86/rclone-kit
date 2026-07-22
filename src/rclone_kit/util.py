@@ -104,7 +104,9 @@ def _terminate_live_subprocesses() -> None:
 # config file or running an rclone subprocess never wires up either
 # handler. Both handlers are registered together, since either kind of
 # tracked resource existing is enough to make both worth draining at exit.
-_register_exit_cleanup_handlers = make_atexit_registrar(_clean_configs, _terminate_live_subprocesses)
+_register_exit_cleanup_handlers = make_atexit_registrar(
+    _clean_configs, _terminate_live_subprocesses
+)
 
 
 def register_signal_cleanup() -> None:
@@ -260,6 +262,20 @@ def get_check(check: bool | None) -> bool:
         return check
 
     return bool(int(os.getenv("RCLONE_KIT_CHECK", "1")))
+
+
+_DEFAULT_CONFIG_FILENAME = "rclone.conf"
+
+
+def default_config_path(config: Path | None) -> Path:
+    """Default an rclone config CLI argument to `rclone.conf`."""
+    return config if config is not None else Path(_DEFAULT_CONFIG_FILENAME)
+
+
+def validate_config_path_exists(config: Path) -> None:
+    """Raise `FileNotFoundError` if `config` does not exist."""
+    if not config.exists():
+        raise FileNotFoundError(f"Config file not found: {config}")
 
 
 def get_rclone_exe(

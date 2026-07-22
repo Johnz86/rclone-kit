@@ -6,6 +6,7 @@ from rclone_kit.client import Rclone
 from rclone_kit.s3.multipart.upload_parts_server_side_merge import (
     s3_server_side_multi_part_merge,
 )
+from rclone_kit.util import default_config_path, validate_config_path_exists
 
 
 @dataclass
@@ -23,10 +24,8 @@ def _parse_args() -> Args:
     args = parser.parse_args()
     config: Path | None = args.config
     if config is None:
-        config = Path("rclone.conf")
-        if not config.exists():
-            raise FileNotFoundError(f"Config file not found: {config}")
-    assert config is not None
+        config = default_config_path(config)
+        validate_config_path_exists(config)
     out = Args(
         config_path=config,
         src=args.src,

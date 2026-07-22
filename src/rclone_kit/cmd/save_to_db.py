@@ -6,7 +6,7 @@ from typing import Protocol
 
 from rclone_kit.client import Rclone
 from rclone_kit.env_file import load_env_file
-from rclone_kit.util import register_signal_cleanup
+from rclone_kit.util import register_signal_cleanup, validate_config_path_exists
 
 
 class SavesToDatabase(Protocol):
@@ -35,8 +35,7 @@ class Args:
     fast_list: bool
 
     def __post_init__(self):
-        if not self.config.exists():
-            raise FileNotFoundError(f"Config file not found: {self.config}")
+        validate_config_path_exists(self.config)
 
 
 def fill_db(rclone: SavesToDatabase, path: str, db_url: str, fast_list: bool) -> None:

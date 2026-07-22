@@ -4,7 +4,11 @@ from pathlib import Path
 
 from rclone_kit.client import Rclone
 from rclone_kit.types import SizeSuffix
-from rclone_kit.util import register_signal_cleanup
+from rclone_kit.util import (
+    default_config_path,
+    register_signal_cleanup,
+    validate_config_path_exists,
+)
 
 
 @dataclass
@@ -48,10 +52,8 @@ def _parse_args() -> Args:
     args = parser.parse_args()
     config: Path | None = args.config
     if config is None:
-        config = Path("rclone.conf")
-        if not config.exists():
-            raise FileNotFoundError(f"Config file not found: {config}")
-    assert config is not None
+        config = default_config_path(config)
+        validate_config_path_exists(config)
     out = Args(
         config_path=config,
         src=args.src,
