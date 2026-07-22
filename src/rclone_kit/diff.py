@@ -60,6 +60,12 @@ def _parse_missing_on_src_dst(line: str) -> str | None:
     return stripped or None
 
 
+_MISSING_ON_DIFF_TYPE = {
+    DiffOption.MISSING_ON_SRC: DiffType.MISSING_ON_SRC,
+    DiffOption.MISSING_ON_DST: DiffType.MISSING_ON_DST,
+}
+
+
 def _classify_diff(
     line: str, src_slug: str, dst_slug: str, diff_option: DiffOption
 ) -> DiffItem | None:
@@ -79,18 +85,12 @@ def _classify_diff(
         if line.startswith(DiffType.ERROR.value):
             return _new(DiffType.ERROR, suffix)
         return None
-    if diff_option == DiffOption.MISSING_ON_SRC:
-        filename_src: str | None = _parse_missing_on_src_dst(line)
-        if filename_src is not None:
-            return _new(DiffType.MISSING_ON_SRC, filename_src)
+    if diff_option in _MISSING_ON_DIFF_TYPE:
+        filename = _parse_missing_on_src_dst(line)
+        if filename is not None:
+            return _new(_MISSING_ON_DIFF_TYPE[diff_option], filename)
         return None
-    if diff_option == DiffOption.MISSING_ON_DST:
-        filename_dst: str | None = _parse_missing_on_src_dst(line)
-        if filename_dst is not None:
-            return _new(DiffType.MISSING_ON_DST, filename_dst)
-        return None
-    else:
-        raise ValueError(f"Unknown diff_option: {diff_option}")
+    raise ValueError(f"Unknown diff_option: {diff_option}")
 
 
 def _async_diff_stream_from_running_process(

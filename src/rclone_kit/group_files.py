@@ -103,16 +103,18 @@ class TreeNode:
         return msg
 
 
+def _flatten_into(node: TreeNode, parent_path: str, out: dict[str, list[str]]) -> None:
+    """Append every file under `node` (recursively) to `out[parent_path]`."""
+    filelist = out.setdefault(parent_path, [])
+    filelist.extend(node.get_child_subpaths())
+
+
 def _merge(node: TreeNode, parent_path: str, out: dict[str, list[str]]) -> None:
     parent_path = parent_path + "/" + node.name
     if not node.child_nodes and not node.files:
         return
     if node.files:
-        filelist = out.setdefault(parent_path, [])
-        paths = node.get_child_subpaths()
-        for path in paths:
-            filelist.append(path)
-        out[parent_path] = filelist
+        _flatten_into(node, parent_path, out)
         return
 
     n_child_nodes = len(node.child_nodes)
@@ -122,12 +124,7 @@ def _merge(node: TreeNode, parent_path: str, out: dict[str, list[str]]) -> None:
             _merge(child, parent_path, out)
         return
 
-    filelist = out.setdefault(parent_path, [])
-    paths = node.get_child_subpaths()
-    for path in paths:
-        filelist.append(path)
-    out[parent_path] = filelist
-    return
+    _flatten_into(node, parent_path, out)
 
 
 def _make_tree(files: list[str]) -> dict[str, TreeNode]:
