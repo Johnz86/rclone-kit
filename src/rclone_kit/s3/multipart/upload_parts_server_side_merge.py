@@ -164,8 +164,7 @@ def _do_upload_task(
             fut.add_done_callback(lambda _fut: semaphore.release())
             futures.append(fut)
 
-            while not semaphore.acquire(blocking=False):
-                time.sleep(0.1)
+            semaphore.acquire()
 
         final_fut = executor.submit(lambda: on_finished(EndOfStream()))
 

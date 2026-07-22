@@ -1,11 +1,10 @@
 import _thread
 import contextlib
 import random
-import time
 import warnings
 from collections.abc import Generator
 from concurrent.futures import ThreadPoolExecutor
-from queue import Empty, Queue
+from queue import Queue
 from threading import Thread
 
 from rclone_kit.dir import Dir
@@ -166,11 +165,7 @@ def scan_missing_folders(
     sentinel_seen = False
     try:
         while True:
-            try:
-                dir = out_queue.get_nowait()
-            except Empty:
-                time.sleep(0.1)
-                continue
+            dir = out_queue.get()
             if dir is None:
                 sentinel_seen = True
                 break
