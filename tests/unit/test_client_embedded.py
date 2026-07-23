@@ -372,3 +372,39 @@ def test_diff_dispatches_to_rc_client_when_embedded() -> None:
 
     assert [i.path for i in items] == ["a.txt"]
     rclone.close()
+
+
+def test_copy_to_dispatches_to_rc_client_when_embedded() -> None:
+    binding = FakeBinding()
+    binding.rpc_responses_by_method[b"operations/copyfile"] = (200, b"{}")
+    rclone = Rclone(None, execution="embedded", runtime=RcloneRuntime(binding))
+
+    result = rclone.copy_to("remote:a.txt", "remote:b.txt")
+
+    assert result.ok is True
+    assert binding.rpc_calls[0][0] == b"operations/copyfile"
+    rclone.close()
+
+
+def test_purge_dispatches_to_rc_client_when_embedded() -> None:
+    binding = FakeBinding()
+    binding.rpc_responses_by_method[b"operations/purge"] = (200, b"{}")
+    rclone = Rclone(None, execution="embedded", runtime=RcloneRuntime(binding))
+
+    result = rclone.purge("remote:path/to/dir")
+
+    assert result.ok is True
+    assert binding.rpc_calls[0][0] == b"operations/purge"
+    rclone.close()
+
+
+def test_cleanup_dispatches_to_rc_client_when_embedded() -> None:
+    binding = FakeBinding()
+    binding.rpc_responses_by_method[b"operations/cleanup"] = (200, b"{}")
+    rclone = Rclone(None, execution="embedded", runtime=RcloneRuntime(binding))
+
+    result = rclone.cleanup("remote:")
+
+    assert result.ok is True
+    assert binding.rpc_calls[0][0] == b"operations/cleanup"
+    rclone.close()

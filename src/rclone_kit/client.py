@@ -72,6 +72,11 @@ from rclone_kit.operations.transfer_ops import (
     delete_files_partitioned,
     purge_dir,
 )
+from rclone_kit.operations.transfer_ops_embedded import (
+    cleanup_embedded,
+    copy_file_to_embedded,
+    purge_dir_embedded,
+)
 from rclone_kit.operations.walk import walk
 from rclone_kit.optional_dependency import MissingOptionalDependencyError
 from rclone_kit.process import Process
@@ -571,6 +576,10 @@ class Rclone:
 
     def cleanup(self, src: str, other_args: list[str] | None = None) -> CompletedProcess:
         """Cleanup any resources used by the Rclone instance."""
+        if self._rc_client is not None:
+            if other_args:
+                raise UnsupportedEmbeddedOperationError("cleanup (other_args)")
+            return cleanup_embedded(self._rc_client, src)
 
         cmd = ["cleanup", src]
         if other_args:
@@ -594,6 +603,10 @@ class Rclone:
         Warning - slow.
 
         """
+        if self._rc_client is not None:
+            return copy_file_to_embedded(
+                self._rc_client, src, dst, check=check, other_args=other_args
+            )
         return copy_file_to(
             self._backend,
             src,
@@ -680,6 +693,8 @@ class Rclone:
 
     def purge(self, src: Dir | str) -> CompletedProcess:
         """Purge a directory"""
+        if self._rc_client is not None:
+            return purge_dir_embedded(self._rc_client, src)
         return purge_dir(self._backend, src)
 
     def delete_files(

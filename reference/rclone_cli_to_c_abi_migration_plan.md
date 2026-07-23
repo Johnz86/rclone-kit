@@ -468,6 +468,20 @@ Add `JobHandle`, transfer option encoding, stats polling, cancellation, and `Ope
 one-file copy, directory copy, purge, and remote-to-temp reads. Run local and memory backend parity on
 both platforms.
 
+Status: T01 (`cleanup`), T02 (`copy_to`), and T07 (`purge`) are done via `operations/cleanup`,
+`operations/copyfile`, and `operations/purge` respectively - all synchronous single-call operations
+that need no job handle. T11/T12 (`read_bytes`/`read_text`) needed no code at all: both only ever
+call `self.copy_to`, so they became correct transitively the moment T02 did, verified with a native
+test that reads real file content back through the embedded path. `copy_to`'s `check` parameter keeps
+its CLI meaning exactly: `True` (the default) re-raises the RC failure, `False` wraps it into a
+failed `CompletedProcess` instead. `CompletedProcess` here wraps one *synthetic*
+`subprocess.CompletedProcess` (no real subprocess exists) purely for public-API compatibility during
+the transition, per this section's own `OperationResult` compatibility note - it is not meant to be
+byte-compatible with a real CLI invocation, and does not carry real stdout/stderr.
+`OperationResult`/`JobHandle` themselves are not introduced yet: none of T01/T02/T07/T11/T12 needed
+an async job (they are all synchronous RC calls), so that design work is deferred to T03–T05
+(`copy`/`copy_dir`/`copy_remote`, all "Always async" per the ledger), which remain unstarted.
+
 ### Wave E — filtered and partitioned operations
 
 Ledger: T06, T08, L09.
