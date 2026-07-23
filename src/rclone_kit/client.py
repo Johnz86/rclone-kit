@@ -189,8 +189,15 @@ class Rclone:
         ``execution="embedded"`` is opt-in per the CLI-to-C-ABI migration
         plan: it loads (or accepts) one ``RcloneRuntime`` and initializes it
         with an immutable config path derived from ``rclone_conf``, but only
-        the ported subset of methods (currently ``obscure()``) actually uses
-        it. Every other method still requires ``execution="cli"`` and raises
+        the ported subset of methods actually uses it (see
+        ``tests/parity/coverage.toml`` for the authoritative, current
+        row-by-row list - as of Wave D it covers ``obscure``,
+        ``listremotes``, ``config_paths``, ``stat``, ``size_file``,
+        ``exists``, ``ls``, ``is_synced``, ``diff``, ``cleanup``,
+        ``copy_to``, and ``purge``, plus ``modtime``/``modtime_dt``/
+        ``walk``/``scan_missing_folders``/``read_bytes``/``read_text``/
+        ``is_s3``/``get_s3_credentials`` transitively). Every other method
+        still requires ``execution="cli"`` and raises
         ``UnsupportedEmbeddedOperationError`` otherwise. ``backend`` and
         ``rclone_exe`` are CLI-only concepts and are rejected together with
         ``execution="embedded"``.

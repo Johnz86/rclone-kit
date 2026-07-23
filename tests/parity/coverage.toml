@@ -1,0 +1,631 @@
+# Machine-readable coverage ledger for the CLI-to-C-ABI migration.
+#
+# Mirrors row IDs from `reference/rclone_cli_to_c_abi_migration_plan.md`'s
+# public `Rclone` API migration ledger (C/M/L/T/F/R tables). This file is
+# the source of truth CI reads to answer "is embedded coverage for this row
+# actually proven" - the Markdown ledger stays the narrative/rationale
+# document; this stays the machine-checkable one. Loaded and schema-checked
+# by `tests/unit/test_parity_coverage.py`.
+#
+# `status` is the row's furthest-reached stage in the ledger's own
+# checklist:
+#   planned -> adapter_implemented -> unit_tested -> native_tested ->
+#   cli_parity_tested -> windows_passed -> linux_passed ->
+#   doc_updated -> embedded_default -> cli_removable -> complete
+#
+# `decision` mirrors the ledger's "Embedded decision/replacement" column:
+# direct_rc, composite_rc, bridge, python, deprecate, transitive, remove,
+# or runtime (constructor/control-surface rows the 5-category scheme
+# doesn't cover).
+#
+# `windows`/`linux` record whether the row's own tests have been run and
+# passed on that platform in this repository - not whether the platform is
+# merely supported in principle. `parity_test` is the primary test proving
+# the row's current status; rows with no dedicated test yet use `""`.
+
+[[row]]
+id = "C01"
+method = "Rclone.__init__"
+decision = "runtime"
+owner_module = "rclone_kit.client"
+status = "native_tested"
+parity_test = "tests/native/test_client_embedded_integration.py"
+windows = true
+linux = false
+notes = "Opt-in execution='embedded' construction; creates no subprocess."
+
+[[row]]
+id = "C02"
+method = "upgrade_rclone"
+decision = "deprecate"
+owner_module = "rclone_kit.client"
+status = "planned"
+parity_test = ""
+windows = false
+linux = false
+notes = ""
+
+[[row]]
+id = "C03"
+method = "find_rclone_conf"
+decision = "runtime"
+owner_module = "rclone_kit.config_discovery"
+status = "native_tested"
+parity_test = "tests/native/test_client_embedded_integration.py::test_embedded_config_discovery_matches_cli_default_in_a_clean_process"
+windows = true
+linux = false
+notes = "find_conf_file_embedded queries config/paths via a throwaway runtime; subprocess-isolated native test (ABI is once-per-process)."
+
+[[row]]
+id = "C04"
+method = "_run"
+decision = "remove"
+owner_module = "rclone_kit.client"
+status = "planned"
+parity_test = ""
+windows = false
+linux = false
+notes = "Removal gated on every internal caller listed in this ledger reaching complete."
+
+[[row]]
+id = "C05"
+method = "_launch_process"
+decision = "remove"
+owner_module = "rclone_kit.client"
+status = "planned"
+parity_test = ""
+windows = false
+linux = false
+notes = ""
+
+[[row]]
+id = "C06"
+method = "webgui"
+decision = "deprecate"
+owner_module = "rclone_kit.client"
+status = "planned"
+parity_test = ""
+windows = false
+linux = false
+notes = ""
+
+[[row]]
+id = "C07"
+method = "launch_server"
+decision = "deprecate"
+owner_module = "rclone_kit.client"
+status = "planned"
+parity_test = ""
+windows = false
+linux = false
+notes = ""
+
+[[row]]
+id = "C08"
+method = "remote_control"
+decision = "deprecate"
+owner_module = "rclone_kit.client"
+status = "planned"
+parity_test = ""
+windows = false
+linux = false
+notes = ""
+
+[[row]]
+id = "C09"
+method = "get_verbose"
+decision = "python"
+owner_module = "rclone_kit.client"
+status = "planned"
+parity_test = ""
+windows = false
+linux = false
+notes = "Not a migration blocker either way."
+
+[[row]]
+id = "M01"
+method = "obscure"
+decision = "direct_rc"
+owner_module = "rclone_kit.client"
+status = "cli_parity_tested"
+parity_test = "tests/native/test_client_embedded_integration.py::test_embedded_obscure_round_trips_through_cli_reveal"
+windows = true
+linux = false
+notes = "core/obscure; round-trips through the CLI's own reveal."
+
+[[row]]
+id = "M02"
+method = "listremotes"
+decision = "direct_rc"
+owner_module = "rclone_kit.operations.listing_ops_embedded"
+status = "native_tested"
+parity_test = "tests/native/test_listing_ops_embedded_integration.py::test_listremotes_returns_a_list_of_remote_when_none_configured"
+windows = true
+linux = false
+notes = "config/listremotes."
+
+[[row]]
+id = "M03"
+method = "config_paths"
+decision = "direct_rc"
+owner_module = "rclone_kit.operations.config_ops"
+status = "native_tested"
+parity_test = "tests/native/test_listing_ops_embedded_integration.py::test_config_paths_returns_a_config_cache_temp_triple"
+windows = true
+linux = false
+notes = "config/paths after init."
+
+[[row]]
+id = "M04"
+method = "config_show"
+decision = "bridge"
+owner_module = "rclone_kit.client"
+status = "planned"
+parity_test = ""
+windows = false
+linux = false
+notes = "Needs a focused Go bridge extension for exact legacy obscure/no-obscure text behavior."
+
+[[row]]
+id = "M05"
+method = "is_s3"
+decision = "python"
+owner_module = "rclone_kit.client"
+status = "unit_tested"
+parity_test = "tests/unit/test_client_embedded.py"
+windows = true
+linux = false
+notes = "Operates only on self.config; verified zero RC calls happen under embedded execution."
+
+[[row]]
+id = "M06"
+method = "get_s3_credentials"
+decision = "python"
+owner_module = "rclone_kit.client"
+status = "unit_tested"
+parity_test = "tests/unit/test_client_embedded.py"
+windows = true
+linux = false
+notes = "Same self.config-only behavior as M05."
+
+[[row]]
+id = "L01"
+method = "ls"
+decision = "direct_rc"
+owner_module = "rclone_kit.operations.listing_ops_embedded"
+status = "cli_parity_tested"
+parity_test = "tests/native/test_listing_ops_embedded_integration.py::test_ls_non_recursive_matches_cli"
+windows = true
+linux = false
+notes = "operations/list; non-recursive, unlimited-recursion, bounded-recursion, and files-only cases all covered."
+
+[[row]]
+id = "L02"
+method = "ls_stream"
+decision = "bridge"
+owner_module = "rclone_kit.operations.listing_ops"
+status = "planned"
+parity_test = ""
+windows = false
+linux = false
+notes = "Wave F; needs a pull-based bridge stream, not one operations/list allocation."
+
+[[row]]
+id = "L03"
+method = "save_to_db"
+decision = "transitive"
+owner_module = "rclone_kit.cmd.save_to_db"
+status = "planned"
+parity_test = ""
+windows = false
+linux = false
+notes = "Depends on L02."
+
+[[row]]
+id = "L04"
+method = "print"
+decision = "transitive"
+owner_module = "rclone_kit.client"
+status = "planned"
+parity_test = ""
+windows = false
+linux = false
+notes = "Depends on T11/T12; not yet dedicated-tested transitively."
+
+[[row]]
+id = "L05"
+method = "stat"
+decision = "direct_rc"
+owner_module = "rclone_kit.operations.listing_ops_embedded"
+status = "cli_parity_tested"
+parity_test = "tests/native/test_listing_ops_embedded_integration.py::test_stat_matches_cli_for_an_existing_file"
+windows = true
+linux = false
+notes = "operations/stat; not-found case also parity tested."
+
+[[row]]
+id = "L06"
+method = "modtime"
+decision = "transitive"
+owner_module = "rclone_kit.client"
+status = "native_tested"
+parity_test = "tests/native/test_listing_ops_embedded_integration.py::test_modtime_is_transitively_embedded_through_stat"
+windows = true
+linux = false
+notes = "Calls stat(); needed zero code once L05 landed."
+
+[[row]]
+id = "L07"
+method = "modtime_dt"
+decision = "transitive"
+owner_module = "rclone_kit.client"
+status = "native_tested"
+parity_test = "tests/native/test_listing_ops_embedded_integration.py::test_modtime_is_transitively_embedded_through_stat"
+windows = true
+linux = false
+notes = "Calls stat(); same transitive coverage as L06."
+
+[[row]]
+id = "L08"
+method = "size_file"
+decision = "direct_rc"
+owner_module = "rclone_kit.operations.listing_ops_embedded"
+status = "cli_parity_tested"
+parity_test = "tests/native/test_listing_ops_embedded_integration.py::test_size_file_matches_cli"
+windows = true
+linux = false
+notes = "operations/stat with files-only."
+
+[[row]]
+id = "L09"
+method = "size_files"
+decision = "composite_rc"
+owner_module = "rclone_kit.operations.listing_ops"
+status = "planned"
+parity_test = ""
+windows = false
+linux = false
+notes = "Wave E; needs _filter.FilesFrom plus _config.MaxDepth/UseListR."
+
+[[row]]
+id = "L10"
+method = "exists"
+decision = "direct_rc"
+owner_module = "rclone_kit.operations.listing_ops_embedded"
+status = "cli_parity_tested"
+parity_test = "tests/native/test_listing_ops_embedded_integration.py::test_exists_matches_cli_for_present_and_missing_paths"
+windows = true
+linux = false
+notes = "operations/stat."
+
+[[row]]
+id = "L11"
+method = "is_synced"
+decision = "direct_rc"
+owner_module = "rclone_kit.operations.listing_ops_embedded"
+status = "cli_parity_tested"
+parity_test = "tests/native/test_listing_ops_embedded_integration.py::test_is_synced_matches_cli_for_identical_directories"
+windows = true
+linux = false
+notes = "operations/check; deliberately does not conflate an unexpected RcCallError with 'not synced', unlike the CLI backend."
+
+[[row]]
+id = "L12"
+method = "diff"
+decision = "direct_rc"
+owner_module = "rclone_kit.operations.listing_ops_embedded"
+status = "native_tested"
+parity_test = "tests/native/test_listing_ops_embedded_integration.py::test_diff_combined_matches_cli"
+windows = true
+linux = false
+notes = "operations/check; supports every DiffOption, a strict improvement over the CLI backend (DIFFER/MATCH have no CLI-side equivalent to compare against, by design)."
+
+[[row]]
+id = "L13"
+method = "walk"
+decision = "transitive"
+owner_module = "rclone_kit.fs.walk"
+status = "cli_parity_tested"
+parity_test = "tests/native/test_walk_embedded_integration.py::test_walk_matches_cli_over_a_nested_tree"
+windows = true
+linux = false
+notes = "Calls Dir.ls() only; needed zero code once L01 landed."
+
+[[row]]
+id = "L14"
+method = "scan_missing_folders"
+decision = "transitive"
+owner_module = "rclone_kit.scan_missing_folders"
+status = "cli_parity_tested"
+parity_test = "tests/native/test_walk_embedded_integration.py::test_scan_missing_folders_matches_cli"
+windows = true
+linux = false
+notes = "Calls walk()/ls() only; needed zero code once L01/L13 landed."
+
+[[row]]
+id = "T01"
+method = "cleanup"
+decision = "direct_rc"
+owner_module = "rclone_kit.operations.transfer_ops_embedded"
+status = "cli_parity_tested"
+parity_test = "tests/native/test_transfer_ops_embedded_integration.py::test_cleanup_matches_cli_shape_for_a_local_path"
+windows = true
+linux = false
+notes = "operations/cleanup; synchronous, no job handle. Still holds the runtime lock for the whole call (see F5 in the Wave D design review)."
+
+[[row]]
+id = "T02"
+method = "copy_to"
+decision = "direct_rc"
+owner_module = "rclone_kit.operations.transfer_ops_embedded"
+status = "cli_parity_tested"
+parity_test = "tests/native/test_transfer_ops_embedded_integration.py::test_copy_to_matches_cli_for_a_real_file"
+windows = true
+linux = false
+notes = "operations/copyfile; splits both sides via RcPath.as_parent_and_name(). Does not yet reproduce the CLI's --s3-no-check-bucket override (design review section 9.3)."
+
+[[row]]
+id = "T03"
+method = "copy"
+decision = "direct_rc"
+owner_module = "rclone_kit.client"
+status = "planned"
+parity_test = ""
+windows = false
+linux = false
+notes = "Always async; needs JobHandle/OperationResult and the downstream retry-aware rclonekit/copy RC endpoint per the Wave D design review, not a bare sync/copy call."
+
+[[row]]
+id = "T04"
+method = "copy_dir"
+decision = "direct_rc"
+owner_module = "rclone_kit.client"
+status = "planned"
+parity_test = ""
+windows = false
+linux = false
+notes = "Consolidates with T03's engine; keeps its own legacy/default option policy."
+
+[[row]]
+id = "T05"
+method = "copy_remote"
+decision = "direct_rc"
+owner_module = "rclone_kit.client"
+status = "planned"
+parity_test = ""
+windows = false
+linux = false
+notes = "Consolidates with T03's engine; remote roots are full srcFs/dstFs."
+
+[[row]]
+id = "T06"
+method = "copy_files"
+decision = "composite_rc"
+owner_module = "rclone_kit.client"
+status = "planned"
+parity_test = ""
+windows = false
+linux = false
+notes = "Wave E; partitioned async sync/copy jobs with _filter.FilesFrom."
+
+[[row]]
+id = "T07"
+method = "purge"
+decision = "direct_rc"
+owner_module = "rclone_kit.operations.transfer_ops_embedded"
+status = "cli_parity_tested"
+parity_test = "tests/native/test_transfer_ops_embedded_integration.py::test_purge_matches_cli_for_a_real_directory"
+windows = true
+linux = false
+notes = "operations/purge; whole-target split, never raises."
+
+[[row]]
+id = "T08"
+method = "delete_files"
+decision = "composite_rc"
+owner_module = "rclone_kit.client"
+status = "planned"
+parity_test = ""
+windows = false
+linux = false
+notes = "Wave E."
+
+[[row]]
+id = "T09"
+method = "write_bytes"
+decision = "composite_rc"
+owner_module = "rclone_kit.client"
+status = "planned"
+parity_test = ""
+windows = false
+linux = false
+notes = "Wave F."
+
+[[row]]
+id = "T10"
+method = "write_text"
+decision = "transitive"
+owner_module = "rclone_kit.client"
+status = "planned"
+parity_test = ""
+windows = false
+linux = false
+notes = "Depends on T09."
+
+[[row]]
+id = "T11"
+method = "read_bytes"
+decision = "transitive"
+owner_module = "rclone_kit.client"
+status = "native_tested"
+parity_test = "tests/native/test_transfer_ops_embedded_integration.py::test_read_bytes_and_read_text_work_transitively_through_copy_to"
+windows = true
+linux = false
+failure_contract_complete = false
+notes = "Success path proven transitively via T02. Failure contract NOT yet execution-independent: embedded copy_to(check=True) raises RcCallError where the CLI path raises RcloneCommandError (design review F4). Do not treat this row as done until both modes raise the same typed error and missing-source/auth/partial-output/cleanup cases are tested."
+
+[[row]]
+id = "T12"
+method = "read_text"
+decision = "transitive"
+owner_module = "rclone_kit.client"
+status = "native_tested"
+parity_test = "tests/native/test_transfer_ops_embedded_integration.py::test_read_bytes_and_read_text_work_transitively_through_copy_to"
+windows = true
+linux = false
+failure_contract_complete = false
+notes = "Same failure-contract gap as T11 (design review F4)."
+
+[[row]]
+id = "T13"
+method = "copy_bytes"
+decision = "bridge"
+owner_module = "rclone_kit.client"
+status = "planned"
+parity_test = ""
+windows = false
+linux = false
+notes = "Wave F; open remote object with offset/count and pull bounded bytes."
+
+[[row]]
+id = "T14"
+method = "copy_file_s3"
+decision = "python"
+owner_module = "rclone_kit.client"
+status = "complete"
+parity_test = "tests/unit/test_rclone_facade_contract.py"
+windows = true
+linux = false
+notes = "Not a CLI dependency; boto3-based, unchanged by this migration."
+
+[[row]]
+id = "T15"
+method = "copy_file_s3_resumable"
+decision = "composite_rc"
+owner_module = "rclone_kit.client"
+status = "planned"
+parity_test = ""
+windows = false
+linux = false
+notes = "Depends on list/read/write/copy/serve rows migrating first."
+
+[[row]]
+id = "F01"
+method = "filesystem"
+decision = "composite_rc"
+owner_module = "rclone_kit.fs.filesystem"
+status = "planned"
+parity_test = ""
+windows = false
+linux = false
+notes = "Wave G; must bind no port and start no server at construction."
+
+[[row]]
+id = "F02"
+method = "cwd"
+decision = "transitive"
+owner_module = "rclone_kit.client"
+status = "planned"
+parity_test = ""
+windows = false
+linux = false
+notes = "Depends on F01."
+
+[[row]]
+id = "F03"
+method = "RemoteFS.exists/is_file/is_dir/ls"
+decision = "direct_rc"
+owner_module = "rclone_kit.fs.filesystem"
+status = "planned"
+parity_test = ""
+windows = false
+linux = false
+notes = "Wave G."
+
+[[row]]
+id = "F04"
+method = "RemoteFS.read_bytes/write_binary/copy/remove"
+decision = "composite_rc"
+owner_module = "rclone_kit.fs.filesystem"
+status = "planned"
+parity_test = ""
+windows = false
+linux = false
+notes = "Wave G; depends on T02/T08/T09/T11/T13."
+
+[[row]]
+id = "F05"
+method = "RemoteFS.dispose"
+decision = "runtime"
+owner_module = "rclone_kit.fs.filesystem"
+status = "planned"
+parity_test = ""
+windows = false
+linux = false
+notes = "Wave G."
+
+[[row]]
+id = "F06"
+method = "File.read_text"
+decision = "direct_rc"
+owner_module = "rclone_kit.file"
+status = "unit_tested"
+parity_test = "tests/unit/test_file.py"
+windows = true
+linux = false
+notes = "Delegates to the associated client's read_text() instead of the private CLI _run(['cat', ...]); no more direct CLI bypass."
+
+[[row]]
+id = "R01"
+method = "mount"
+decision = "direct_rc"
+owner_module = "rclone_kit.client"
+status = "planned"
+parity_test = ""
+windows = false
+linux = false
+notes = "Wave H; mount/mount, returns MountHandle/compatible Mount."
+
+[[row]]
+id = "R02"
+method = "mount_s3"
+decision = "composite_rc"
+owner_module = "rclone_kit.client"
+status = "planned"
+parity_test = ""
+windows = false
+linux = false
+notes = "Wave H; preset over R01."
+
+[[row]]
+id = "R03"
+method = "serve_webdav"
+decision = "direct_rc"
+owner_module = "rclone_kit.client"
+status = "planned"
+parity_test = ""
+windows = false
+linux = false
+notes = "Wave H; serve/start type=webdav."
+
+[[row]]
+id = "R04"
+method = "serve_http"
+decision = "direct_rc"
+owner_module = "rclone_kit.client"
+status = "planned"
+parity_test = ""
+windows = false
+linux = false
+notes = "Wave H; serve/start type=http."
+
+[[row]]
+id = "R05"
+method = "server listing/cleanup"
+decision = "direct_rc"
+owner_module = "rclone_kit.client"
+status = "planned"
+parity_test = ""
+windows = false
+linux = false
+notes = "Wave H; serve/list/stop/stopall, mount/listmounts/unmountall."

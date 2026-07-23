@@ -1,5 +1,8 @@
-"""Unit tests for `Rclone(execution="embedded")` construction and its first
-ported method, `obscure()` (CLI-to-C-ABI migration ledger rows C01, M01).
+"""Unit tests for `Rclone(execution="embedded")` construction and its
+dispatch to every currently-ported embedded operation (see
+`tests/parity/coverage.toml` for the authoritative, current row-by-row
+list; as of Wave D this covers C01 and M01-M03/M05/M06/L01/L05/L08/L10-L12/
+T01/T02/T07, plus several transitive rows).
 
 Uses a fake `NativeBinding` wrapped in a real `RcloneRuntime`, injected
 through the `runtime=` constructor parameter, so these tests exercise

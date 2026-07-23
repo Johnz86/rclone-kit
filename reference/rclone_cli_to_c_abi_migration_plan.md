@@ -482,6 +482,17 @@ byte-compatible with a real CLI invocation, and does not carry real stdout/stder
 an async job (they are all synchronous RC calls), so that design work is deferred to T03–T05
 (`copy`/`copy_dir`/`copy_remote`, all "Always async" per the ledger), which remain unstarted.
 
+T11/T12 are success-path-complete but not yet failure-contract-complete: embedded `copy_to`
+currently raises `RcCallError` on failure where the CLI path raises `RcloneCommandError`, so a caller
+written against the documented CLI exception type can miss an embedded failure. See
+[`native_c_abi_wave_d_review_and_design.md`](native_c_abi_wave_d_review_and_design.md) finding F4 and
+`tests/parity/coverage.toml`'s `T11`/`T12` rows (`failure_contract_complete = false`) for the tracked
+gap and its required fix (an execution-independent operation error hierarchy). That review document
+is also the normative design for the rest of Wave D (T03-T05, plus retrofitting T01/T02/T07 onto the
+same job/result architecture): it supersedes ad hoc `sync/copy` + `_config.Retries` as "enough" for
+`copy()`, since the pinned rclone's RC `sync/copy` handler does not run the CLI's high-level retry
+loop.
+
 ### Wave E — filtered and partitioned operations
 
 Ledger: T06, T08, L09.
@@ -647,4 +658,3 @@ Before implementing more than the first native smoke call, create:
 The machine-readable coverage file should name the Markdown row ID, public method, owner module,
 parity test, Windows/Linux state, and removal dependencies. CI can then reject an executable-removal
 change while incomplete rows remain.
-
