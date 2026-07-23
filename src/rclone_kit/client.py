@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import subprocess
 import time
+import uuid
 import warnings
 from collections.abc import Generator
 from datetime import datetime
@@ -21,11 +22,17 @@ from rclone_kit.convert import convert_to_str
 from rclone_kit.diff import DiffItem, DiffOption
 from rclone_kit.dir import Dir
 from rclone_kit.dir_listing import DirListing
-from rclone_kit.exceptions import RcloneCommandError, UnsupportedEmbeddedOperationError
+from rclone_kit.exceptions import (
+    EmbeddedOnlyOperationError,
+    OperationShutdownError,
+    RcloneCommandError,
+    UnsupportedEmbeddedOperationError,
+)
 from rclone_kit.file import File
 from rclone_kit.file_stream import FilesStream
 from rclone_kit.fs.filesystem import FSPath, RemoteFS
 from rclone_kit.http_server import HttpServer
+from rclone_kit.job import JobHandle, _JobMonitor
 from rclone_kit.mount import Mount
 from rclone_kit.native.library import resolve_library_path
 from rclone_kit.native.runtime import RcloneRuntime
@@ -77,10 +84,13 @@ from rclone_kit.operations.transfer_ops_embedded import (
     copy_file_to_embedded,
     purge_dir_embedded,
 )
+from rclone_kit.operations.transfer_options import TransferOptions, encode_transfer_options_config
 from rclone_kit.operations.walk import walk
 from rclone_kit.optional_dependency import MissingOptionalDependencyError
 from rclone_kit.process import Process
 from rclone_kit.rc.client import RcClient
+from rclone_kit.rc.fs_spec import encode_fs_spec
+from rclone_kit.rc.jobs import RcloneRcJobClient
 from rclone_kit.remote import Remote
 from rclone_kit.rpath import RPath
 from rclone_kit.s3.types import S3UploadTarget
@@ -95,6 +105,7 @@ from rclone_kit.types import (
     SizeSuffix,
 )
 from rclone_kit.util import (
+    get_check,
     get_rclone_exe,
     get_verbose,
     make_temp_config_file,
@@ -107,6 +118,17 @@ if TYPE_CHECKING:
     from rclone_kit.s3.types import S3Credentials
 
 logger = logging.getLogger(__name__)
+
+_JOB_SHUTDOWN_DEADLINE_SECONDS = 10.0
+
+# copy()'s historical tuned profile (from operations/transfer_ops.py's
+# copy_tree, which applies these same values via `or`-defaulting for the
+# CLI backend). copy_dir()/copy_remote() must not inherit these - they use
+# rclone's own defaults instead.
+_COPY_DEFAULT_CHECKERS = 1000
+_COPY_DEFAULT_TRANSFERS = 32
+_COPY_DEFAULT_LOW_LEVEL_RETRIES = 10
+_COPY_DEFAULT_RETRIES = 3
 
 
 class _UnsupportedEmbeddedBackend:
@@ -157,6 +179,7 @@ class Rclone:
 
     execution: Literal["embedded", "cli"] = "cli"
     _rc_client: RcClient | None = None
+    _job_monitor: _JobMonitor | None = None
 
     @staticmethod
     def upgrade_rclone() -> Path:
@@ -209,6 +232,7 @@ class Rclone:
         self._embedded_runtime: RcloneRuntime | None = None
         self._owns_embedded_runtime = False
         self._rc_client: RcClient | None = None
+        self._job_monitor: _JobMonitor | None = None
 
         if execution == "embedded":
             if backend is not None or rclone_exe is not None:
@@ -220,6 +244,7 @@ class Rclone:
                 raise ValueError("supply at most one of runtime and library_path")
             self._backend: RcloneBackend = _UnsupportedEmbeddedBackend()
             self.config = _to_rclone_conf(rclone_conf)
+            self._client_id = uuid.uuid4()
             config_path = self._embedded_config_path(rclone_conf)
             if runtime is not None:
                 self._embedded_runtime = runtime
@@ -265,10 +290,27 @@ class Rclone:
     def close(self) -> None:
         """Release resources this client owns. Idempotent.
 
-        Only closes the embedded runtime if this client created it itself;
+        Cancels and waits for every job this client started (regardless of
+        who owns the embedded runtime - the runtime may be injected and
+        outlive this client, but jobs this client started are still its own
+        responsibility) before finalizing the runtime. Raises
+        `OperationShutdownError` and leaves the runtime open, rather than
+        reporting a false close, if a job cannot be confirmed settled
+        within the shutdown deadline.
+
+        Only closes the embedded runtime itself if this client created it;
         an injected `runtime` outlives this client, matching
         `RcloneRuntime`'s own single-owner closing rule.
         """
+        if self._job_monitor is not None:
+            all_settled = self._job_monitor.shutdown(
+                deadline_seconds=_JOB_SHUTDOWN_DEADLINE_SECONDS
+            )
+            if not all_settled:
+                raise OperationShutdownError(
+                    f"one or more jobs did not settle within "
+                    f"{_JOB_SHUTDOWN_DEADLINE_SECONDS}s of close(); runtime left open"
+                )
         if self._owns_embedded_runtime and self._embedded_runtime is not None:
             self._embedded_runtime.close()
 
@@ -667,6 +709,68 @@ class Rclone:
             other_args=other_args,
         )
 
+    def _ensure_job_monitor(self) -> _JobMonitor:
+        if self._job_monitor is None:
+            assert self._rc_client is not None
+            self._job_monitor = _JobMonitor(RcloneRcJobClient(self._rc_client))
+        return self._job_monitor
+
+    def start_copy(
+        self,
+        src: Dir | Remote | str,
+        dst: Dir | Remote | str,
+        *,
+        transfers: int | None = None,
+        checkers: int | None = None,
+        multi_thread_streams: int | None = None,
+        low_level_retries: int | None = None,
+        retries: int | None = None,
+        create_empty_src_dirs: bool = False,
+        check: bool | None = None,
+    ) -> JobHandle:
+        """Start an asynchronous directory copy and return a `JobHandle`.
+
+        Embedded-only: an `execution="cli"` client raises
+        `EmbeddedOnlyOperationError`, since `JobHandle`'s async job model has
+        no blocking-process equivalent to fall back to. `check` is stored on
+        the returned handle and governs `JobHandle.wait()`'s raise-on-failure
+        behavior; it is never sent to rclone. Uses the retry-aware
+        `rclonekit/copy` RC method (not a bare `sync/copy`), which preserves
+        the same high-level retry loop `rclone copy` itself uses.
+        """
+        if self._rc_client is None:
+            raise EmbeddedOnlyOperationError("start_copy")
+        check = get_check(check)
+        src_str = convert_to_str(src)
+        dst_str = convert_to_str(dst)
+        options = TransferOptions(
+            checkers=checkers,
+            transfers=transfers,
+            low_level_retries=low_level_retries,
+            retries=retries,
+            multi_thread_streams=multi_thread_streams,
+            create_empty_src_dirs=create_empty_src_dirs,
+        )
+        params: dict[str, object] = {
+            "srcFs": encode_fs_spec(self.config, src_str),
+            "dstFs": encode_fs_spec(self.config, dst_str),
+            "createEmptySrcDirs": create_empty_src_dirs,
+        }
+        config_overlay = encode_transfer_options_config(options)
+        if config_overlay:
+            params["_config"] = config_overlay
+        monitor = self._ensure_job_monitor()
+        group = f"rclone-kit/{self._client_id}/{uuid.uuid4()}"
+        return monitor.start_job(
+            "rclonekit/copy",
+            params,
+            group=group,
+            operation="copy",
+            source=src_str,
+            destination=dst_str,
+            check=check,
+        )
+
     def copy(
         self,
         src: Dir | str,
@@ -685,6 +789,21 @@ class Rclone:
             src: Source directory
             dst: Destination directory
         """
+        if self._rc_client is not None:
+            if other_args:
+                raise UnsupportedEmbeddedOperationError("copy (other_args)")
+            handle = self.start_copy(
+                src,
+                dst,
+                transfers=transfers or _COPY_DEFAULT_TRANSFERS,
+                checkers=checkers or _COPY_DEFAULT_CHECKERS,
+                low_level_retries=low_level_retries or _COPY_DEFAULT_LOW_LEVEL_RETRIES,
+                retries=retries or _COPY_DEFAULT_RETRIES,
+                multi_thread_streams=multi_thread_streams,
+                check=check,
+            )
+            result = handle.wait()
+            return CompletedProcess.from_operation_result(result)
         return copy_tree(
             self._backend,
             src,
@@ -879,13 +998,33 @@ class Rclone:
     def copy_dir(
         self, src: str | Dir, dst: str | Dir, args: list[str] | None = None
     ) -> CompletedProcess:
-        """Copy a directory from source to destination."""
+        """Copy a directory from source to destination.
+
+        Never raises: matches the CLI backend's own non-raising
+        `copy_directory`. Unlike `copy()`, uses rclone's own tuning
+        defaults rather than `copy()`'s aggressive tuned profile.
+        """
+        if self._rc_client is not None:
+            if args:
+                raise UnsupportedEmbeddedOperationError("copy_dir (args)")
+            result = self.start_copy(src, dst, check=False).wait()
+            return CompletedProcess.from_operation_result(result)
         return copy_directory(self._backend, src, dst, args=args)
 
     def copy_remote(
         self, src: Remote, dst: Remote, args: list[str] | None = None
     ) -> CompletedProcess:
-        """Copy a remote to another remote."""
+        """Copy a remote to another remote.
+
+        Never raises: matches the CLI backend's own non-raising
+        `copy_between_remotes`. Unlike `copy()`, uses rclone's own tuning
+        defaults rather than `copy()`'s aggressive tuned profile.
+        """
+        if self._rc_client is not None:
+            if args:
+                raise UnsupportedEmbeddedOperationError("copy_remote (args)")
+            result = self.start_copy(src, dst, check=False).wait()
+            return CompletedProcess.from_operation_result(result)
         return copy_between_remotes(self._backend, src, dst, args=args)
 
     def mount(

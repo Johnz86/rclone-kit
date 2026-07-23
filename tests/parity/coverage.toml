@@ -369,33 +369,33 @@ id = "T03"
 method = "copy"
 decision = "direct_rc"
 owner_module = "rclone_kit.client"
-status = "planned"
-parity_test = ""
-windows = false
+status = "cli_parity_tested"
+parity_test = "tests/native/test_start_copy_integration.py::test_copy_matches_cli_and_returns_completed_process"
+windows = true
 linux = false
-notes = "Always async; needs JobHandle/OperationResult and the downstream retry-aware rclonekit/copy RC endpoint per the Wave D design review, not a bare sync/copy call."
+notes = "Always async: start_copy() dispatches to rclonekit/copy (Phase D4's retry-aware Go endpoint, not a bare sync/copy call) through JobHandle/_JobMonitor (Phase D3) and blocks via .wait(); copy() applies its historical tuned defaults (checkers 1000, transfers 32, low-level retries 10, retries 3) at its own call site, not baked into TransferOptions itself. The rclonekit/copy Go endpoint is committed locally in the native/rclone submodule (rclone-kit/integration-v1, d498adafa) but not yet pushed to its GitHub remote, so the parent submodule pin has not moved - see native_c_abi_wave_d_review_and_design.md's Phase D4 status note."
 
 [[row]]
 id = "T04"
 method = "copy_dir"
 decision = "direct_rc"
 owner_module = "rclone_kit.client"
-status = "planned"
-parity_test = ""
-windows = false
+status = "cli_parity_tested"
+parity_test = "tests/native/test_start_copy_integration.py::test_start_copy_matches_cli_for_a_nested_tree"
+windows = true
 linux = false
-notes = "Consolidates with T03's engine; keeps its own legacy/default option policy."
+notes = "Consolidates with T03's start_copy() engine but without copy()'s tuned defaults (rclone's own defaults apply) and with copy_directory()'s own non-raising failure policy (check=False always). Rejects nonempty args with UnsupportedEmbeddedOperationError rather than silently dropping them."
 
 [[row]]
 id = "T05"
 method = "copy_remote"
 decision = "direct_rc"
 owner_module = "rclone_kit.client"
-status = "planned"
-parity_test = ""
-windows = false
+status = "unit_tested"
+parity_test = "tests/native/test_start_copy_integration.py::test_copy_remote_never_raises_for_an_unconfigured_remote"
+windows = true
 linux = false
-notes = "Consolidates with T03's engine; remote roots are full srcFs/dstFs."
+notes = "Consolidates with T03's start_copy() engine; Remote values convert to their bare root string (\"name:\") via the existing convert_to_str(). Native coverage is for the non-raising-failure and args-rejection paths only - Remote's constructor rejects a colon in its name, so it cannot address an arbitrary local test directory the way copy_dir()'s str/Dir targets can; a real cross-remote transfer is exercised at the unit level (test_copy_remote_dispatches_to_start_copy in test_client_embedded.py) and would need a live or dynamically-registered (config/create) remote for native coverage."
 
 [[row]]
 id = "T06"

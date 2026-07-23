@@ -1077,6 +1077,38 @@ Exit gate: request JSON is fully typed and parity differences are explicit.
 Exit gate: T03-T05 work under embedded execution without `rclone.exe`, with retry and cancellation
 tests.
 
+Status: done. `start_copy()` is embedded-only (raises `EmbeddedOnlyOperationError` under
+`execution="cli"`) and returns a `JobHandle`; `copy()`, `copy_dir()`, and `copy_remote()` all share
+it, differing only in their historical default/check policy per section 11.2-11.4 (`copy()` applies
+its tuned profile and `check`-driven raise behavior; `copy_dir()`/`copy_remote()` use rclone's own
+defaults and never raise). `Rclone.close()` was extended to cancel and wait for every job a client
+started before finalizing, per section 12.1.
+
+Native parity (`tests/native/test_start_copy_integration.py`) covers: a nested multi-directory tree
+matching CLI byte-for-byte, an empty directory (zero transfers), a second pass over already-synced
+files (zero transfers), a missing source both with `check=False` (non-raising) and `check=True`
+(`OperationFailedError`), `wait(timeout=...)` racing the monitor's poll interval deterministically
+(a timeout far below the default poll interval reliably fires before the first poll, rather than
+depending on how fast the underlying copy happens to run), `cancel()` against a real in-flight job
+(loosely asserted - a fast local copy commonly finishes before cancellation lands, so this only
+proves the handle settles cleanly either way; real cancellation-interrupts-an-active-attempt
+coverage belongs to the Go endpoint's own test suite, Phase D4), `copy_dir()`'s non-raising failure
+and `args`-rejection, stats isolation between two concurrently-started jobs' accounting groups, and
+the low-level `RcloneRcJobClient` used directly agreeing with the public facade. `copy_remote()`'s
+native coverage is narrower than the others: `Remote` is a bare-root reference whose constructor
+rejects a colon in the name, so it cannot address an arbitrary local test directory the way a
+str/Dir target can; native coverage here is for the non-raising-failure and args-rejection paths,
+with the Remote-to-string conversion and successful-dispatch path covered at the unit level instead
+(`test_copy_remote_dispatches_to_start_copy` in `test_client_embedded.py`).
+
+This phase required rebuilding the local native artifact (`build/native/windows-amd64`) after Phase
+D4's Go changes; on this development machine that rebuild was intermittently unreliable when invoked
+through `scripts/native/build.py`'s subprocess calls (the `go build` steps sometimes reported success
+without actually writing the output file - resolved by killing stale Python processes that had the
+previous DLL loaded via `ctypes.CDLL` and never released it, then retrying the build until both
+artifacts were freshly written and verified by hash). This is a local build-environment quirk, not a
+change to the build script or its documented usage.
+
 ### Phase D7 — Retrofit T01/T02/T07 and close T11/T12 properly
 
 1. Move cleanup, single-file copy, and purge to async job execution internally.

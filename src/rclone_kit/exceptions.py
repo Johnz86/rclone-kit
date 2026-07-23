@@ -108,6 +108,25 @@ class UnsupportedEmbeddedOperationError(RcloneKitError):
         )
 
 
+class EmbeddedOnlyOperationError(RcloneKitError):
+    """Raised when a method that only exists for `execution="embedded"`
+    clients (`start_copy()` and its `JobHandle` family) is called on an
+    `execution="cli"` `Rclone` client.
+
+    The inverse of `UnsupportedEmbeddedOperationError`: that one means "not
+    ported to embedded yet"; this one means "has no CLI/subprocess
+    equivalent at all" - `JobHandle`'s asynchronous job model has no
+    blocking-process analogue to fall back to.
+    """
+
+    def __init__(self, method: str) -> None:
+        self.method = method
+        super().__init__(
+            f"Rclone.{method}() requires execution='embedded'; it has no "
+            "execution='cli' equivalent."
+        )
+
+
 class OperationError(RcloneKitError):
     """Base type for the execution-independent embedded operation errors
     (`JobHandle`/`start_*` family), added by the CLI-to-C-ABI migration's

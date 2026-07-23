@@ -19,9 +19,10 @@ import pytest
 
 from rclone_kit.client import Rclone
 from rclone_kit.config import Config
-from rclone_kit.exceptions import UnsupportedEmbeddedOperationError
+from rclone_kit.exceptions import EmbeddedOnlyOperationError, UnsupportedEmbeddedOperationError
 from rclone_kit.native.runtime import RcloneRuntime
 from rclone_kit.process import Process
+from rclone_kit.remote import Remote
 
 _BUILD_INFO_JSON = json.dumps(
     {
@@ -410,4 +411,156 @@ def test_cleanup_dispatches_to_rc_client_when_embedded() -> None:
 
     assert result.ok is True
     assert binding.rpc_calls[0][0] == b"operations/cleanup"
+    rclone.close()
+
+
+def _finished_job_status_json(
+    *, job_id: int = 1, execute_id: str = "exec-1", success: bool = True, error: str = ""
+) -> bytes:
+    return json.dumps(
+        {
+            "id": job_id,
+            "executeId": execute_id,
+            "group": "irrelevant",
+            "duration": 0.01,
+            "startTime": "2026-07-23T20:00:00Z",
+            "endTime": "2026-07-23T20:00:01Z",
+            "finished": True,
+            "success": success,
+            "error": error,
+            "output": {},
+        }
+    ).encode("utf-8")
+
+
+_STATS_JSON = json.dumps(
+    {
+        "bytes": 100,
+        "totalBytes": 100,
+        "checks": 0,
+        "totalChecks": 0,
+        "transfers": 1,
+        "totalTransfers": 1,
+        "errors": 0,
+        "fatalError": False,
+        "retryError": False,
+        "speed": 0.0,
+        "eta": None,
+        "elapsedTime": 0.01,
+    }
+).encode("utf-8")
+
+
+def _set_successful_copy_responses(
+    binding: FakeBinding, *, success: bool = True, error: str = ""
+) -> None:
+    binding.rpc_responses_by_method[b"rclonekit/copy"] = (
+        200,
+        b'{"executeId": "exec-1", "jobid": 1}',
+    )
+    binding.rpc_responses_by_method[b"job/status"] = (
+        200,
+        _finished_job_status_json(success=success, error=error),
+    )
+    binding.rpc_responses_by_method[b"core/stats"] = (200, _STATS_JSON)
+    binding.rpc_responses_by_method[b"core/stats-delete"] = (200, b"{}")
+
+
+def test_start_copy_dispatches_to_rclonekit_copy_and_returns_a_job_handle() -> None:
+    binding = FakeBinding()
+    _set_successful_copy_responses(binding)
+    rclone = Rclone(None, execution="embedded", runtime=RcloneRuntime(binding))
+
+    handle = rclone.start_copy("src:bucket", "dst:bucket")
+    result = handle.wait(timeout=5.0)
+
+    assert result.ok is True
+    assert binding.rpc_calls[0][0] == b"rclonekit/copy"
+    rclone.close()
+
+
+def test_start_copy_requires_embedded_execution() -> None:
+    rclone = object.__new__(Rclone)
+
+    with pytest.raises(EmbeddedOnlyOperationError):
+        rclone.start_copy("src:", "dst:")
+
+
+def test_copy_dispatches_to_start_copy_with_its_tuned_defaults() -> None:
+    binding = FakeBinding()
+    _set_successful_copy_responses(binding)
+    rclone = Rclone(None, execution="embedded", runtime=RcloneRuntime(binding))
+
+    result = rclone.copy("src:bucket", "dst:bucket")
+
+    assert result.ok is True
+    request = json.loads(binding.rpc_calls[0][1])
+    assert request["_config"] == {
+        "Checkers": 1000,
+        "Transfers": 32,
+        "LowLevelRetries": 10,
+        "Retries": 3,
+    }
+    rclone.close()
+
+
+def test_copy_rejects_other_args_in_embedded_mode() -> None:
+    binding = FakeBinding()
+    rclone = Rclone(None, execution="embedded", runtime=RcloneRuntime(binding))
+
+    with pytest.raises(UnsupportedEmbeddedOperationError):
+        rclone.copy("src:", "dst:", other_args=["--foo"])
+    rclone.close()
+
+
+def test_copy_dir_dispatches_to_start_copy_without_copys_tuned_defaults() -> None:
+    binding = FakeBinding()
+    _set_successful_copy_responses(binding)
+    rclone = Rclone(None, execution="embedded", runtime=RcloneRuntime(binding))
+
+    result = rclone.copy_dir("src:bucket", "dst:bucket")
+
+    assert result.ok is True
+    request = json.loads(binding.rpc_calls[0][1])
+    assert request.get("_config", {}) == {}
+    rclone.close()
+
+
+def test_copy_dir_rejects_args_in_embedded_mode() -> None:
+    binding = FakeBinding()
+    rclone = Rclone(None, execution="embedded", runtime=RcloneRuntime(binding))
+
+    with pytest.raises(UnsupportedEmbeddedOperationError):
+        rclone.copy_dir("src:", "dst:", args=["--foo"])
+    rclone.close()
+
+
+def test_copy_dir_does_not_raise_on_failure() -> None:
+    binding = FakeBinding()
+    _set_successful_copy_responses(binding, success=False, error="boom")
+    rclone = Rclone(None, execution="embedded", runtime=RcloneRuntime(binding))
+
+    result = rclone.copy_dir("src:bucket", "dst:bucket")
+
+    assert result.ok is False
+    rclone.close()
+
+
+def test_copy_remote_dispatches_to_start_copy() -> None:
+    binding = FakeBinding()
+    _set_successful_copy_responses(binding)
+    rclone = Rclone(None, execution="embedded", runtime=RcloneRuntime(binding))
+
+    result = rclone.copy_remote(Remote("src", rclone), Remote("dst", rclone))
+
+    assert result.ok is True
+    rclone.close()
+
+
+def test_copy_remote_rejects_args_in_embedded_mode() -> None:
+    binding = FakeBinding()
+    rclone = Rclone(None, execution="embedded", runtime=RcloneRuntime(binding))
+
+    with pytest.raises(UnsupportedEmbeddedOperationError):
+        rclone.copy_remote(Remote("src", rclone), Remote("dst", rclone), args=["--foo"])
     rclone.close()

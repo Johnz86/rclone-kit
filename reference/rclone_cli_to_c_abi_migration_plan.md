@@ -478,20 +478,46 @@ failed `CompletedProcess` instead. `CompletedProcess` here wraps one *synthetic*
 `subprocess.CompletedProcess` (no real subprocess exists) purely for public-API compatibility during
 the transition, per this section's own `OperationResult` compatibility note - it is not meant to be
 byte-compatible with a real CLI invocation, and does not carry real stdout/stderr.
-`OperationResult`/`JobHandle` themselves are not introduced yet: none of T01/T02/T07/T11/T12 needed
-an async job (they are all synchronous RC calls), so that design work is deferred to T03–T05
-(`copy`/`copy_dir`/`copy_remote`, all "Always async" per the ledger), which remain unstarted.
+`OperationResult`/`JobHandle` were not introduced in that first slice: none of T01/T02/T07/T11/T12
+needed an async job (they are all synchronous RC calls), so that design work was deferred to T03–T05
+(`copy`/`copy_dir`/`copy_remote`, all "Always async" per the ledger). That deferred work is now done,
+following the normative design in
+[`native_c_abi_wave_d_review_and_design.md`](native_c_abi_wave_d_review_and_design.md) (which
+supersedes ad hoc `sync/copy` + `_config.Retries` as "enough" for `copy()`, since the pinned rclone's
+RC `sync/copy` handler does not run the CLI's high-level retry loop):
+
+- `rclone_kit/operation.py` (`JobState`/`JobStatus`/`TransferStats`/`OperationAttempt`/
+  `OperationResult`/`OperationWarning`), `rclone_kit/rc/jobs.py` (`RcJobRef`/`RcloneRcJobClient`,
+  strict wire parsing against the real pinned build), and `rclone_kit/job.py` (`JobHandle`/
+  `_JobMonitor`, one lazily-started background poller per embedded client) form the job
+  infrastructure: `OperationResult`s reach callers with real `stats`, and terminal state survives
+  rclone's own `job/status` expiry window.
+- A small downstream Go RC endpoint, `rclonekit/copy` (`native/rclone`'s
+  `librclone/rclonekit/rc/copy.go`), reproduces `cmd.Run`'s high-level retry loop (attempt count from
+  `_config.Retries`, `fs.CountError` classification, reset-between-attempts, context-aware retry
+  sleep) scoped to the calling job's own accounting group, so concurrent library jobs never share
+  error state. This is committed locally in the `native/rclone` submodule
+  (`rclone-kit/integration-v1`, commit `d498adafa`) but **not yet pushed** to its GitHub remote, so
+  the parent submodule pin has not moved - pushing that commit and moving the pin is a separate,
+  explicitly-authorized step, not part of this ledger update.
+- `Rclone.start_copy()` is the new canonical embedded-only entry point (raises
+  `EmbeddedOnlyOperationError` under `execution="cli"`, since `JobHandle`'s async job model has no
+  blocking-process equivalent): it encodes `TransferOptions`/`RcFsSpec`, starts `rclonekit/copy`, and
+  returns a `JobHandle`. `copy()`'s embedded path calls `start_copy(...).wait()` with `copy()`'s own
+  historical tuned defaults (checkers 1000, transfers 32, low-level retries 10, retries 3) applied at
+  its own call site, not baked into `TransferOptions`; `copy_dir()`/`copy_remote()` share the same
+  engine with rclone's own defaults and their historical non-raising failure behavior, rejecting
+  nonempty `args` rather than silently dropping them. `Rclone.close()` now cancels and waits for
+  every job a client started (regardless of runtime ownership) before finalizing an owned runtime,
+  raising `OperationShutdownError` and leaving the runtime open if a job cannot be confirmed settled
+  in time.
 
 T11/T12 are success-path-complete but not yet failure-contract-complete: embedded `copy_to`
 currently raises `RcCallError` on failure where the CLI path raises `RcloneCommandError`, so a caller
-written against the documented CLI exception type can miss an embedded failure. See
-[`native_c_abi_wave_d_review_and_design.md`](native_c_abi_wave_d_review_and_design.md) finding F4 and
-`tests/parity/coverage.toml`'s `T11`/`T12` rows (`failure_contract_complete = false`) for the tracked
-gap and its required fix (an execution-independent operation error hierarchy). That review document
-is also the normative design for the rest of Wave D (T03-T05, plus retrofitting T01/T02/T07 onto the
-same job/result architecture): it supersedes ad hoc `sync/copy` + `_config.Retries` as "enough" for
-`copy()`, since the pinned rclone's RC `sync/copy` handler does not run the CLI's high-level retry
-loop.
+written against the documented CLI exception type can miss an embedded failure. See the design
+review's finding F4 and `tests/parity/coverage.toml`'s `T11`/`T12` rows
+(`failure_contract_complete = false`) for the tracked gap; retrofitting T01/T02/T07/T11/T12 onto the
+same job/result architecture (Phase D7) remains unstarted.
 
 ### Wave E — filtered and partitioned operations
 
