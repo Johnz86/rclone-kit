@@ -4,6 +4,12 @@ operations (ledger rows T01, T02, T07), plus verification that
 call `self.copy_to`, so they needed no embedded adapter of their own once
 T02 landed.
 
+Since Wave D Phase D7, all three route through the shared async job engine
+(`_JobMonitor`), so a `copy_to(check=True)` failure raises
+`OperationFailedError` - not a raw `RcCallError` - the same
+execution-independent exception `read_bytes()`/`read_text()` translate to
+`RcloneCommandError`, closing design-review finding F4.
+
 Skipped automatically when no built native target exists (run
 `scripts/native/build.py` first).
 """
@@ -14,7 +20,7 @@ import pytest
 
 from conftest import NATIVE_EXECUTABLE_AVAILABLE
 from rclone_kit.client import Rclone
-from rclone_kit.rc.errors import RcCallError
+from rclone_kit.exceptions import OperationFailedError, RcloneCommandError
 
 pytestmark = pytest.mark.skipif(
     not NATIVE_EXECUTABLE_AVAILABLE,
@@ -49,14 +55,40 @@ def test_copy_to_works_with_bare_relative_basenames(
     assert Path("dst.txt").read_bytes() == b"relative basename works"
 
 
-def test_copy_to_raises_by_default_on_missing_source(
+def test_copy_to_relative_basename_destination_also_works(
+    tmp_path: Path, embedded: Rclone, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # F8 covers the destination side too: a bare relative basename with no
+    # existing file yet at that name must still resolve its parent to ".".
+    monkeypatch.chdir(tmp_path)
+    src = tmp_path / "abs_src.txt"
+    src.write_bytes(b"dest side relative basename")
+
+    embedded.copy_to(str(src), "relative_dst.txt")
+
+    assert Path("relative_dst.txt").read_bytes() == b"dest side relative basename"
+
+
+def test_copy_to_raises_operation_failed_error_by_default_on_missing_source(
     tmp_path: Path, embedded: Rclone
 ) -> None:
     missing = tmp_path / "does-not-exist.txt"
     dst = tmp_path / "dst.txt"
 
-    with pytest.raises(RcCallError):
+    with pytest.raises(OperationFailedError):
         embedded.copy_to(str(missing), str(dst))
+
+
+def test_copy_to_leaves_no_partial_destination_file_on_failure(
+    tmp_path: Path, embedded: Rclone
+) -> None:
+    missing = tmp_path / "does-not-exist.txt"
+    dst = tmp_path / "dst.txt"
+
+    result = embedded.copy_to(str(missing), str(dst), check=False)
+
+    assert result.ok is False
+    assert not dst.exists()
 
 
 def test_read_bytes_and_read_text_work_transitively_through_copy_to(
@@ -67,6 +99,18 @@ def test_read_bytes_and_read_text_work_transitively_through_copy_to(
 
     assert embedded.read_bytes(str(src)) == b"hello, rclone-kit"
     assert embedded.read_text(str(src)) == "hello, rclone-kit"
+
+
+def test_read_bytes_raises_rclone_command_error_for_a_missing_source(
+    tmp_path: Path, embedded: Rclone
+) -> None:
+    # Closes design-review finding F4: the embedded failure contract now
+    # matches the CLI's - RcloneCommandError regardless of execution mode -
+    # not a bare RcCallError/OperationFailedError leaking through.
+    missing = tmp_path / "does-not-exist.txt"
+
+    with pytest.raises(RcloneCommandError):
+        embedded.read_bytes(str(missing))
 
 
 def test_purge_matches_cli_for_a_real_directory(
@@ -88,6 +132,14 @@ def test_purge_matches_cli_for_a_real_directory(
     assert cli_result.ok is True
     assert not embedded_target.exists()
     assert not cli_target.exists()
+
+
+def test_purge_never_raises_for_a_missing_directory(tmp_path: Path, embedded: Rclone) -> None:
+    missing = tmp_path / "does-not-exist"
+
+    result = embedded.purge(str(missing))
+
+    assert result.ok is False
 
 
 def test_cleanup_matches_cli_shape_for_a_local_path(

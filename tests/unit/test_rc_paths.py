@@ -1,8 +1,22 @@
-"""Unit tests for `rclone_kit.rc.paths.RcPath`."""
+"""Unit tests for `rclone_kit.rc.paths.RcPath`.
+
+Every bare local reference (no remote prefix, not a Windows drive-prefixed
+absolute path) is absolutized against the current working directory as
+soon as it is parsed - see `RcPath`'s module docstring and `_resolve_local`
+for why. These tests compute the expected absolutized form with
+`Path(...).resolve()` directly, the same primitive the implementation
+uses, rather than hardcoding a platform-specific string.
+"""
+
+from pathlib import Path
 
 import pytest
 
 from rclone_kit.rc.paths import RcPath
+
+
+def _abs(path: str) -> str:
+    return str(Path(path).resolve())
 
 
 @pytest.mark.parametrize(
@@ -16,8 +30,6 @@ from rclone_kit.rc.paths import RcPath
         ("C:\\Users\\example\\file.txt", "C:\\Users\\example\\file.txt", ""),
         ("C:/Users/example/file.txt", "C:/Users/example/file.txt", ""),
         ("C:", "C:", ""),
-        ("/home/user/file.txt", "/home/user/file.txt", ""),
-        ("relative/local/path", "relative/local/path", ""),
     ],
 )
 def test_parse_splits_fs_and_remote(raw: str, expected_fs: str, expected_remote: str) -> None:
@@ -25,6 +37,14 @@ def test_parse_splits_fs_and_remote(raw: str, expected_fs: str, expected_remote:
 
     assert parsed.fs == expected_fs
     assert parsed.remote == expected_remote
+
+
+@pytest.mark.parametrize("raw", ["/home/user/file.txt", "relative/local/path"])
+def test_parse_absolutizes_a_bare_local_reference(raw: str) -> None:
+    parsed = RcPath.parse(raw)
+
+    assert parsed.fs == _abs(raw)
+    assert parsed.remote == ""
 
 
 def test_parse_does_not_treat_multi_letter_prefix_as_a_drive() -> None:
@@ -36,7 +56,7 @@ def test_parse_does_not_treat_multi_letter_prefix_as_a_drive() -> None:
 
 def test_str_reconstructs_the_original_shape() -> None:
     assert str(RcPath.parse("remote:path/to/object")) == "remote:path/to/object"
-    assert str(RcPath.parse("/home/user/file.txt")) == "/home/user/file.txt"
+    assert str(RcPath.parse("/home/user/file.txt")) == _abs("/home/user/file.txt")
 
 
 def test_as_parent_and_name_splits_remote_path_at_final_component() -> None:
@@ -69,8 +89,6 @@ def test_as_parent_and_name_rejects_bare_root() -> None:
     [
         ("C:\\Users\\example\\file.txt", "C:\\Users\\example\\", "file.txt"),
         ("C:/Users/example/file.txt", "C:/Users/example/", "file.txt"),
-        ("/home/user/file.txt", "/home/user/", "file.txt"),
-        ("relative/local/path.txt", "relative/local/", "path.txt"),
     ],
 )
 def test_as_parent_and_name_splits_local_paths_too(
@@ -87,6 +105,23 @@ def test_as_parent_and_name_splits_local_paths_too(
     assert split.remote == expected_remote
 
 
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "/home/user/file.txt",
+        "relative/local/path.txt",
+        "/home/user/",
+        "relative/local/dir/",
+    ],
+)
+def test_as_parent_and_name_splits_an_absolutized_local_path(raw: str) -> None:
+    split = RcPath.parse(raw).as_parent_and_name()
+
+    absolute = Path(_abs(raw))
+    assert split.fs == str(absolute.parent) + "\\"
+    assert split.remote == absolute.name
+
+
 @pytest.mark.parametrize("raw", ["C:", "/"])
 def test_as_parent_and_name_rejects_bare_local_root(raw: str) -> None:
     parsed = RcPath.parse(raw)
@@ -97,35 +132,27 @@ def test_as_parent_and_name_rejects_bare_local_root(raw: str) -> None:
 
 def test_as_parent_and_name_splits_a_bare_relative_basename() -> None:
     # The CLI accepts a bare relative filename and resolves its parent as
-    # the current directory; as_parent_and_name must not be stricter.
+    # the current directory; as_parent_and_name must not be stricter. The
+    # resolved parent is an absolute path, not a literal "." - see
+    # `_resolve_local`.
     split = RcPath.parse("file.txt").as_parent_and_name()
 
-    assert split.fs == "."
+    assert split.fs == _abs(".") + "\\"
     assert split.remote == "file.txt"
 
 
 def test_as_parent_and_name_splits_a_bare_relative_directory_reference() -> None:
     split = RcPath.parse("foo/").as_parent_and_name()
 
-    assert split.fs == "."
+    assert split.fs == _abs(".") + "\\"
     assert split.remote == "foo"
 
 
-@pytest.mark.parametrize(
-    ("raw", "expected_fs", "expected_remote"),
-    [
-        ("C:\\Users\\example\\", "C:\\Users\\", "example"),
-        ("/home/user/", "/home/", "user"),
-        ("relative/local/dir/", "relative/local/", "dir"),
-    ],
-)
-def test_as_parent_and_name_strips_trailing_separator_before_splitting(
-    raw: str, expected_fs: str, expected_remote: str
-) -> None:
-    split = RcPath.parse(raw).as_parent_and_name()
+def test_as_parent_and_name_strips_trailing_separator_before_splitting() -> None:
+    split = RcPath.parse("C:\\Users\\example\\").as_parent_and_name()
 
-    assert split.fs == expected_fs
-    assert split.remote == expected_remote
+    assert split.fs == "C:\\Users\\"
+    assert split.remote == "example"
 
 
 def test_parse_splits_an_inline_remote_at_its_second_colon() -> None:

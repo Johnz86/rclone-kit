@@ -512,12 +512,41 @@ RC `sync/copy` handler does not run the CLI's high-level retry loop):
   raising `OperationShutdownError` and leaving the runtime open if a job cannot be confirmed settled
   in time.
 
-T11/T12 are success-path-complete but not yet failure-contract-complete: embedded `copy_to`
-currently raises `RcCallError` on failure where the CLI path raises `RcloneCommandError`, so a caller
-written against the documented CLI exception type can miss an embedded failure. See the design
-review's finding F4 and `tests/parity/coverage.toml`'s `T11`/`T12` rows
-(`failure_contract_complete = false`) for the tracked gap; retrofitting T01/T02/T07/T11/T12 onto the
-same job/result architecture (Phase D7) remains unstarted.
+Phase D7 (retrofitting T01/T02/T07/T11/T12 onto the shared job/result architecture) is now done.
+`cleanup_embedded`/`copy_file_to_embedded`/`purge_dir_embedded` each start their RC method
+(`operations/cleanup`/`operations/copyfile`/`operations/purge`) as an asynchronous job through the
+same `_JobMonitor` `start_copy()` uses - via the RC framework's generic `_async: true` mechanism, not
+a bespoke Go endpoint, since none of these three need a retry loop of their own - then immediately
+wait on the resulting handle. This closes design review finding F5 (a synchronous RC call previously
+held the runtime lock for the whole operation) and F6 (they now return a real `OperationResult`, never
+a synthetic `subprocess.CompletedProcess`); `Rclone`'s own methods wrap the result via
+`CompletedProcess.from_operation_result()`.
+
+`copy_to(check=True)` now raises `OperationFailedError` (the execution-independent hierarchy) on
+failure instead of a raw `RcCallError`, and `read_bytes()`/`write_bytes()` catch both that and the
+CLI's `subprocess.CalledProcessError`, translating either to `RcloneCommandError` - so the raised type
+no longer depends on execution mode, closing design review finding F4 for T02/T11/T12.
+`tests/parity/coverage.toml`'s `T01`/`T02`/`T07`/`T11`/`T12` rows now record
+`failure_contract_complete = true` (T01/T07 never raise, so the field only meaningfully applies to
+T02/T11/T12, but is recorded uniformly).
+
+Closing Phase D7's item 5 (relative local filename coverage) surfaced a real, previously-undetected
+bug, not just a documentation gap: `RcPath`'s F8 fix (accepting a bare local relative reference like
+`"file.txt"` or `"."`) assumed rclone would re-resolve that relative string against the *current*
+working directory on every call. In fact rclone's `Fs` cache keys an instance by the literal string
+handed to it, resolving a relative reference against the current directory only the *first* time it
+is used against a given runtime; every later call with that same literal string reuses that first
+resolution, even after this process's `cwd` has since changed - and the embedded runtime is
+long-lived and shared, unlike a one-shot CLI subprocess. This was caught empirically (not by code
+inspection) by a new native test combining an absolute source with a relative destination
+(`test_copy_to_relative_basename_destination_also_works`), confirmed with two standalone reproduction
+probes against the real built library (one for `copy_to`'s bare `"."`, one for `purge`'s bare relative
+directory name), and fixed at the root: `RcPath.parse()` now absolutizes any bare local reference
+(via `Path(path).resolve()`) at parse time, before it ever crosses the RC boundary, so every current
+consumer (`copy_to`, `purge`, `cleanup`, and - transitively, since they share `RcPath`/`encode_fs_spec`
+- the Wave B/C listing operations and `start_copy`) gets the fix. `encode_fs_spec` was updated to
+return the absolutized `target.fs` for a local target instead of the original, possibly-relative
+`spec` string. See `rc/paths.py`'s `_resolve_local` docstring for the full explanation.
 
 ### Wave E — filtered and partitioned operations
 

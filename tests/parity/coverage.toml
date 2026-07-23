@@ -351,7 +351,7 @@ status = "cli_parity_tested"
 parity_test = "tests/native/test_transfer_ops_embedded_integration.py::test_cleanup_matches_cli_shape_for_a_local_path"
 windows = true
 linux = false
-notes = "operations/cleanup; synchronous, no job handle. Still holds the runtime lock for the whole call (see F5 in the Wave D design review)."
+notes = "operations/cleanup, now started as an async job through the shared _JobMonitor (Phase D7), closing F5 - the runtime lock is held only for the near-instant job-start RC call, not the whole operation. src is reassembled through RcPath.parse so a bare relative local reference is absolutized before crossing the RC boundary (see rc/paths.py's _resolve_local, discovered while adding Phase D7's relative-path coverage: rclone's Fs cache would otherwise reuse the first resolution of a relative fs string for every later call in this runtime's lifetime, regardless of cwd changes since)."
 
 [[row]]
 id = "T02"
@@ -362,7 +362,8 @@ status = "cli_parity_tested"
 parity_test = "tests/native/test_transfer_ops_embedded_integration.py::test_copy_to_matches_cli_for_a_real_file"
 windows = true
 linux = false
-notes = "operations/copyfile; splits both sides via RcPath.as_parent_and_name(). Does not yet reproduce the CLI's --s3-no-check-bucket override (design review section 9.3)."
+failure_contract_complete = true
+notes = "operations/copyfile, started as an async job through _JobMonitor (Phase D7, closing F5); splits both sides via RcPath.as_parent_and_name(), each side absolutized through _resolve_local if local. check=True now raises OperationFailedError (the execution-independent hierarchy), not a raw RcCallError, closing F4 for this row. Still does not reproduce the CLI's --s3-no-check-bucket override (design review section 9.3) - unrelated to F4/F5."
 
 [[row]]
 id = "T03"
@@ -417,7 +418,7 @@ status = "cli_parity_tested"
 parity_test = "tests/native/test_transfer_ops_embedded_integration.py::test_purge_matches_cli_for_a_real_directory"
 windows = true
 linux = false
-notes = "operations/purge; whole-target split, never raises."
+notes = "operations/purge, now started as an async job through _JobMonitor (Phase D7, closing F5); whole-target split via RcPath.parse (absolutized if local, per _resolve_local), never raises."
 
 [[row]]
 id = "T08"
@@ -457,24 +458,24 @@ id = "T11"
 method = "read_bytes"
 decision = "transitive"
 owner_module = "rclone_kit.client"
-status = "native_tested"
-parity_test = "tests/native/test_transfer_ops_embedded_integration.py::test_read_bytes_and_read_text_work_transitively_through_copy_to"
+status = "cli_parity_tested"
+parity_test = "tests/native/test_transfer_ops_embedded_integration.py::test_read_bytes_raises_rclone_command_error_for_a_missing_source"
 windows = true
 linux = false
-failure_contract_complete = false
-notes = "Success path proven transitively via T02. Failure contract NOT yet execution-independent: embedded copy_to(check=True) raises RcCallError where the CLI path raises RcloneCommandError (design review F4). Do not treat this row as done until both modes raise the same typed error and missing-source/auth/partial-output/cleanup cases are tested."
+failure_contract_complete = true
+notes = "Success path proven transitively via T02 (test_read_bytes_and_read_text_work_transitively_through_copy_to). Failure contract closed (design review F4, Phase D7): read_bytes/write_bytes now catch both subprocess.CalledProcessError (CLI) and OperationFailedError (embedded) and translate either to RcloneCommandError, so the raised type no longer depends on execution mode. Missing-source and partial-output (no destination file left on a failed copy_to) are tested; denied-access is not - reliably simulating a permission failure is platform-fragile (see test_command_security.py's own POSIX-only skip) and was judged not worth a flaky test for this row."
 
 [[row]]
 id = "T12"
 method = "read_text"
 decision = "transitive"
 owner_module = "rclone_kit.client"
-status = "native_tested"
+status = "cli_parity_tested"
 parity_test = "tests/native/test_transfer_ops_embedded_integration.py::test_read_bytes_and_read_text_work_transitively_through_copy_to"
 windows = true
 linux = false
-failure_contract_complete = false
-notes = "Same failure-contract gap as T11 (design review F4)."
+failure_contract_complete = true
+notes = "Same failure-contract closure as T11 (design review F4, Phase D7): read_text() only ever calls read_bytes()."
 
 [[row]]
 id = "T13"

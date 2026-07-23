@@ -19,7 +19,11 @@ import pytest
 
 from rclone_kit.client import Rclone
 from rclone_kit.config import Config
-from rclone_kit.exceptions import EmbeddedOnlyOperationError, UnsupportedEmbeddedOperationError
+from rclone_kit.exceptions import (
+    EmbeddedOnlyOperationError,
+    OperationFailedError,
+    UnsupportedEmbeddedOperationError,
+)
 from rclone_kit.native.runtime import RcloneRuntime
 from rclone_kit.process import Process
 from rclone_kit.remote import Remote
@@ -378,42 +382,6 @@ def test_diff_dispatches_to_rc_client_when_embedded() -> None:
     rclone.close()
 
 
-def test_copy_to_dispatches_to_rc_client_when_embedded() -> None:
-    binding = FakeBinding()
-    binding.rpc_responses_by_method[b"operations/copyfile"] = (200, b"{}")
-    rclone = Rclone(None, execution="embedded", runtime=RcloneRuntime(binding))
-
-    result = rclone.copy_to("remote:a.txt", "remote:b.txt")
-
-    assert result.ok is True
-    assert binding.rpc_calls[0][0] == b"operations/copyfile"
-    rclone.close()
-
-
-def test_purge_dispatches_to_rc_client_when_embedded() -> None:
-    binding = FakeBinding()
-    binding.rpc_responses_by_method[b"operations/purge"] = (200, b"{}")
-    rclone = Rclone(None, execution="embedded", runtime=RcloneRuntime(binding))
-
-    result = rclone.purge("remote:path/to/dir")
-
-    assert result.ok is True
-    assert binding.rpc_calls[0][0] == b"operations/purge"
-    rclone.close()
-
-
-def test_cleanup_dispatches_to_rc_client_when_embedded() -> None:
-    binding = FakeBinding()
-    binding.rpc_responses_by_method[b"operations/cleanup"] = (200, b"{}")
-    rclone = Rclone(None, execution="embedded", runtime=RcloneRuntime(binding))
-
-    result = rclone.cleanup("remote:")
-
-    assert result.ok is True
-    assert binding.rpc_calls[0][0] == b"operations/cleanup"
-    rclone.close()
-
-
 def _finished_job_status_json(
     *, job_id: int = 1, execute_id: str = "exec-1", success: bool = True, error: str = ""
 ) -> bytes:
@@ -451,19 +419,93 @@ _STATS_JSON = json.dumps(
 ).encode("utf-8")
 
 
-def _set_successful_copy_responses(
-    binding: FakeBinding, *, success: bool = True, error: str = ""
+def _set_successful_job_responses(
+    binding: FakeBinding, method: bytes, *, success: bool = True, error: str = ""
 ) -> None:
-    binding.rpc_responses_by_method[b"rclonekit/copy"] = (
-        200,
-        b'{"executeId": "exec-1", "jobid": 1}',
-    )
+    """Wire up the async-job response chain (start -> job/status -> stats)
+    any `_JobMonitor`-backed operation goes through, regardless of which RC
+    method starts the job."""
+    binding.rpc_responses_by_method[method] = (200, b'{"executeId": "exec-1", "jobid": 1}')
     binding.rpc_responses_by_method[b"job/status"] = (
         200,
         _finished_job_status_json(success=success, error=error),
     )
     binding.rpc_responses_by_method[b"core/stats"] = (200, _STATS_JSON)
     binding.rpc_responses_by_method[b"core/stats-delete"] = (200, b"{}")
+
+
+def _set_successful_copy_responses(
+    binding: FakeBinding, *, success: bool = True, error: str = ""
+) -> None:
+    _set_successful_job_responses(binding, b"rclonekit/copy", success=success, error=error)
+
+
+def test_copy_to_dispatches_to_rc_client_when_embedded() -> None:
+    binding = FakeBinding()
+    _set_successful_job_responses(binding, b"operations/copyfile")
+    rclone = Rclone(None, execution="embedded", runtime=RcloneRuntime(binding))
+
+    result = rclone.copy_to("remote:a.txt", "remote:b.txt")
+
+    assert result.ok is True
+    assert binding.rpc_calls[0][0] == b"operations/copyfile"
+    rclone.close()
+
+
+def test_copy_to_raises_operation_failed_error_by_default_on_failure() -> None:
+    binding = FakeBinding()
+    _set_successful_job_responses(binding, b"operations/copyfile", success=False, error="boom")
+    rclone = Rclone(None, execution="embedded", runtime=RcloneRuntime(binding))
+
+    with pytest.raises(OperationFailedError):
+        rclone.copy_to("remote:a.txt", "remote:b.txt")
+    rclone.close()
+
+
+def test_purge_dispatches_to_rc_client_when_embedded() -> None:
+    binding = FakeBinding()
+    _set_successful_job_responses(binding, b"operations/purge")
+    rclone = Rclone(None, execution="embedded", runtime=RcloneRuntime(binding))
+
+    result = rclone.purge("remote:path/to/dir")
+
+    assert result.ok is True
+    assert binding.rpc_calls[0][0] == b"operations/purge"
+    rclone.close()
+
+
+def test_purge_never_raises_on_failure_when_embedded() -> None:
+    binding = FakeBinding()
+    _set_successful_job_responses(binding, b"operations/purge", success=False, error="boom")
+    rclone = Rclone(None, execution="embedded", runtime=RcloneRuntime(binding))
+
+    result = rclone.purge("remote:path/to/dir")
+
+    assert result.ok is False
+    rclone.close()
+
+
+def test_cleanup_dispatches_to_rc_client_when_embedded() -> None:
+    binding = FakeBinding()
+    _set_successful_job_responses(binding, b"operations/cleanup")
+    rclone = Rclone(None, execution="embedded", runtime=RcloneRuntime(binding))
+
+    result = rclone.cleanup("remote:")
+
+    assert result.ok is True
+    assert binding.rpc_calls[0][0] == b"operations/cleanup"
+    rclone.close()
+
+
+def test_cleanup_never_raises_on_failure_when_embedded() -> None:
+    binding = FakeBinding()
+    _set_successful_job_responses(binding, b"operations/cleanup", success=False, error="boom")
+    rclone = Rclone(None, execution="embedded", runtime=RcloneRuntime(binding))
+
+    result = rclone.cleanup("remote:")
+
+    assert result.ok is False
+    rclone.close()
 
 
 def test_start_copy_dispatches_to_rclonekit_copy_and_returns_a_job_handle() -> None:

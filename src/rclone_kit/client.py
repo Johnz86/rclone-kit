@@ -24,6 +24,7 @@ from rclone_kit.dir import Dir
 from rclone_kit.dir_listing import DirListing
 from rclone_kit.exceptions import (
     EmbeddedOnlyOperationError,
+    OperationFailedError,
     OperationShutdownError,
     RcloneCommandError,
     UnsupportedEmbeddedOperationError,
@@ -129,6 +130,14 @@ _COPY_DEFAULT_CHECKERS = 1000
 _COPY_DEFAULT_TRANSFERS = 32
 _COPY_DEFAULT_LOW_LEVEL_RETRIES = 10
 _COPY_DEFAULT_RETRIES = 3
+
+
+def _copy_to_failure_detail(error: subprocess.CalledProcessError | OperationFailedError) -> str:
+    """Extract a stderr-like diagnostic string from a `copy_to()` failure,
+    regardless of which execution mode raised it."""
+    if isinstance(error, OperationFailedError):
+        return error.result.error or ""
+    return error.stderr or ""
 
 
 class _UnsupportedEmbeddedBackend:
@@ -628,7 +637,8 @@ class Rclone:
         if self._rc_client is not None:
             if other_args:
                 raise UnsupportedEmbeddedOperationError("cleanup (other_args)")
-            return cleanup_embedded(self._rc_client, src)
+            result = cleanup_embedded(self._ensure_job_monitor(), self._client_id, src)
+            return CompletedProcess.from_operation_result(result)
 
         cmd = ["cleanup", src]
         if other_args:
@@ -653,9 +663,16 @@ class Rclone:
 
         """
         if self._rc_client is not None:
-            return copy_file_to_embedded(
-                self._rc_client, self.config, src, dst, check=check, other_args=other_args
+            result = copy_file_to_embedded(
+                self._ensure_job_monitor(),
+                self._client_id,
+                self.config,
+                src,
+                dst,
+                check=check,
+                other_args=other_args,
             )
+            return CompletedProcess.from_operation_result(result)
         return copy_file_to(
             self._backend,
             src,
@@ -820,7 +837,8 @@ class Rclone:
     def purge(self, src: Dir | str) -> CompletedProcess:
         """Purge a directory"""
         if self._rc_client is not None:
-            return purge_dir_embedded(self._rc_client, src)
+            result = purge_dir_embedded(self._ensure_job_monitor(), self._client_id, src)
+            return CompletedProcess.from_operation_result(result)
         return purge_dir(self._backend, src)
 
     def delete_files(
@@ -942,21 +960,26 @@ class Rclone:
 
             try:
                 self.copy_to(str(tmpfile), dst, check=True)
-            except subprocess.CalledProcessError as error:
-                raise RcloneCommandError("copyto", error.stderr or "", error) from error
+            except (subprocess.CalledProcessError, OperationFailedError) as error:
+                raise RcloneCommandError("copyto", _copy_to_failure_detail(error), error) from error
 
     def read_bytes(self, src: str) -> bytes:
         """Read bytes from a file.
 
         Raises RcloneCommandError if the underlying rclone command fails
         or if rclone reports success without producing an output file.
+
+        Raised uniformly regardless of execution mode: an embedded
+        `copy_to(check=True)` failure (`OperationFailedError`) is translated
+        the same way as a CLI `subprocess.CalledProcessError` (design review
+        finding F4).
         """
         with TemporaryDirectory() as tmpdir:
             tmpfile = Path(tmpdir) / "file.bin"
             try:
                 self.copy_to(src, str(tmpfile), check=True)
-            except subprocess.CalledProcessError as error:
-                raise RcloneCommandError("copyto", error.stderr or "", error) from error
+            except (subprocess.CalledProcessError, OperationFailedError) as error:
+                raise RcloneCommandError("copyto", _copy_to_failure_detail(error), error) from error
 
             if not tmpfile.exists():
                 raise RcloneCommandError(

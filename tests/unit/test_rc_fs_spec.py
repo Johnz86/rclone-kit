@@ -1,7 +1,14 @@
 """Unit tests for `rclone_kit.rc.fs_spec.encode_fs_spec`."""
 
+from pathlib import Path
+
 from rclone_kit.config import Config
 from rclone_kit.rc.fs_spec import encode_fs_spec
+
+
+def _abs(path: str) -> str:
+    return str(Path(path).resolve())
+
 
 _CONFIG_TEXT = """
 [do-remote]
@@ -75,12 +82,16 @@ def test_local_windows_path_stays_a_plain_string() -> None:
     )
 
 
-def test_local_posix_path_stays_a_plain_string() -> None:
-    assert encode_fs_spec(_config(), "/home/user/file.txt") == "/home/user/file.txt"
+def test_local_posix_path_gets_absolutized() -> None:
+    # Regression: rclone's Fs cache would otherwise reuse the first
+    # resolution of a relative/POSIX-style local reference for every later
+    # call in this runtime's lifetime, regardless of cwd changes since -
+    # see rc/paths.py's `_resolve_local`.
+    assert encode_fs_spec(_config(), "/home/user/file.txt") == _abs("/home/user/file.txt")
 
 
-def test_local_relative_path_stays_a_plain_string() -> None:
-    assert encode_fs_spec(_config(), "relative/local/path.txt") == "relative/local/path.txt"
+def test_local_relative_path_gets_absolutized() -> None:
+    assert encode_fs_spec(_config(), "relative/local/path.txt") == _abs("relative/local/path.txt")
 
 
 def test_inline_remote_stays_a_plain_string_even_if_its_type_is_s3() -> None:

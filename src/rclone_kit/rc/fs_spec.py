@@ -38,14 +38,22 @@ def _configured_remote_type(config: Config, remote_name: str) -> str | None:
 def encode_fs_spec(config: Config, spec: str) -> str | dict[str, object]:
     """Encode `spec` for use as an RC `srcFs`/`dstFs` value.
 
-    Returns `spec` unchanged for a local path, an inline remote (not a
-    named config section this can look up), or a remote whose configured
-    backend is not S3/B2. For a configured S3 or B2 remote, returns
-    `{"_name": <remote>, "_root": <path after the colon>, "no_check_bucket":
-    "true"}` instead.
+    Returns `spec` unchanged for an inline remote (not a named config
+    section this can look up) or a remote whose configured backend is not
+    S3/B2. For a configured S3 or B2 remote, returns `{"_name": <remote>,
+    "_root": <path after the colon>, "no_check_bucket": "true"}` instead.
+
+    For a local path, returns `target.fs` (via `str()`, to keep any
+    `remote` component `RcPath.parse` split off) rather than `spec`
+    unchanged: `RcPath.parse` absolutizes a bare local reference against
+    the current working directory, and that absolutized form - not the
+    original possibly-relative string - is what must reach the shared
+    embedded runtime (see `rc/paths.py`'s `_resolve_local`).
     """
     target = RcPath.parse(spec)
-    if not target.fs.endswith(":") or target.fs.startswith(":"):
+    if not target.fs.endswith(":"):
+        return str(target)
+    if target.fs.startswith(":"):
         return spec
     remote_name = target.fs[:-1]
     if _configured_remote_type(config, remote_name) not in _S3_LIKE_BACKEND_TYPES:
