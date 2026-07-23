@@ -409,9 +409,12 @@ dispatched from `Rclone` exactly like M01. L06/L07 needed no code at all - they 
 real DLL caught a real bug in the first `RcPath`-based draft: `operations/stat`'s `fs` must always be
 a navigable root, never a bare file path (rclone's local backend rejects it with "is a file not a
 directory"), so `RcPath.as_parent_and_name()` now splits local paths the same way it splits remote
-ones, not only remote ones as first written. L01 (`ls()`/`operations/list`), M04 (`config_show`,
-needs a bridge extension), M05/M06 (already Python-only, no CLI dependency), F06, and `rc/options.py`
-are not yet started.
+ones, not only remote ones as first written. F06 is also done: `File.read_text()` now delegates to
+its associated client's `read_text()` instead of calling the private `_run(["cat", ...])` directly -
+this required widening `RPath`/`Remote`'s stored client type from `DomainAccess` to `ListingAccess`
+(a strict superset) so the delegation type-checks, with no behavior change for existing CLI callers.
+L01 (`ls()`/`operations/list`), M04 (`config_show`, needs a bridge extension), M05/M06 (already
+Python-only, no CLI dependency), and `rc/options.py` are not yet started.
 
 ### Wave C — checks, walking, and comparison
 

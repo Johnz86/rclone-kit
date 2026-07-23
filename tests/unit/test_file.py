@@ -75,3 +75,41 @@ def test_file_item_from_json_ordinary_nested_path() -> None:
 
     assert item is not None
     assert item.parent == "Bucket/subdir"
+
+
+class _RecordingRclone:
+    """Records the `src` passed to `read_text`; ledger row F06 requires
+    `File.read_text` to delegate here rather than call `_run(["cat", ...])`
+    directly.
+    """
+
+    def __init__(self) -> None:
+        self.read_text_calls: list[str] = []
+
+    def read_text(self, src: str) -> str:
+        self.read_text_calls.append(src)
+        return "file contents"
+
+    def _run(self, *_args: object, **_kwargs: object):
+        raise AssertionError("File.read_text must not call _run directly")
+
+
+def test_file_read_text_delegates_to_associated_rclone() -> None:
+    recording_rclone = _RecordingRclone()
+    remote = Remote(name="remote", rclone=cast(Rclone, recording_rclone))
+    rpath = RPath(
+        remote=remote,
+        path="Bucket/file.txt",
+        name="file.txt",
+        size=1,
+        mime_type="text/plain",
+        mod_time="",
+        is_dir=False,
+    )
+    rpath.set_rclone(cast(Rclone, recording_rclone))
+    f = File(rpath)
+
+    result = f.read_text()
+
+    assert result == "file contents"
+    assert recording_rclone.read_text_calls == ["remote:Bucket/file.txt"]

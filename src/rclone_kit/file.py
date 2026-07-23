@@ -155,10 +155,10 @@ class File:
         return self.path.mod_time_dt()
 
     def read_text(self) -> str:
-        """Read the file contents as bytes.
+        """Read the file contents as text.
 
         Returns:
-            bytes: The file contents
+            str: The file contents
 
         Raises:
             RuntimeError: If no rclone instance is associated with this file
@@ -169,8 +169,7 @@ class File:
         if self.path.is_dir:
             raise RuntimeError("Cannot read a directory as bytes")
 
-        result = self.path.rclone._run(["cat", self.path.path], check=True)
-        return result.stdout
+        return self.path.rclone.read_text(str(self))
 
     def to_json(self) -> RcloneJsonEntry:
         """Convert the File to a JSON serializable dictionary."""

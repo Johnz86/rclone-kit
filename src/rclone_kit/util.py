@@ -27,7 +27,7 @@ from rclone_kit.rpath import RPath
 from rclone_kit.runtime.rclone_binary import resolve_rclone_executable
 
 if TYPE_CHECKING:
-    from rclone_kit.access import DomainAccess
+    from rclone_kit.access import ListingAccess
 
 logger = logging.getLogger(__name__)
 
@@ -223,7 +223,7 @@ def find_free_port() -> int:
     return port
 
 
-def to_path(item: Dir | Remote | str, rclone: DomainAccess) -> RPath:
+def to_path(item: Dir | Remote | str, rclone: ListingAccess) -> RPath:
     if isinstance(item, str):
         parts = item.split(":")
         remote_name = parts[0]
