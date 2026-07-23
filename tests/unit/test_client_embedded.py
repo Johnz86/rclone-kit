@@ -346,3 +346,15 @@ def test_is_s3_and_get_s3_credentials_work_unmodified_under_embedded_execution()
     assert creds.access_key_id == "AKIAEXAMPLE"
     assert binding.rpc_calls == []
     rclone.close()
+
+
+def test_is_synced_dispatches_to_rc_client_when_embedded() -> None:
+    binding = FakeBinding()
+    binding.rpc_responses_by_method[b"operations/check"] = (
+        200,
+        b'{"success": true, "status": "OK"}',
+    )
+    rclone = Rclone(None, execution="embedded", runtime=RcloneRuntime(binding))
+
+    assert rclone.is_synced("src:bucket", "dst:bucket") is True
+    rclone.close()

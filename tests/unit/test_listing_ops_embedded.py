@@ -19,6 +19,7 @@ from rclone_kit.file import File
 from rclone_kit.operations.config_ops import fetch_config_paths_embedded
 from rclone_kit.operations.listing_ops_embedded import (
     check_exists_embedded,
+    check_is_synced_embedded,
     fetch_listremotes_embedded,
     fetch_ls_embedded,
     fetch_size_file_embedded,
@@ -358,3 +359,31 @@ def test_fetch_ls_embedded_reverse_order() -> None:
     )
 
     assert [f.name for f in listing.files] == ["b.txt", "object.txt"]
+
+
+def test_check_is_synced_embedded_returns_success_field() -> None:
+    client = FakeRcClient()
+    client.responses["operations/check"] = {"success": True, "status": "OK"}
+
+    assert check_is_synced_embedded(client, "src:bucket", "dst:bucket") is True
+    assert client.calls == [
+        (
+            "operations/check",
+            {
+                "srcFs": "src:bucket",
+                "dstFs": "dst:bucket",
+                "missingOnSrc": False,
+                "missingOnDst": False,
+                "match": False,
+                "differ": False,
+                "error": False,
+            },
+        )
+    ]
+
+
+def test_check_is_synced_embedded_false_when_not_success() -> None:
+    client = FakeRcClient()
+    client.responses["operations/check"] = {"success": False, "status": "1 differences found"}
+
+    assert check_is_synced_embedded(client, "src:bucket", "dst:bucket") is False

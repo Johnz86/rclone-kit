@@ -53,6 +53,7 @@ from rclone_kit.operations.listing_ops import (
 )
 from rclone_kit.operations.listing_ops_embedded import (
     check_exists_embedded,
+    check_is_synced_embedded,
     fetch_listremotes_embedded,
     fetch_ls_embedded,
     fetch_size_file_embedded,
@@ -694,6 +695,8 @@ class Rclone:
 
     def is_synced(self, src: str | Dir, dst: str | Dir) -> bool:
         """Check if two directories are in sync."""
+        if self._rc_client is not None:
+            return check_is_synced_embedded(self._rc_client, src, dst)
         return check_is_synced(self._backend, src, dst)
 
     def _s3_client(self, src: str, verbose: bool | None = None) -> S3Client:

@@ -1,5 +1,5 @@
 """Embedded RC-backed listing/stat operations (CLI-to-C-ABI migration ledger
-rows L01, M02, L05, L06/L07 (transitive), L08, L10).
+rows L01, M02, L05, L06/L07 (transitive), L08, L10, L11).
 
 Parallels `listing_ops.py`'s CLI-backed functions; `Rclone` dispatches to
 whichever matches its `execution` mode. `operations/stat`'s `item` field is
@@ -15,6 +15,7 @@ import random
 from fnmatch import fnmatch
 from typing import TYPE_CHECKING, cast
 
+from rclone_kit.convert import convert_to_str
 from rclone_kit.dir import Dir
 from rclone_kit.dir_listing import DirListing
 from rclone_kit.file import File
@@ -169,3 +170,25 @@ def check_exists_embedded(rc_client: RcCallable, access: ListingAccess, src: str
     except FileNotFoundError:
         return False
     return True
+
+
+def check_is_synced_embedded(rc_client: RcCallable, src: str | Dir, dst: str | Dir) -> bool:
+    """Check if two directories are in sync via `operations/check`.
+
+    Requests only the `success` field's inputs (no per-file reports, which
+    this method doesn't use) and returns it directly. Unlike the CLI
+    backend, which conflates every nonzero return code with "not synced",
+    an unexpected RC failure (bad path, missing backend, ...) raises
+    `RcCallError` instead of silently returning `False`.
+    """
+    result = rc_client.call(
+        "operations/check",
+        srcFs=convert_to_str(src),
+        dstFs=convert_to_str(dst),
+        missingOnSrc=False,
+        missingOnDst=False,
+        match=False,
+        differ=False,
+        error=False,
+    )
+    return bool(result.get("success", False))

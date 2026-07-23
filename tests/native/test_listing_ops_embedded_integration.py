@@ -168,3 +168,31 @@ def test_ls_reads_file_sizes_correctly(tmp_path: Path, embedded: Rclone) -> None
 
     sizes = {f.name: f.size for f in listing.files}
     assert sizes == {"a.txt": 1}
+
+
+def test_is_synced_matches_cli_for_identical_directories(
+    tmp_path: Path, embedded: Rclone, cli: Rclone
+) -> None:
+    src = tmp_path / "src"
+    dst = tmp_path / "dst"
+    src.mkdir()
+    dst.mkdir()
+    (src / "a.txt").write_bytes(b"hello")
+    (dst / "a.txt").write_bytes(b"hello")
+
+    assert embedded.is_synced(str(src), str(dst)) is True
+    assert cli.is_synced(str(src), str(dst)) is True
+
+
+def test_is_synced_matches_cli_for_differing_directories(
+    tmp_path: Path, embedded: Rclone, cli: Rclone
+) -> None:
+    src = tmp_path / "src"
+    dst = tmp_path / "dst"
+    src.mkdir()
+    dst.mkdir()
+    (src / "a.txt").write_bytes(b"hello")
+    (dst / "a.txt").write_bytes(b"different content")
+
+    assert embedded.is_synced(str(src), str(dst)) is False
+    assert cli.is_synced(str(src), str(dst)) is False

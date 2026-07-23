@@ -438,8 +438,15 @@ Status: L13 (`walk()`) and L14 (`scan_missing_folders()`) needed no code changes
 complete - both call only `Dir.ls()` internally (never `self._backend` directly), so they started
 working the moment L01 did. Native parity tests cover breadth-first and depth-first `walk()` over a
 real nested tree, and `scan_missing_folders()` over a real src/dst pair with a present-on-both
-directory, a fully-missing subtree, and a shared-name-different-contents case. L11 (`is_synced()`)
-and L12 (`diff()`), both needing `operations/check`, are not yet started.
+directory, a fully-missing subtree, and a shared-name-different-contents case.
+
+L11 (`is_synced()`) is also done, via `operations/check` requesting only the report flags it
+actually needs (every per-file report array set to `false`) and returning its `success` field
+directly. Deliberately does not replicate the CLI backend's "any nonzero return code means not
+synced" behavior: an unexpected `RcCallError` (bad path, missing backend) propagates instead of
+silently becoming `False`, matching the ledger's own note that this conflation is a bug to leave
+behind, not preserve. L12 (`diff()`), which needs the same RC method's per-file report arrays
+normalized into `DiffItem`, is not yet started.
 
 ### Wave D — simple transfer vertical slice
 
