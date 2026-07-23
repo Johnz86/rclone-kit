@@ -1023,6 +1023,36 @@ Exit gate: a delayed caller cannot lose a terminal result to the simulated expir
 
 Exit gate: Go tests prove command-level retry semantics without importing CLI command packages.
 
+Status: items 1-4 and 7 are done. `librclone/rclonekit/rc/copy.go` registers `rclonekit/copy`,
+reusing `sync.CopyDir` inside a retry loop that mirrors `cmd.Run` (`cmd/cmd.go`) but reads/writes
+`accounting.Stats(ctx)` (the calling job's own group) instead of `accounting.GlobalStats()`, so
+concurrent library jobs never share error state. `copy_test.go` covers all ten cases from section
+8.5 against an injectable `f func(context.Context) error` rather than real backends - first-attempt
+success, retryable-then-success, all attempts exhausted, fatal error stops retrying, no-retry error
+stops retrying, the configured `RetriesInterval` is honored (a short real sleep, not a simulated
+clock), cancellation during an attempt, cancellation during the retry sleep, every attempt appears
+in the output on both success and failure, and two concurrent groups don't share error state - all
+passing under `go test` and `go test -race`. Verified against a full local rebuild
+(`uv run python scripts/native/build.py --target windows-amd64`, which runs the whole Go test suite
+as part of the build) and an ad hoc RC probe against the freshly built DLL: a real
+`rclonekit/copy` call for a normal copy (one attempt, `success: true`) and for a missing source with
+`_config: {Retries: 2, RetriesInterval: "10ms"}` (two recorded attempts, `success: false`,
+`error: "directory not found"`).
+
+Committed locally in the `native/rclone` submodule (`rclone-kit/integration-v1`, commit
+`d498adafa`, message `librclone/rclonekit: add retry-aware asynchronous copy operation`) but
+**not pushed** to `github.com/Johnz86/rclone.git`, and the parent repository's submodule pin is
+**not moved** - per this document's own rule (item 6) and the migration invariant against
+referencing an unfetchable commit, moving the pin requires the fork commit to be pushed and
+fetchable first, which is a separate, explicitly-authorized action. `build/native/windows-amd64`
+(gitignored) has been rebuilt locally from the current uncommitted submodule checkout so the
+existing native test suite already exercises the new endpoint; this is safe to redo and does not
+require the pin to move.
+
+Item 5 (finalizer running-job cancellation and its tests, downstream in the bridge's `Finalize()`)
+is not started - it belongs with the rest of Phase D3/D6's lifecycle work in section 12.3, not with
+the copy endpoint itself, and doesn't block Phase D5/D6's Python-side work.
+
 ### Phase D5 — Add transfer option and filesystem-spec encoders
 
 1. Implement `TransferOptions` and exact `_config` encoding.
