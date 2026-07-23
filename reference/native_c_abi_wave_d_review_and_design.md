@@ -1121,6 +1121,33 @@ change to the build script or its documented usage.
 Exit gate: all Wave D rows share one lifecycle/result architecture and T11/T12 negative contracts are
 verified.
 
+Status: done. `cleanup_embedded`/`copy_file_to_embedded`/`purge_dir_embedded` (item 1/2) now start
+their RC method as an async job through the same `_JobMonitor` `start_copy()` uses - the RC
+framework's generic `_async: true` mechanism, empirically confirmed against the real built library
+before trusting it, not a new Go endpoint, since none of the three need a retry loop - then
+immediately wait on the handle, returning a real `OperationResult` (never a synthetic
+`subprocess.CompletedProcess`), closing F5/F6. `copy_to(check=True)`'s failure now raises
+`OperationFailedError`; `read_bytes()`/`write_bytes()` catch both that and the CLI's
+`subprocess.CalledProcessError`, translating either into `RcloneCommandError` uniformly (item 3,
+closing F4).
+
+Item 5's "relative local filename" coverage surfaced a genuine bug, not just a documentation gap:
+F8's fix (accepting a bare relative local reference) assumed rclone re-resolves a relative fs string
+against the current directory on every call, but rclone's `Fs` cache actually keys an instance by the
+literal string and only resolves it against `cwd` the *first* time it is used - every later call with
+the same literal string reuses that first resolution regardless of later `cwd` changes, which matters
+because the embedded runtime is long-lived and shared (unlike a one-shot CLI subprocess). Caught by a
+new native test pairing an absolute source with a relative destination, confirmed with two standalone
+probe scripts against the real built library (bare `"."` via `copy_to`, a bare relative directory name
+via `purge`), and fixed at the root in `RcPath.parse()`, which now absolutizes any bare local
+reference via `Path(path).resolve()` before it crosses the RC boundary - fixing every current
+`RcPath`/`encode_fs_spec` consumer, not just T02. Item 4 (temporary output cleanup) was already
+guaranteed structurally by `read_bytes`/`write_bytes`'s `TemporaryDirectory` context managers; a native
+test now also confirms `copy_to` itself leaves no partial destination file on failure. Item 5's
+"denied access" case is intentionally not covered - reliably simulating a permission failure is
+platform-fragile on Windows (consistent with `test_command_security.py`'s own POSIX-only skip) and
+was judged not worth a flaky test for this row.
+
 ### Phase D8 — Documentation and release compatibility
 
 1. Document blocking and started-copy examples.
@@ -1131,6 +1158,15 @@ verified.
 6. State the planned release where blocking methods switch to `OperationResult`.
 
 Exit gate: a caller can migrate without reading source or depending on execution-mode-specific types.
+
+Status: done. `docs/production_usage.md` gained a new "Embedded execution (no `rclone` subprocess)"
+section covering blocking-vs-`start_copy()` examples (item 1), `wait(timeout=...)`/`cancel()`/context-
+manager cancellation semantics (item 2), which `CompletedProcess` fields are CLI-only versus universal
+(item 3), and `other_args`/`args` rejection under `execution="embedded"` (item 4). Item 6 states the
+planned removal using the migration plan's own existing terminology ("the embedded-first major
+release") rather than inventing an unplanned version number, since no concrete version beyond that has
+been committed to elsewhere in the repository. Item 5 (ledger/parity file) was already kept in sync
+with the code in Phase D7; D8 added no further code changes requiring a ledger update.
 
 ## 14. Test and verification plan
 

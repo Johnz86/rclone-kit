@@ -425,6 +425,92 @@ if not result.ok:
     raise RuntimeError(result.stderr)
 ```
 
+## Embedded execution (no `rclone` subprocess)
+
+Construct a client with `execution="embedded"` to link the bundled native library directly instead of
+launching an `rclone` executable per call:
+
+```python
+from rclone_kit import Rclone
+
+rclone = Rclone(CONFIG_PATH, execution="embedded")
+```
+
+Every ported method keeps its CLI signature and return type: `copy()`, `copy_to()`, `copy_dir()`,
+`copy_remote()`, `purge()`, and `cleanup()` all still return `CompletedProcess`, and `check=True`
+still raises on failure. Existing CLI-mode code that only inspects `.ok`/`.returncode` needs no
+changes to run embedded. Two differences are deliberate, not oversights:
+
+- an embedded client rejects `other_args`/`args` with `UnsupportedEmbeddedOperationError` instead of
+  silently dropping them - there is no subprocess argument vector to append arbitrary rclone flags to,
+  so an embedded caller relying on a flag not covered by this library's typed parameters must either
+  request that parameter be added or fall back to `execution="cli"`; and
+- a handful of methods (currently `start_copy()`) exist only under `execution="embedded"` and raise
+  `EmbeddedOnlyOperationError` under `execution="cli"`, since they expose an asynchronous job model a
+  blocking subprocess has no equivalent for.
+
+### Real asynchronous control with `start_copy()`
+
+`copy()`/`copy_dir()`/`copy_remote()` all block internally: they start the transfer as an embedded job
+and immediately wait for it. Call `start_copy()` directly when the caller needs to observe progress,
+apply a bounded wait, or cancel a transfer already in flight:
+
+```python
+handle = rclone.start_copy(
+    "/srv/incoming/run-42",
+    "archive:runs/run-42",
+    transfers=32,
+    checkers=256,
+    low_level_retries=10,
+    retries=3,
+)
+
+try:
+    result = handle.wait(timeout=3600)
+except OperationTimeoutError:
+    # The deadline only bounds observation - the transfer is still running.
+    # Cancel explicitly if it should stop.
+    handle.cancel()
+    result = handle.wait(timeout=60)
+
+if not result.ok:
+    raise RuntimeError(result.error)
+```
+
+`wait(timeout=...)` never cancels the underlying operation by itself - a timeout means "we stopped
+watching," not "it stopped running." Call `cancel()` for that; it returns immediately (`True` if the
+cancellation request was accepted, `False` if the job had already settled) and never blocks, so pair it
+with a bounded `wait()` to observe confirmed termination. `JobHandle` is also a context manager: exiting
+a `with` block cancels an unfinished owned job and waits up to a bounded interval, without raising on
+timeout, so the surrounding job-queue/worker layer decides what an unresponsive job means rather than
+`JobHandle` deciding for it.
+
+Poll progress with `status()`/`stats()` while a transfer runs:
+
+```python
+while not handle.done:
+    stats = handle.stats()
+    print(f"{stats.bytes}/{stats.total_bytes} bytes, {stats.transfers} files")
+    time.sleep(5)
+```
+
+### `CompletedProcess` is a compatibility type, not a real process result
+
+`CompletedProcess` predates embedded execution, when every result really did come from a subprocess.
+An embedded-backed result still exposes `.ok` and `.returncode` (`0`/`1`), but never a real command,
+stdout, or stderr - `.stdout`, `.stderr`, `.completed`, `.failed()`, `.successes()`, and command-string
+formatting are CLI-only and stay empty for an embedded result. Code that logs `result.stderr` on
+failure works under `execution="cli"` but silently loses that detail under `execution="embedded"`;
+prefer `.ok` plus a typed exception (`OperationFailedError.result.error`, surfaced through
+`RcloneCommandError` for `copy_to()`/`read_bytes()`/`write_bytes()`) for diagnostics that must work in
+both modes.
+
+`CompletedProcess` is planned for removal in the embedded-first major release (the release after
+`rclone-kit` 1.x that drops CLI/subprocess execution as the default), at which point every currently
+`CompletedProcess`-returning method returns `OperationResult` directly. Code written against `.ok` and
+`.returncode` needs no change at that point; code depending on `.stdout`/`.stderr`/`.completed` needs to
+move to the typed exception hierarchy before then.
+
 ## Streaming differences and reconciliation
 
 `diff()` streams comparison results while rclone is still running:
