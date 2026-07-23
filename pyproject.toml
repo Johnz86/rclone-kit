@@ -60,6 +60,7 @@ rclone_kit = ["assets/*", "assets/**/*"]
 target-version = "py313"
 line-length = 100
 src = ["src", "tests", "scripts"]
+extend-exclude = ["reference"]
 
 [tool.ruff.lint]
 select = [
