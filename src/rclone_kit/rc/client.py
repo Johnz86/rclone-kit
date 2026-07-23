@@ -21,6 +21,15 @@ class RcCapableRuntime(Protocol):
     def call(self, method: str, params: dict | None = None) -> tuple[int, dict]: ...
 
 
+class RcCallable(Protocol):
+    """The subset of `RcClient`'s own interface operation-level adapters
+    (`operations/*_embedded.py`) depend on, so their tests can supply a fake
+    without constructing a real `RcClient`/`RcloneRuntime` pair.
+    """
+
+    def call(self, method: str, **params: object) -> dict: ...
+
+
 class RcClient:
     """Calls one RC method per invocation and raises `RcCallError` unless
     rclone reports success.

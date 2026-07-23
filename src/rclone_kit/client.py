@@ -17,6 +17,7 @@ from rclone_kit.command_flags import FLAG_FAST_LIST
 from rclone_kit.completed_process import CompletedProcess
 from rclone_kit.config import Config
 from rclone_kit.config_discovery import find_conf_file
+from rclone_kit.convert import convert_to_str
 from rclone_kit.diff import DiffItem, DiffOption
 from rclone_kit.dir import Dir
 from rclone_kit.dir_listing import DirListing
@@ -31,6 +32,7 @@ from rclone_kit.native.runtime import RcloneRuntime
 from rclone_kit.operations.config_ops import (
     check_is_s3,
     fetch_config_paths,
+    fetch_config_paths_embedded,
     fetch_config_show,
     fetch_s3_credentials,
     obscure_password,
@@ -48,6 +50,12 @@ from rclone_kit.operations.listing_ops import (
     fetch_stat,
     print_contents,
     stream_diff,
+)
+from rclone_kit.operations.listing_ops_embedded import (
+    check_exists_embedded,
+    fetch_listremotes_embedded,
+    fetch_size_file_embedded,
+    fetch_stat_embedded,
 )
 from rclone_kit.operations.mount_ops import launch_mount, launch_s3_mount
 from rclone_kit.operations.serve_ops import launch_http_server, launch_webdav_server
@@ -138,6 +146,9 @@ def _to_rclone_conf(config: Config | Path | None) -> Config:
 
 class Rclone:
     """Curated high-level API for rclone operations."""
+
+    execution: Literal["embedded", "cli"] = "cli"
+    _rc_client: RcClient | None = None
 
     @staticmethod
     def upgrade_rclone() -> Path:
@@ -418,6 +429,8 @@ class Rclone:
 
         Raises FileNotFoundError if `src` does not exist.
         """
+        if self._rc_client is not None:
+            return fetch_stat_embedded(self._rc_client, self, src)
         return fetch_stat(self, src)
 
     def modtime(self, src: str) -> str:
@@ -429,6 +442,8 @@ class Rclone:
         return fetch_modtime_dt(self, src)
 
     def listremotes(self) -> list[Remote]:
+        if self._rc_client is not None:
+            return fetch_listremotes_embedded(self._rc_client, self)
         return fetch_listremotes(self._backend, self)
 
     def diff(
@@ -662,6 +677,8 @@ class Rclone:
 
     def exists(self, src: Dir | Remote | str | File) -> bool:
         """Check if a file or directory exists."""
+        if self._rc_client is not None:
+            return check_exists_embedded(self._rc_client, self, convert_to_str(src))
         return check_exists(self, src)
 
     def is_synced(self, src: str | Dir, dst: str | Dir) -> bool:
@@ -787,6 +804,8 @@ class Rclone:
         Raises FileNotFoundError if no file matches `src`, or ValueError
         if more than one file matches.
         """
+        if self._rc_client is not None:
+            return fetch_size_file_embedded(self._rc_client, self, src)
         return fetch_size_file(self, src)
 
     def get_s3_credentials(self, remote: str, verbose: bool | None = None) -> S3Credentials:
@@ -970,6 +989,13 @@ class Rclone:
             RcloneCommandError: if the underlying `rclone config paths`
                 invocation fails.
         """
+        if self._rc_client is not None:
+            return fetch_config_paths_embedded(
+                self._rc_client,
+                remote=remote,
+                obscure=obscure,
+                no_obscure=no_obscure,
+            )
         return fetch_config_paths(
             self._backend,
             remote=remote,

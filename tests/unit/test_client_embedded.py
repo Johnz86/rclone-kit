@@ -42,6 +42,7 @@ class FakeBinding:
         self.rpc_calls: list[tuple[bytes, bytes]] = []
         self.last_initialize_payload: bytes = b"{}"
         self.next_rpc_response: tuple[int, bytes] = (200, b'{"obscured": "fake-obscured"}')
+        self.rpc_responses_by_method: dict[bytes, tuple[int, bytes]] = {}
 
     def abi_version(self) -> int:
         return 1
@@ -55,7 +56,7 @@ class FakeBinding:
 
     def rpc(self, method: bytes, payload: bytes) -> tuple[int, bytes]:
         self.rpc_calls.append((method, payload))
-        return self.next_rpc_response
+        return self.rpc_responses_by_method.get(method, self.next_rpc_response)
 
     def finalize(self) -> tuple[int, bytes]:
         self.finalize_calls += 1
@@ -228,4 +229,97 @@ def test_launch_process_raises_typed_error_when_backend_is_none() -> None:
     with pytest.raises(UnsupportedEmbeddedOperationError):
         rclone._launch_process(["rcd"])
 
+    rclone.close()
+
+
+def test_listremotes_dispatches_to_rc_client_when_embedded() -> None:
+    binding = FakeBinding()
+    binding.rpc_responses_by_method[b"config/listremotes"] = (
+        200,
+        b'{"remotes": ["alpha"]}',
+    )
+    rclone = Rclone(None, execution="embedded", runtime=RcloneRuntime(binding))
+
+    remotes = rclone.listremotes()
+
+    assert [r.name for r in remotes] == ["alpha"]
+    rclone.close()
+
+
+def test_stat_dispatches_to_rc_client_when_embedded() -> None:
+    binding = FakeBinding()
+    binding.rpc_responses_by_method[b"operations/stat"] = (
+        200,
+        json.dumps(
+            {
+                "item": {
+                    "Path": "object.txt",
+                    "Name": "object.txt",
+                    "Size": 3,
+                    "MimeType": "text/plain",
+                    "ModTime": "2024-01-01T00:00:00Z",
+                    "IsDir": False,
+                }
+            }
+        ).encode("utf-8"),
+    )
+    rclone = Rclone(None, execution="embedded", runtime=RcloneRuntime(binding))
+
+    file = rclone.stat("remote:object.txt")
+
+    assert file.name == "object.txt"
+    assert (
+        rclone.modtime(  # transitive from stat(): no embedded branch needed
+            "remote:object.txt"
+        )
+        == "2024-01-01T00:00:00Z"
+    )
+    rclone.close()
+
+
+def test_exists_dispatches_to_rc_client_when_embedded() -> None:
+    binding = FakeBinding()
+    binding.rpc_responses_by_method[b"operations/stat"] = (200, b'{"item": null}')
+    rclone = Rclone(None, execution="embedded", runtime=RcloneRuntime(binding))
+
+    assert rclone.exists("remote:missing.txt") is False
+    rclone.close()
+
+
+def test_size_file_dispatches_to_rc_client_when_embedded() -> None:
+    binding = FakeBinding()
+    binding.rpc_responses_by_method[b"operations/stat"] = (
+        200,
+        json.dumps(
+            {
+                "item": {
+                    "Path": "object.txt",
+                    "Name": "object.txt",
+                    "Size": 42,
+                    "MimeType": "text/plain",
+                    "ModTime": "2024-01-01T00:00:00Z",
+                    "IsDir": False,
+                }
+            }
+        ).encode("utf-8"),
+    )
+    rclone = Rclone(None, execution="embedded", runtime=RcloneRuntime(binding))
+
+    assert rclone.size_file("remote:object.txt").as_int() == 42
+    rclone.close()
+
+
+def test_config_paths_dispatches_to_rc_client_when_embedded() -> None:
+    binding = FakeBinding()
+    binding.rpc_responses_by_method[b"config/paths"] = (
+        200,
+        json.dumps({"config": "/x/rclone.conf", "cache": "/x/cache", "temp": "/x/tmp"}).encode(
+            "utf-8"
+        ),
+    )
+    rclone = Rclone(None, execution="embedded", runtime=RcloneRuntime(binding))
+
+    paths = rclone.config_paths()
+
+    assert [p.name for p in paths] == ["rclone.conf", "cache", "tmp"]
     rclone.close()

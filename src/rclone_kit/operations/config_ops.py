@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import subprocess
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from rclone_kit.backend import RcloneBackend
 from rclone_kit.config import Config, Parsed, Section
@@ -12,6 +13,9 @@ from rclone_kit.s3.types import S3Credentials, S3Provider
 from rclone_kit.types import S3PathInfo
 from rclone_kit.util import get_verbose
 
+if TYPE_CHECKING:
+    from rclone_kit.rc.client import RcCallable
+
 logger = logging.getLogger(__name__)
 
 
@@ -20,6 +24,27 @@ def obscure_password(backend: RcloneBackend, password: str) -> str:
     cmd_list: list[str] = ["obscure", password]
     cp = backend.run(tuple(cmd_list))
     return cp.stdout.strip()
+
+
+def fetch_config_paths_embedded(
+    rc_client: RcCallable,
+    remote: str | None = None,
+    obscure: bool = False,
+    no_obscure: bool = False,
+) -> list[Path]:
+    """Return the filesystem paths reported by `config/paths`, in the same
+    fixed config/cache/temp order as `fetch_config_paths`'s CLI equivalent.
+
+    `remote`, `obscure`, and `no_obscure` are accepted for signature
+    compatibility only; `config/paths` takes no such arguments.
+    """
+    del remote, obscure, no_obscure
+    result = rc_client.call("config/paths")
+    return [
+        Path(value)
+        for value in (result.get("config"), result.get("cache"), result.get("temp"))
+        if value
+    ]
 
 
 def fetch_config_paths(

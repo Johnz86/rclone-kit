@@ -401,6 +401,18 @@ Refactor `operations/config_ops.py` and the non-streaming portion of `listing_op
 narrow RC protocols. Add exact `operations/stat/list` adapters and structured config APIs. Remove the
 private CLI call from `File.read_text`.
 
+Status: M02 (`config/listremotes`), M03 (`config/paths`), L05 (`operations/stat`), L08
+(`operations/stat` with `opt.filesOnly`), and L10 (`operations/stat`) are implemented in
+`operations/listing_ops_embedded.py` and `operations/config_ops.py`'s `fetch_config_paths_embedded`,
+dispatched from `Rclone` exactly like M01. L06/L07 needed no code at all - they already call
+`access.stat(src)`, so they became correct the moment L05 did. Native parity testing against the
+real DLL caught a real bug in the first `RcPath`-based draft: `operations/stat`'s `fs` must always be
+a navigable root, never a bare file path (rclone's local backend rejects it with "is a file not a
+directory"), so `RcPath.as_parent_and_name()` now splits local paths the same way it splits remote
+ones, not only remote ones as first written. L01 (`ls()`/`operations/list`), M04 (`config_show`,
+needs a bridge extension), M05/M06 (already Python-only, no CLI dependency), F06, and `rc/options.py`
+are not yet started.
+
 ### Wave C — checks, walking, and comparison
 
 Ledger: L11–L14.

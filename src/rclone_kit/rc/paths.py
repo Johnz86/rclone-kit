@@ -58,18 +58,30 @@ class RcPath:
     def as_parent_and_name(self) -> RcPath:
         """Return an `RcPath` split at the last path component instead: `fs`
         becomes the containing directory (or remote root) and `remote`
-        becomes just the final name, as `operations/copyfile`'s
-        `srcFs`/`srcRemote` require.
+        becomes just the final name.
 
-        Raises `ValueError` if `remote` is empty (a bare root has no final
-        component to split off).
+        Required for any single-target RC call (`operations/stat`,
+        `operations/copyfile`'s `srcFs`/`srcRemote`, ...): `fs` must always
+        be a navigable root - for a local target, the bare file's own full
+        path is not a valid `fs` value, since rclone's local backend treats
+        `fs` as a directory to open, not a file to stat directly.
+
+        Raises `ValueError` if there is no path component left to split off:
+        a bare remote root (`"remote:"`) or a bare local root with no
+        separator (`"C:"`, `"/"`).
         """
-        if not self.remote:
+        if self.remote:
+            parent, sep, name = self.remote.rpartition("/")
+            if not sep:
+                return RcPath(fs=self.fs, remote=name)
+            return RcPath(fs=f"{self.fs}{parent}", remote=name)
+        if self.fs.endswith(":"):
             raise ValueError(f"{self!r} has no path component to split into parent and name")
-        parent, sep, name = self.remote.rpartition("/")
-        if not sep:
-            return RcPath(fs=self.fs, remote=name)
-        return RcPath(fs=f"{self.fs}{parent}", remote=name)
+        split_index = max(self.fs.rfind("\\"), self.fs.rfind("/"))
+        name = self.fs[split_index + 1 :]
+        if split_index == -1 or not name:
+            raise ValueError(f"{self!r} has no path component to split into parent and name")
+        return RcPath(fs=self.fs[: split_index + 1], remote=name)
 
     def __str__(self) -> str:
         return f"{self.fs}{self.remote}"
