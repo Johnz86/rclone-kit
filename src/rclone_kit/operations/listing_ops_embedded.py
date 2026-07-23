@@ -22,6 +22,7 @@ from rclone_kit.convert import convert_to_str
 from rclone_kit.diff import DiffItem, DiffOption, DiffType
 from rclone_kit.dir import Dir
 from rclone_kit.dir_listing import DirListing
+from rclone_kit.embedded_file_stream import EmbeddedFilesStream
 from rclone_kit.exceptions import UnsupportedEmbeddedOperationError
 from rclone_kit.file import File
 from rclone_kit.operations.listing_ops import _MIN_FILES_FOR_BATCH_LISTING, build_size_result
@@ -35,6 +36,7 @@ from rclone_kit.util import get_check, get_verbose, to_path, write_files_from
 
 if TYPE_CHECKING:
     from rclone_kit.access import ListingAccess
+    from rclone_kit.rc.list_stream import RcListStreamClient
 
 _DIFF_OPTION_TO_RC_FLAG = {
     DiffOption.COMBINED: "combined",
@@ -372,3 +374,32 @@ def stream_diff_embedded(
     diff_type = _DIFF_OPTION_TO_DIFF_TYPE[diff_option]
     for path in result.get(report_flag, []):
         yield DiffItem(diff_type, path, src_prefix=src, dst_prefix=dst)
+
+
+def fetch_ls_stream_embedded(
+    list_stream_client: RcListStreamClient,
+    src: str,
+    max_depth: int = -1,
+    fast_list: bool = False,
+) -> EmbeddedFilesStream:
+    """Open a bounded-memory listing stream via `rclonekit/liststream/open`
+    (Wave F design, L02).
+
+    Mirrors `Rclone.ls_stream()`'s exact CLI semantics: `max_depth < 0` or
+    `> 1` recurses (bounded via `_config.MaxDepth` when `> 1`), matching
+    the CLI backend's `-R`/`--max-depth` and `fetch_ls_embedded`'s own
+    `max_depth` mapping; `fast_list` sets `_config.UseListR`.
+    """
+    target = RcPath.parse(src)
+    opt: dict[str, object] = {"filesOnly": True}
+    config: dict[str, object] = {}
+    recurse = max_depth < 0 or max_depth > 1
+    if recurse:
+        opt["recurse"] = True
+        if max_depth > 1:
+            config["MaxDepth"] = max_depth
+    if fast_list:
+        config["UseListR"] = True
+
+    stream_id = list_stream_client.open(target.fs, target.remote, opt=opt, config=config)
+    return EmbeddedFilesStream(list_stream_client, src, stream_id)

@@ -8,7 +8,7 @@ library. Native-DLL parity is covered by
 """
 
 import subprocess
-from collections.abc import Generator
+from collections.abc import Generator, Mapping
 from pathlib import Path
 
 import pytest
@@ -24,11 +24,13 @@ from rclone_kit.operations.listing_ops_embedded import (
     check_is_synced_embedded,
     fetch_listremotes_embedded,
     fetch_ls_embedded,
+    fetch_ls_stream_embedded,
     fetch_size_file_embedded,
     fetch_size_files_embedded,
     fetch_stat_embedded,
     stream_diff_embedded,
 )
+from rclone_kit.rc.list_stream import ListStreamBatch
 from rclone_kit.remote import Remote
 from rclone_kit.types import ListingOption, Order, SizeSuffix
 
@@ -602,3 +604,61 @@ def test_fetch_size_files_embedded_rejects_other_args() -> None:
         )
 
     assert client.calls == []
+
+
+class FakeListStreamClient:
+    """A fake `RcListStreamClient` recording every `open()` call, so
+    `fetch_ls_stream_embedded`'s request mapping can be asserted without a
+    built native library."""
+
+    def __init__(self) -> None:
+        self.open_calls: list[tuple[str, str, dict, dict]] = []
+
+    def open(
+        self, fs: str, remote: str, opt: Mapping[str, object], config: Mapping[str, object]
+    ) -> int:
+        self.open_calls.append((fs, remote, dict(opt), dict(config)))
+        return 1
+
+    def next(self, stream_id: int, max_items: int, timeout_ms: int) -> ListStreamBatch:  # noqa: ARG002
+        raise AssertionError("next() should not be called by fetch_ls_stream_embedded itself")
+
+    def close(self, stream_id: int) -> None:  # noqa: ARG002
+        raise AssertionError("close() should not be called by fetch_ls_stream_embedded itself")
+
+
+def test_fetch_ls_stream_embedded_default_recurses_files_only() -> None:
+    client = FakeListStreamClient()
+
+    stream = fetch_ls_stream_embedded(client, src="remote:path")
+
+    assert client.open_calls == [("remote:", "path", {"filesOnly": True, "recurse": True}, {})]
+    assert stream.path == "remote:path"
+
+
+def test_fetch_ls_stream_embedded_bounded_recursion_sets_config_max_depth() -> None:
+    client = FakeListStreamClient()
+
+    fetch_ls_stream_embedded(client, src="remote:path", max_depth=3)
+
+    assert client.open_calls == [
+        ("remote:", "path", {"filesOnly": True, "recurse": True}, {"MaxDepth": 3})
+    ]
+
+
+def test_fetch_ls_stream_embedded_zero_max_depth_is_non_recursive() -> None:
+    client = FakeListStreamClient()
+
+    fetch_ls_stream_embedded(client, src="remote:path", max_depth=0)
+
+    assert client.open_calls == [("remote:", "path", {"filesOnly": True}, {})]
+
+
+def test_fetch_ls_stream_embedded_fast_list_sets_use_list_r() -> None:
+    client = FakeListStreamClient()
+
+    fetch_ls_stream_embedded(client, src="remote:path", fast_list=True)
+
+    assert client.open_calls == [
+        ("remote:", "path", {"filesOnly": True, "recurse": True}, {"UseListR": True})
+    ]

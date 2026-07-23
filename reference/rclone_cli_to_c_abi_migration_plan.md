@@ -609,6 +609,49 @@ Add the pull-based bridge only after defining bounded-buffer, handle, error, EOF
 semantics. Migrate database listing and byte ranges. Run memory/handle leak tests and interrupted
 consumer tests.
 
+Wave F is now done, following the normative design in
+[`native_c_abi_wave_f_review_and_design.md`](native_c_abi_wave_f_review_and_design.md). D10/D11 are
+not action items here - they are this migration plan's own internal/distribution-removal ledger
+(section "Internal and distribution removal ledger"), and both name their gate as "L02/L03 ...
+pass"/"L12 ... pass": they record when it becomes safe to *delete* `FilesStream`'s CLI-only
+process-stdout parser and `diff_stream_from_running_process`, which belongs to Wave I, not this one.
+
+- **T09 (`write_bytes`)/T10 (`write_text`)/L04 (`print`) turned out to already be functionally
+  complete**, discovered by checking before assuming: `write_bytes()` already calls `copy_to()`
+  (embedded since Wave D Phase D7), and `print()` only ever calls `read_text()` (embedded since the
+  same phase). No new code was needed for any of the three - only a dedicated native parity test
+  each and a ledger correction (T09's original `composite_rc` decision is now `transitive`).
+- **L02 (`ls_stream`)** needed a genuinely new bridge: `operations/list`'s own RC handler
+  (`rcList` in `fs/operations/rc.go`) accumulates the *entire* listing into one Go slice before
+  returning it as one JSON blob - read directly from source, not assumed - which cannot bound memory
+  for "millions of entries" the way this row requires. `librclone/rclonekit/rc/liststream.go` (local-
+  only submodule commit, not pushed) adds three new downstream RC methods -
+  `rclonekit/liststream/open`/`.../next`/`.../close` - backed by a small handle table and a bounded
+  (1024-item) channel per stream, reusing the existing `RcloneKitRPC` C function with no ABI change.
+  `next(streamId, maxItems, timeoutMs)` is bounded-wait, not indefinite-block, since
+  `RcloneRuntime.call()` serializes all RC dispatch through one lock and an indefinitely-blocked
+  `next()` would starve even an emergency `close()` from another thread. `EmbeddedFilesStream`
+  (`rclone_kit/embedded_file_stream.py`) exposes the exact same public surface as the CLI-backed
+  `FilesStream`, so `save_to_db()` (L03) needed zero changes - confirmed transitively with its own
+  dedicated test rather than left as an inferred claim.
+- **T13 (`copy_bytes`)** is bounded by construction (an explicit `offset`/`count`), so - unlike L02 -
+  it needed no cursor, just one new downstream RC method, `rclonekit/readrange`, opening the object
+  with `fs.RangeOption{Start, End}` (HTTP Range semantics, inclusive end) and streaming directly into
+  a local file via `io.CopyN`. A range extending past the object's actual end is not an error
+  (`io.CopyN`'s `io.EOF` for a short copy is treated as success, reporting the real byte count) -
+  verified empirically for an exact range, zero length, offset exactly at EOF, a range past EOF, a
+  full-file range, and a missing source object. Routed through the same `_JobMonitor` async-job
+  engine as T01/T02/T07 (not a bare synchronous call) purely so a large in-flight range download can
+  be observed/cancelled like any other embedded operation.
+- **A pre-existing bug was found and fixed while testing L03**, unrelated to embedded execution
+  specifically: `rclone_kit.db.models.create_file_entry_model` built its dynamic `FileEntryConcrete`
+  subclass inheriting `FileEntry.size`'s `sa_column=Column(BigInteger)` as-is - a single `Column`
+  instance built once, at `FileEntry`'s own class-definition time, and shared by every subclass
+  unless overridden. Calling `create_file_entry_model` twice for two different tables within the same
+  process (which no prior test happened to do) crashed with `ArgumentError` the second time, since a
+  `Column` can only belong to one `Table`. Fixed by re-declaring `size` with a fresh `Column` inside
+  the dynamic subclass itself.
+
 ### Wave G — direct filesystem facade
 
 Ledger: F01–F05, T15, D14–D15.

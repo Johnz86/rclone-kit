@@ -203,34 +203,35 @@ notes = "operations/list; non-recursive, unlimited-recursion, bounded-recursion,
 id = "L02"
 method = "ls_stream"
 decision = "bridge"
-owner_module = "rclone_kit.operations.listing_ops"
-status = "planned"
-parity_test = ""
-windows = false
+owner_module = "rclone_kit.operations.listing_ops_embedded"
+status = "cli_parity_tested"
+parity_test = "tests/native/test_ls_stream_embedded_integration.py::test_ls_stream_matches_cli_file_count"
+windows = true
 linux = false
-notes = "Wave F; needs a pull-based bridge stream, not one operations/list allocation."
+failure_contract_complete = true
+notes = "Wave F Phase L02. Backed by a new downstream Go RC method family (rclonekit/liststream/open|next|close, native/rclone, local-only) - a bounded (1024-item) channel behind the scenes, pulled in batches via next(streamId, maxItems, timeoutMs), so millions of entries never materialize as one allocation the way operations/list does. EmbeddedFilesStream exposes the exact same public surface as the CLI-backed FilesStream (.files()/.files_paged()/context-manager close), so save_to_db() (L03) needed zero changes. See native_c_abi_wave_f_review_and_design.md."
 
 [[row]]
 id = "L03"
 method = "save_to_db"
 decision = "transitive"
 owner_module = "rclone_kit.cmd.save_to_db"
-status = "planned"
-parity_test = ""
-windows = false
+status = "cli_parity_tested"
+parity_test = "tests/native/test_ls_stream_embedded_integration.py::test_save_to_db_matches_ls_stream_transitively"
+windows = true
 linux = false
-notes = "Depends on L02."
+notes = "Transitive from L02, confirmed with a dedicated test rather than left inferred; needed no code changes."
 
 [[row]]
 id = "L04"
 method = "print"
 decision = "transitive"
 owner_module = "rclone_kit.client"
-status = "planned"
-parity_test = ""
-windows = false
+status = "cli_parity_tested"
+parity_test = "tests/native/test_transfer_ops_embedded_integration.py::test_print_works_transitively_through_read_text"
+windows = true
 linux = false
-notes = "Depends on T11/T12; not yet dedicated-tested transitively."
+notes = "Transitive from T11/T12 (already embedded since Wave D); confirmed with a dedicated test rather than left inferred."
 
 [[row]]
 id = "L05"
@@ -437,24 +438,24 @@ notes = "Wave E Phase E3. Partitioned operations/delete jobs (fs = the group_fil
 [[row]]
 id = "T09"
 method = "write_bytes"
-decision = "composite_rc"
+decision = "transitive"
 owner_module = "rclone_kit.client"
-status = "planned"
-parity_test = ""
-windows = false
+status = "cli_parity_tested"
+parity_test = "tests/native/test_transfer_ops_embedded_integration.py::test_write_bytes_matches_cli_transitively_through_copy_to"
+windows = true
 linux = false
-notes = "Wave F."
+notes = "Discovered already functionally complete before writing any Wave F code: write_bytes() already calls copy_to(), embedded since Wave D Phase D7. Corrected the ledger's original decision from composite_rc to transitive - there is no dedicated embedded adapter for this row at all. Confirmed empirically, then given a dedicated parity test."
 
 [[row]]
 id = "T10"
 method = "write_text"
 decision = "transitive"
 owner_module = "rclone_kit.client"
-status = "planned"
-parity_test = ""
-windows = false
+status = "cli_parity_tested"
+parity_test = "tests/native/test_transfer_ops_embedded_integration.py::test_write_text_matches_cli_transitively_through_write_bytes"
+windows = true
 linux = false
-notes = "Depends on T09."
+notes = "Transitive from T09 (already embedded); confirmed with a dedicated test rather than left inferred."
 
 [[row]]
 id = "T11"
@@ -484,12 +485,13 @@ notes = "Same failure-contract closure as T11 (design review F4, Phase D7): read
 id = "T13"
 method = "copy_bytes"
 decision = "bridge"
-owner_module = "rclone_kit.client"
-status = "planned"
-parity_test = ""
-windows = false
+owner_module = "rclone_kit.operations.transfer_ops_embedded"
+status = "cli_parity_tested"
+parity_test = "tests/native/test_transfer_ops_embedded_integration.py::test_copy_bytes_matches_cli_for_an_exact_range"
+windows = true
 linux = false
-notes = "Wave F; open remote object with offset/count and pull bounded bytes."
+failure_contract_complete = true
+notes = "Wave F. Backed by a new downstream Go RC method (rclonekit/readrange, native/rclone, local-only), streaming the range directly into a local file via io.CopyN rather than base64-encoding it into the RC response. Routed through the same _JobMonitor async-job engine T01/T02/T07 use (not a bare synchronous call), even though a byte range is bounded, so a large in-flight download can be observed/cancelled like any other embedded operation. Requesting past EOF is not an error (io.CopyN's io.EOF is treated as a short, successful copy) - empirically verified for an exact range, zero length, offset at EOF, a range extending past EOF, a full-file range, and a missing source object."
 
 [[row]]
 id = "T14"

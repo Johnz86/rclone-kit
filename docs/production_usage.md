@@ -518,6 +518,29 @@ under `execution="embedded"` that list always has exactly one element, wrapping 
 does not exist is not an error in either operation - it is simply not visited during the underlying
 walk - matching each command's own CLI behavior.
 
+### `ls_stream()`/`copy_bytes()`: bounded-memory streaming and byte ranges
+
+`ls_stream()` keeps its exact CLI signature and return shape - a context manager exposing
+`.files()`/`.files_paged()` - under embedded execution too. Nothing else needs to change:
+
+```python
+with rclone.ls_stream("archive:training-data", max_depth=-1) as stream:
+    for page in stream.files_paged(page_size=10_000):
+        persist_inventory_page(page)
+```
+
+Internally, embedded execution pulls items in small batches from a bounded server-side buffer
+instead of parsing a subprocess's stdout - memory stays bounded regardless of how many millions of
+entries the listing has. `save_to_db()` needs no changes either, since it only ever calls
+`ls_stream()`. Always use the context manager (as above): exiting it - including via an exception
+partway through iteration - releases the underlying stream immediately rather than leaving it open
+for the life of the runtime.
+
+`copy_bytes()` also keeps its exact signature and behavior. A request that extends past the end of
+the object is not an error - it copies whatever is available - and `check` is not exposed (matching
+the CLI backend, which always raised through this call): a failure raises `RcloneCommandError`
+regardless of execution mode.
+
 ### `CompletedProcess` is a compatibility type, not a real process result
 
 `CompletedProcess` predates embedded execution, when every result really did come from a subprocess.

@@ -23,12 +23,14 @@ from rclone_kit.job import _JobMonitor
 from rclone_kit.operation import JobState, JobStatus, TransferStats
 from rclone_kit.operations.transfer_ops_embedded import (
     cleanup_embedded,
+    copy_bytes_embedded,
     copy_file_to_embedded,
     copy_files_embedded,
     delete_files_embedded,
     purge_dir_embedded,
 )
 from rclone_kit.rc.jobs import RcJobRef
+from rclone_kit.types import SizeSuffix
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -539,3 +541,55 @@ class TestDeleteFilesEmbedded:
 
         assert len(job_client.starts) == 2
         assert len(excinfo.value.result.job_ids) == 2
+
+
+class TestCopyBytesEmbedded:
+    def test_starts_readrange_job_with_split_fs_remote(self) -> None:
+        job_client = FakeJobClient()
+
+        copy_bytes_embedded(
+            _monitor(job_client), _CLIENT_ID, "remote:path/to/a.txt", 10, 20, Path("out.bin")
+        )
+
+        assert len(job_client.starts) == 1
+        method, params, _group = job_client.starts[0]
+        assert method == "rclonekit/readrange"
+        assert params["fs"] == "remote:path/to"
+        assert params["remote"] == "a.txt"
+        assert params["offset"] == 10
+        assert params["count"] == 20
+        assert params["outputPath"] == str(Path("out.bin"))
+
+    def test_accepts_size_suffix_offset_and_length(self) -> None:
+        job_client = FakeJobClient()
+
+        copy_bytes_embedded(
+            _monitor(job_client),
+            _CLIENT_ID,
+            "remote:a.txt",
+            SizeSuffix("1K"),
+            SizeSuffix("2K"),
+            Path("out.bin"),
+        )
+
+        _method, params, _group = job_client.starts[0]
+        assert params["offset"] == 1024
+        assert params["count"] == 2048
+
+    def test_returns_ok_result_on_success(self) -> None:
+        job_client = FakeJobClient()
+
+        result = copy_bytes_embedded(
+            _monitor(job_client), _CLIENT_ID, "remote:a.txt", 0, 10, Path("out.bin")
+        )
+
+        assert result.ok is True
+
+    def test_raises_operation_failed_error_on_failure(self) -> None:
+        job_client = FakeJobClient()
+        job_client.success = False
+
+        with pytest.raises(OperationFailedError):
+            copy_bytes_embedded(
+                _monitor(job_client), _CLIENT_ID, "remote:a.txt", 0, 10, Path("out.bin")
+            )

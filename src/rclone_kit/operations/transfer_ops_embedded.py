@@ -26,6 +26,13 @@ see `native_c_abi_wave_e_review_and_design.md` section 3, decision E3),
 and folds every partition's `OperationResult` into a single aggregate via
 `_aggregate_results()` before optionally raising once, for the aggregate
 as a whole.
+
+T13 (`copy_bytes_embedded`, Wave F) starts the downstream `rclonekit/
+readrange` endpoint as a job too, even though a byte range is bounded (not
+partitioned like T06/T08) - purely so a large in-flight range download can
+be observed/cancelled/timed-out like any other embedded operation, instead
+of holding the runtime lock synchronously for the whole transfer (see
+`native_c_abi_wave_f_review_and_design.md` section 4, decision F8).
 """
 
 from __future__ import annotations
@@ -47,6 +54,7 @@ from rclone_kit.operation import OperationResult, OperationWarning, TransferStat
 from rclone_kit.operations.transfer_options import TransferOptions, encode_transfer_options_config
 from rclone_kit.rc.fs_spec import encode_fs_spec
 from rclone_kit.rc.paths import RcPath
+from rclone_kit.types import SizeSuffix
 from rclone_kit.util import get_check, write_files_from
 
 if TYPE_CHECKING:
@@ -455,3 +463,39 @@ def delete_files_embedded(
     aggregate = _aggregate_results("delete_files", None, None, results)
     _raise_if_check_failed(check, aggregate)
     return aggregate
+
+
+def copy_bytes_embedded(
+    monitor: _JobMonitor,
+    client_id: uuid.UUID,
+    src: str,
+    offset: int | SizeSuffix,
+    length: int | SizeSuffix,
+    outfile: Path,
+) -> OperationResult:
+    """Copy a byte range from `src` into `outfile` via the downstream
+    `rclonekit/readrange` RC method (Wave F design, decision F8).
+
+    Always raises `OperationFailedError` on failure (`check` is not
+    exposed here - `copy_bytes()` never took one on the CLI backend
+    either, which always ran with an effective `check=True`).
+    """
+    target = RcPath.parse(src).as_parent_and_name()
+    offset_int = SizeSuffix(offset).as_int()
+    length_int = SizeSuffix(length).as_int()
+    handle = monitor.start_job(
+        "rclonekit/readrange",
+        {
+            "fs": target.fs,
+            "remote": target.remote,
+            "offset": offset_int,
+            "count": length_int,
+            "outputPath": str(outfile),
+        },
+        group=_new_group(client_id),
+        operation="copy_bytes",
+        source=src,
+        destination=str(outfile),
+        check=True,
+    )
+    return handle.wait()

@@ -22,6 +22,7 @@ from rclone_kit.convert import convert_to_filestr_list, convert_to_str
 from rclone_kit.diff import DiffItem, DiffOption
 from rclone_kit.dir import Dir
 from rclone_kit.dir_listing import DirListing
+from rclone_kit.embedded_file_stream import EmbeddedFilesStream
 from rclone_kit.exceptions import (
     EmbeddedOnlyOperationError,
     OperationFailedError,
@@ -64,6 +65,7 @@ from rclone_kit.operations.listing_ops_embedded import (
     check_is_synced_embedded,
     fetch_listremotes_embedded,
     fetch_ls_embedded,
+    fetch_ls_stream_embedded,
     fetch_size_file_embedded,
     fetch_size_files_embedded,
     fetch_stat_embedded,
@@ -83,6 +85,7 @@ from rclone_kit.operations.transfer_ops import (
 )
 from rclone_kit.operations.transfer_ops_embedded import (
     cleanup_embedded,
+    copy_bytes_embedded,
     copy_file_to_embedded,
     copy_files_embedded,
     delete_files_embedded,
@@ -95,6 +98,7 @@ from rclone_kit.process import Process
 from rclone_kit.rc.client import RcClient
 from rclone_kit.rc.fs_spec import encode_fs_spec
 from rclone_kit.rc.jobs import RcloneRcJobClient
+from rclone_kit.rc.list_stream import RcloneRcListStreamClient
 from rclone_kit.remote import Remote
 from rclone_kit.rpath import RPath
 from rclone_kit.s3.types import S3UploadTarget
@@ -413,15 +417,24 @@ class Rclone:
         src: str,
         max_depth: int = -1,
         fast_list: bool = False,
-    ) -> FilesStream:
+    ) -> FilesStream | EmbeddedFilesStream:
         """
-        List files in the given path
+        List files in the given path, as a bounded-memory pull stream.
 
         Args:
             src: Remote path to list
             max_depth: Maximum recursion depth (-1 for unlimited)
             fast_list: Use fast list (only use when getting THE entire data repository from the root/bucket, or it's small)
+
+        Embedded execution returns an `EmbeddedFilesStream`, backed by
+        `rclonekit/liststream/*` instead of a subprocess - it exposes the
+        same `.files()`/`.files_paged()`/context-manager surface, so
+        `save_to_db()` and other consumers need no changes.
         """
+        if self._rc_client is not None:
+            return fetch_ls_stream_embedded(
+                RcloneRcListStreamClient(self._rc_client), src, max_depth, fast_list
+            )
         cmd = ["lsjson", src, "--files-only"]
         recurse = max_depth < 0 or max_depth > 1
         if recurse:
@@ -1062,6 +1075,16 @@ class Rclone:
 
         Raises RcloneCommandError if the underlying rclone command fails.
         """
+        if self._rc_client is not None:
+            if other_args:
+                raise UnsupportedEmbeddedOperationError("copy_bytes (other_args)")
+            try:
+                copy_bytes_embedded(
+                    self._ensure_job_monitor(), self._client_id, src, offset, length, outfile
+                )
+            except OperationFailedError as error:
+                raise RcloneCommandError("cat", error.result.error or "", error) from error
+            return
         copy_byte_range(self._backend, src, offset, length, outfile, other_args=other_args)
 
     def copy_dir(

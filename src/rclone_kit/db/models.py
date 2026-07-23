@@ -46,6 +46,13 @@ def create_file_entry_model(_table_name: str) -> type[FileEntry]:
 
     class FileEntryConcrete(FileEntry, table=True):
         __tablename__ = cast(Any, _table_name)
+        # A fresh Column instance per call: FileEntry.size's sa_column is
+        # built once, at class-definition time, and shared by every
+        # subclass unless overridden here - SQLAlchemy rejects attaching
+        # the same Column object to a second Table, so calling this
+        # function twice (two different tables in one process) would
+        # otherwise raise ArgumentError on the second call.
+        size: int = Field(sa_column=Column(BigInteger))
 
         def table_name(self) -> str:
             return _table_name
