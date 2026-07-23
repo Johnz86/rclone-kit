@@ -16,6 +16,15 @@ from rclone_kit.http_server import HttpFetcher, HttpServer, Range
 from rclone_kit.log import configure_logging
 from rclone_kit.log import setup_default_logging as setup_default_logging
 from rclone_kit.mount import Mount
+from rclone_kit.operation import (
+    ActiveTransfer,
+    JobState,
+    JobStatus,
+    OperationAttempt,
+    OperationResult,
+    OperationWarning,
+    TransferStats,
+)
 from rclone_kit.process import Process
 from rclone_kit.remote import Remote
 from rclone_kit.rpath import RPath
@@ -26,6 +35,7 @@ from rclone_kit.types import ListingOption, Order, PartInfo, SizeResult, SizeSuf
 logging.getLogger(__name__).addHandler(logging.NullHandler())
 
 __all__ = [
+    "ActiveTransfer",
     "CompletedProcess",
     "Config",
     "DiffItem",
@@ -40,10 +50,15 @@ __all__ = [
     "FilesStream",
     "HttpFetcher",
     "HttpServer",
+    "JobState",
+    "JobStatus",
     "ListingOption",
     "LogSettings",
     "Mount",
     "MultiUploadResult",
+    "OperationAttempt",
+    "OperationResult",
+    "OperationWarning",
     "Order",
     "Parsed",
     "PartInfo",
@@ -57,6 +72,7 @@ __all__ = [
     "Section",
     "SizeResult",
     "SizeSuffix",
+    "TransferStats",
     "configure_logging",
     "rclone_verbose",
     "setup_default_logging",

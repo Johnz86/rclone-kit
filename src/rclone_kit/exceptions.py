@@ -6,6 +6,13 @@ covers everything else. Filled in incrementally as call sites that
 currently return `Exception` as data are migrated to raise instead.
 """
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from rclone_kit.operation import OperationResult
+
 
 class RcloneKitError(Exception):
     """Base type for every error raised by rclone-kit's own operations."""
@@ -99,6 +106,121 @@ class UnsupportedEmbeddedOperationError(RcloneKitError):
             f"Rclone.{method}() is not yet available with execution='embedded'; "
             "construct this client with execution='cli' to use it."
         )
+
+
+class OperationError(RcloneKitError):
+    """Base type for the execution-independent embedded operation errors
+    (`JobHandle`/`start_*` family), added by the CLI-to-C-ABI migration's
+    Wave D design.
+
+    Unlike `UnsupportedEmbeddedOperationError` (a method isn't ported yet),
+    these are raised by operations that *are* ported, when the operation
+    itself starts, fails, is cancelled, times out, or its job identity/
+    lifecycle cannot be trusted. Deliberately execution-independent: an
+    embedded caller must not need to catch a different exception type than
+    a CLI caller for the same logical failure.
+    """
+
+
+class OperationStartError(OperationError):
+    """Raised when the RC call that would create a job fails before any
+    job ID exists.
+
+    Carries the underlying `RcCallError` (or similar) as `__cause__`.
+    """
+
+    def __init__(self, operation: str, cause: Exception) -> None:
+        self.operation = operation
+        self.cause = cause
+        super().__init__(f"Failed to start operation {operation!r}: {cause}")
+
+
+class OperationFailedError(OperationError):
+    """Raised when `check=True` and a started operation reaches a failed
+    terminal state.
+
+    Carries the complete `OperationResult` as `result`, so callers can
+    inspect attempts/stats/warnings even though the operation raised.
+    """
+
+    def __init__(self, result: OperationResult) -> None:
+        self.result = result
+        super().__init__(f"Operation {result.operation!r} failed: {result.error}")
+
+
+class OperationCancelledError(OperationError):
+    """Raised when `check=True` and a started operation reaches a
+    confirmed-cancelled terminal state.
+
+    Carries the complete `OperationResult` as `result`.
+    """
+
+    def __init__(self, result: OperationResult) -> None:
+        self.result = result
+        super().__init__(f"Operation {result.operation!r} was cancelled")
+
+
+class OperationTimeoutError(OperationError):
+    """Raised when `JobHandle.wait(timeout=...)` elapses before the job
+    reaches a terminal state.
+
+    The timeout bounds observation only; it never cancels the already-
+    dispatched operation. Callers that want cancellation-on-timeout must
+    call `cancel()` themselves.
+    """
+
+    def __init__(self, operation: str, timeout: float) -> None:
+        self.operation = operation
+        self.timeout = timeout
+        super().__init__(
+            f"Timed out after {timeout}s waiting for operation {operation!r} to finish"
+        )
+
+
+class JobExpiredError(OperationError):
+    """Raised when a job's terminal state was lost to rclone's own
+    `job/status` expiry window before this client observed it.
+
+    Distinct from an ordinary operation failure: the outcome is genuinely
+    unknown, not failed.
+    """
+
+    def __init__(self, job_id: int, execute_id: str) -> None:
+        self.job_id = job_id
+        self.execute_id = execute_id
+        super().__init__(
+            f"Job {job_id} (execute_id={execute_id!r}) expired before its terminal "
+            "state could be observed"
+        )
+
+
+class JobIdentityError(OperationError):
+    """Raised when a job's `execute_id` does not match the value recorded
+    when the job was started.
+
+    Rclone job IDs restart from one whenever the rclone process restarts,
+    so `job_id` alone is not a stable identity; a mismatch here means a
+    handle would otherwise silently attach to an unrelated operation.
+    """
+
+    def __init__(self, job_id: int, expected_execute_id: str, actual_execute_id: str) -> None:
+        self.job_id = job_id
+        self.expected_execute_id = expected_execute_id
+        self.actual_execute_id = actual_execute_id
+        super().__init__(
+            f"Job {job_id} identity mismatch: expected execute_id="
+            f"{expected_execute_id!r}, got {actual_execute_id!r}"
+        )
+
+
+class OperationShutdownError(OperationError):
+    """Raised when an owned `Rclone` client cannot safely cancel/observe
+    every job it started within its shutdown deadline.
+
+    The runtime is left open (not finalized) when this is raised, so the
+    caller may retry cancellation or wait longer rather than losing access
+    to a client whose jobs are still live.
+    """
 
 
 class S3UploadError(RcloneKitError):
