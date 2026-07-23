@@ -1,5 +1,5 @@
 """Embedded RC-backed listing/stat operations (CLI-to-C-ABI migration ledger
-rows L01, M02, L05, L06/L07 (transitive), L08, L10, L11).
+rows L01, M02, L05, L06/L07 (transitive), L08, L10, L11, L12).
 
 Parallels `listing_ops.py`'s CLI-backed functions; `Rclone` dispatches to
 whichever matches its `execution` mode. `operations/stat`'s `item` field is
@@ -12,12 +12,15 @@ difference (L05, L10), not a regression to reconcile away.
 from __future__ import annotations
 
 import random
+from collections.abc import Generator
 from fnmatch import fnmatch
 from typing import TYPE_CHECKING, cast
 
 from rclone_kit.convert import convert_to_str
+from rclone_kit.diff import DiffItem, DiffOption, DiffType
 from rclone_kit.dir import Dir
 from rclone_kit.dir_listing import DirListing
+from rclone_kit.exceptions import UnsupportedEmbeddedOperationError
 from rclone_kit.file import File
 from rclone_kit.rc.client import RcCallable
 from rclone_kit.rc.paths import RcPath
@@ -28,6 +31,23 @@ from rclone_kit.util import to_path
 
 if TYPE_CHECKING:
     from rclone_kit.access import ListingAccess
+
+_DIFF_OPTION_TO_RC_FLAG = {
+    DiffOption.COMBINED: "combined",
+    DiffOption.MISSING_ON_SRC: "missingOnSrc",
+    DiffOption.MISSING_ON_DST: "missingOnDst",
+    DiffOption.DIFFER: "differ",
+    DiffOption.MATCH: "match",
+    DiffOption.ERROR: "error",
+}
+
+_DIFF_OPTION_TO_DIFF_TYPE = {
+    DiffOption.MISSING_ON_SRC: DiffType.MISSING_ON_SRC,
+    DiffOption.MISSING_ON_DST: DiffType.MISSING_ON_DST,
+    DiffOption.DIFFER: DiffType.DIFFERENT,
+    DiffOption.MATCH: DiffType.EQUAL,
+    DiffOption.ERROR: DiffType.ERROR,
+}
 
 
 def _split_remote_name_and_path(src: str) -> tuple[str, str]:
@@ -192,3 +212,93 @@ def check_is_synced_embedded(rc_client: RcCallable, src: str | Dir, dst: str | D
         error=False,
     )
     return bool(result.get("success", False))
+
+
+_COMBINED_PREFIX_TO_DIFF_TYPE = {diff_type.value: diff_type for diff_type in DiffType}
+
+
+def _classify_combined_line(line: str) -> tuple[DiffType, str] | None:
+    if not line:
+        return None
+    diff_type = _COMBINED_PREFIX_TO_DIFF_TYPE.get(line[0])
+    if diff_type is None:
+        return None
+    return diff_type, line[1:].strip()
+
+
+def stream_diff_embedded(
+    rc_client: RcCallable,
+    src: str,
+    dst: str,
+    min_size: str | None = None,
+    max_size: str | None = None,
+    diff_option: DiffOption = DiffOption.COMBINED,
+    fast_list: bool = True,
+    size_only: bool | None = None,
+    checkers: int | None = None,
+    other_args: list[str] | None = None,
+) -> Generator[DiffItem]:
+    """Compare `src` and `dst` via one `operations/check` RC call, requesting
+    only the report array `diff_option` needs.
+
+    Unlike the CLI backend (whose `_classify_diff` only understands
+    `combined`, `missing-on-src`, and `missing-on-dst` output), every
+    `DiffOption` value is supported here: `operations/check` already returns
+    `differ`/`match`/`error` arrays directly, at no extra request cost.
+
+    Raises `UnsupportedEmbeddedOperationError` if `other_args` is nonempty;
+    there is no RC equivalent for arbitrary CLI flags.
+    """
+    if other_args:
+        raise UnsupportedEmbeddedOperationError("diff (other_args)")
+
+    if size_only is None:
+        size_only = diff_option in (DiffOption.MISSING_ON_DST, DiffOption.MISSING_ON_SRC)
+
+    report_flag = _DIFF_OPTION_TO_RC_FLAG[diff_option]
+    params: dict[str, object] = {
+        "srcFs": src,
+        "dstFs": dst,
+        "combined": False,
+        "missingOnSrc": False,
+        "missingOnDst": False,
+        "match": False,
+        "differ": False,
+        "error": False,
+    }
+    params[report_flag] = True
+    if diff_option == DiffOption.MISSING_ON_DST:
+        params["oneWay"] = True
+
+    config: dict[str, object] = {}
+    if size_only:
+        config["SizeOnly"] = True
+    if checkers is not None and checkers >= 1:
+        config["Checkers"] = checkers
+    if fast_list:
+        config["UseListR"] = True
+    if config:
+        params["_config"] = config
+
+    filter_opt: dict[str, object] = {}
+    if min_size:
+        filter_opt["MinSize"] = min_size
+    if max_size:
+        filter_opt["MaxSize"] = max_size
+    if filter_opt:
+        params["_filter"] = filter_opt
+
+    result = rc_client.call("operations/check", **params)
+
+    if diff_option == DiffOption.COMBINED:
+        for line in result.get("combined", []):
+            classified = _classify_combined_line(line)
+            if classified is None:
+                continue
+            diff_type, path = classified
+            yield DiffItem(diff_type, path, src_prefix=src, dst_prefix=dst)
+        return
+
+    diff_type = _DIFF_OPTION_TO_DIFF_TYPE[diff_option]
+    for path in result.get(report_flag, []):
+        yield DiffItem(diff_type, path, src_prefix=src, dst_prefix=dst)

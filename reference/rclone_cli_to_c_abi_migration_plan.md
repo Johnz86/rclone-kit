@@ -445,8 +445,20 @@ actually needs (every per-file report array set to `false`) and returning its `s
 directly. Deliberately does not replicate the CLI backend's "any nonzero return code means not
 synced" behavior: an unexpected `RcCallError` (bad path, missing backend) propagates instead of
 silently becoming `False`, matching the ledger's own note that this conflation is a bug to leave
-behind, not preserve. L12 (`diff()`), which needs the same RC method's per-file report arrays
-normalized into `DiffItem`, is not yet started.
+behind, not preserve.
+
+L12 (`diff()`) is done too, reusing the same `operations/check` RC method and requesting only the
+one report array `diff_option` needs. Its `combined` array uses the exact same `"<prefix> <path>"`
+format the CLI backend's own `_classify_diff` already parses (`=`/`-`/`+`/`*`/`!`), so this closes the
+row without inventing a new wire format. Unlike the CLI backend - whose `_classify_diff` only
+actually handles `COMBINED`, `MISSING_ON_SRC`, and `MISSING_ON_DST`, raising on the other three
+`DiffOption` values - every `DiffOption` is supported here, since `operations/check` already returns
+`differ`/`match`/`error` arrays directly at no extra cost; native tests confirm this is a strict
+improvement, not a parity mismatch, by exercising `DIFFER`/`MATCH` only against the embedded path.
+`min_size`/`max_size` map to `_filter.MinSize`/`MaxSize`, `checkers`/`size_only`/`fast_list` map to
+`_config.Checkers`/`SizeOnly`/`UseListR`, and `other_args` raises
+`UnsupportedEmbeddedOperationError` rather than being silently dropped. This closes out Wave C
+completely (L11-L14, with L13/L14 transitive).
 
 ### Wave D — simple transfer vertical slice
 

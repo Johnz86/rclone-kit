@@ -16,6 +16,7 @@ import pytest
 
 from conftest import NATIVE_EXECUTABLE_AVAILABLE
 from rclone_kit.client import Rclone
+from rclone_kit.diff import DiffOption
 from rclone_kit.types import ListingOption
 
 pytestmark = pytest.mark.skipif(
@@ -196,3 +197,56 @@ def test_is_synced_matches_cli_for_differing_directories(
 
     assert embedded.is_synced(str(src), str(dst)) is False
     assert cli.is_synced(str(src), str(dst)) is False
+
+
+def _make_diff_tree(root: Path) -> tuple[Path, Path]:
+    src = root / "src"
+    dst = root / "dst"
+    src.mkdir()
+    dst.mkdir()
+    (src / "same.txt").write_bytes(b"same content")
+    (dst / "same.txt").write_bytes(b"same content")
+    (src / "only_src.txt").write_bytes(b"only in src")
+    (dst / "only_dst.txt").write_bytes(b"only in dst")
+    (src / "differs.txt").write_bytes(b"version A")
+    (dst / "differs.txt").write_bytes(b"version B, a different length")
+    return src, dst
+
+
+def test_diff_combined_matches_cli(tmp_path: Path, embedded: Rclone, cli: Rclone) -> None:
+    src, dst = _make_diff_tree(tmp_path)
+
+    embedded_items = {
+        (i.type, i.path) for i in embedded.diff(str(src), str(dst), diff_option=DiffOption.COMBINED)
+    }
+    cli_items = {
+        (i.type, i.path) for i in cli.diff(str(src), str(dst), diff_option=DiffOption.COMBINED)
+    }
+
+    assert embedded_items == cli_items
+    assert len(embedded_items) == 4
+
+
+def test_diff_missing_on_dst_matches_cli(tmp_path: Path, embedded: Rclone, cli: Rclone) -> None:
+    src, dst = _make_diff_tree(tmp_path)
+
+    embedded_paths = {
+        i.path for i in embedded.diff(str(src), str(dst), diff_option=DiffOption.MISSING_ON_DST)
+    }
+    cli_paths = {
+        i.path for i in cli.diff(str(src), str(dst), diff_option=DiffOption.MISSING_ON_DST)
+    }
+
+    assert embedded_paths == cli_paths == {"only_src.txt"}
+
+
+def test_diff_differ_and_match_not_supported_by_cli_but_work_embedded(
+    tmp_path: Path, embedded: Rclone
+) -> None:
+    src, dst = _make_diff_tree(tmp_path)
+
+    differ_paths = {i.path for i in embedded.diff(str(src), str(dst), diff_option=DiffOption.DIFFER)}
+    match_paths = {i.path for i in embedded.diff(str(src), str(dst), diff_option=DiffOption.MATCH)}
+
+    assert differ_paths == {"differs.txt"}
+    assert match_paths == {"same.txt"}

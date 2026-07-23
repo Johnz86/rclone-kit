@@ -358,3 +358,17 @@ def test_is_synced_dispatches_to_rc_client_when_embedded() -> None:
 
     assert rclone.is_synced("src:bucket", "dst:bucket") is True
     rclone.close()
+
+
+def test_diff_dispatches_to_rc_client_when_embedded() -> None:
+    binding = FakeBinding()
+    binding.rpc_responses_by_method[b"operations/check"] = (
+        200,
+        b'{"combined": ["= a.txt"]}',
+    )
+    rclone = Rclone(None, execution="embedded", runtime=RcloneRuntime(binding))
+
+    items = list(rclone.diff("src:bucket", "dst:bucket"))
+
+    assert [i.path for i in items] == ["a.txt"]
+    rclone.close()

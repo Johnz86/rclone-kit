@@ -58,6 +58,7 @@ from rclone_kit.operations.listing_ops_embedded import (
     fetch_ls_embedded,
     fetch_size_file_embedded,
     fetch_stat_embedded,
+    stream_diff_embedded,
 )
 from rclone_kit.operations.mount_ops import launch_mount, launch_s3_mount
 from rclone_kit.operations.serve_ops import launch_http_server, launch_webdav_server
@@ -472,6 +473,20 @@ class Rclone:
     ) -> Generator[DiffItem]:
         """Be extra careful with the src and dst values. If you are off by one
         parent directory, you will get a huge amount of false diffs."""
+        if self._rc_client is not None:
+            yield from stream_diff_embedded(
+                self._rc_client,
+                src,
+                dst,
+                min_size=min_size,
+                max_size=max_size,
+                diff_option=diff_option,
+                fast_list=fast_list,
+                size_only=size_only,
+                checkers=checkers,
+                other_args=other_args,
+            )
+            return
         yield from stream_diff(
             self._backend,
             src,

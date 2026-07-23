@@ -13,8 +13,10 @@ from pathlib import Path
 
 import pytest
 
+from rclone_kit.diff import DiffOption, DiffType
 from rclone_kit.dir import Dir
 from rclone_kit.dir_listing import DirListing
+from rclone_kit.exceptions import UnsupportedEmbeddedOperationError
 from rclone_kit.file import File
 from rclone_kit.operations.config_ops import fetch_config_paths_embedded
 from rclone_kit.operations.listing_ops_embedded import (
@@ -24,6 +26,7 @@ from rclone_kit.operations.listing_ops_embedded import (
     fetch_ls_embedded,
     fetch_size_file_embedded,
     fetch_stat_embedded,
+    stream_diff_embedded,
 )
 from rclone_kit.remote import Remote
 from rclone_kit.types import ListingOption, Order, SizeSuffix
@@ -387,3 +390,120 @@ def test_check_is_synced_embedded_false_when_not_success() -> None:
     client.responses["operations/check"] = {"success": False, "status": "1 differences found"}
 
     assert check_is_synced_embedded(client, "src:bucket", "dst:bucket") is False
+
+
+def test_stream_diff_embedded_combined_classifies_each_prefix() -> None:
+    client = FakeRcClient()
+    client.responses["operations/check"] = {
+        "combined": ["= same.txt", "- only_dst.txt", "+ only_src.txt", "* diff.txt"]
+    }
+
+    items = list(stream_diff_embedded(client, "src:bucket", "dst:bucket"))
+
+    assert [(i.type, i.path) for i in items] == [
+        (DiffType.EQUAL, "same.txt"),
+        (DiffType.MISSING_ON_SRC, "only_dst.txt"),
+        (DiffType.MISSING_ON_DST, "only_src.txt"),
+        (DiffType.DIFFERENT, "diff.txt"),
+    ]
+    assert all(i.src_prefix == "src:bucket" and i.dst_prefix == "dst:bucket" for i in items)
+
+
+def test_stream_diff_embedded_requests_only_the_needed_report() -> None:
+    client = FakeRcClient()
+    client.responses["operations/check"] = {"combined": []}
+
+    list(stream_diff_embedded(client, "src:bucket", "dst:bucket", fast_list=False))
+
+    assert client.calls == [
+        (
+            "operations/check",
+            {
+                "srcFs": "src:bucket",
+                "dstFs": "dst:bucket",
+                "combined": True,
+                "missingOnSrc": False,
+                "missingOnDst": False,
+                "match": False,
+                "differ": False,
+                "error": False,
+            },
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    ("diff_option", "report_key", "expected_type"),
+    [
+        (DiffOption.MISSING_ON_SRC, "missingOnSrc", DiffType.MISSING_ON_SRC),
+        (DiffOption.MISSING_ON_DST, "missingOnDst", DiffType.MISSING_ON_DST),
+        (DiffOption.DIFFER, "differ", DiffType.DIFFERENT),
+        (DiffOption.MATCH, "match", DiffType.EQUAL),
+        (DiffOption.ERROR, "error", DiffType.ERROR),
+    ],
+)
+def test_stream_diff_embedded_non_combined_options(
+    diff_option: DiffOption, report_key: str, expected_type: DiffType
+) -> None:
+    client = FakeRcClient()
+    client.responses["operations/check"] = {report_key: ["a.txt", "b.txt"]}
+
+    items = list(
+        stream_diff_embedded(
+            client, "src:bucket", "dst:bucket", diff_option=diff_option, fast_list=False
+        )
+    )
+
+    assert [(i.type, i.path) for i in items] == [
+        (expected_type, "a.txt"),
+        (expected_type, "b.txt"),
+    ]
+    assert client.calls[0][1][report_key] is True
+
+
+def test_stream_diff_embedded_missing_on_dst_sets_one_way() -> None:
+    client = FakeRcClient()
+    client.responses["operations/check"] = {"missingOnDst": []}
+
+    list(
+        stream_diff_embedded(
+            client,
+            "src:bucket",
+            "dst:bucket",
+            diff_option=DiffOption.MISSING_ON_DST,
+            fast_list=False,
+        )
+    )
+
+    assert client.calls[0][1]["oneWay"] is True
+
+
+def test_stream_diff_embedded_maps_size_checkers_fast_list_and_filter() -> None:
+    client = FakeRcClient()
+    client.responses["operations/check"] = {"combined": []}
+
+    list(
+        stream_diff_embedded(
+            client,
+            "src:bucket",
+            "dst:bucket",
+            min_size="10M",
+            max_size="1G",
+            size_only=True,
+            checkers=8,
+            fast_list=True,
+        )
+    )
+
+    call_params = client.calls[0][1]
+    assert call_params["_config"] == {"SizeOnly": True, "Checkers": 8, "UseListR": True}
+    assert call_params["_filter"] == {"MinSize": "10M", "MaxSize": "1G"}
+
+
+def test_stream_diff_embedded_rejects_other_args() -> None:
+    client = FakeRcClient()
+
+    with pytest.raises(UnsupportedEmbeddedOperationError):
+        list(stream_diff_embedded(client, "src:bucket", "dst:bucket", other_args=["--foo"]))
+
+    assert client.calls == []
