@@ -35,8 +35,10 @@ pytestmark = pytest.mark.skipif(
 
 def _reveal_via_cli(obscured: str) -> str:
     assert EXECUTABLE_PATH is not None
+    # "--" stops flag parsing: the random IV occasionally makes `obscured`
+    # start with "-", which rclone's CLI would otherwise treat as a flag.
     completed = subprocess.run(
-        [str(EXECUTABLE_PATH), "reveal", obscured],
+        [str(EXECUTABLE_PATH), "reveal", "--", obscured],
         capture_output=True,
         text=True,
         encoding="utf-8",

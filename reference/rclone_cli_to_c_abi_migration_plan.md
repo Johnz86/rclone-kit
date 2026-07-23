@@ -434,6 +434,13 @@ Implement `operations/check`, normalize its arrays into `DiffItem`, and run pari
 CLI reports. Keep the current generator API even if the first RC implementation materializes the
 result; record memory thresholds before deciding whether L12 needs a stream extension.
 
+Status: L13 (`walk()`) and L14 (`scan_missing_folders()`) needed no code changes and are verified
+complete - both call only `Dir.ls()` internally (never `self._backend` directly), so they started
+working the moment L01 did. Native parity tests cover breadth-first and depth-first `walk()` over a
+real nested tree, and `scan_missing_folders()` over a real src/dst pair with a present-on-both
+directory, a fully-missing subtree, and a shared-name-different-contents case. L11 (`is_synced()`)
+and L12 (`diff()`), both needing `operations/check`, are not yet started.
+
 ### Wave D — simple transfer vertical slice
 
 Ledger: T01–T05, T07, T11–T12.

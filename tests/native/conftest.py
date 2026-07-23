@@ -54,3 +54,24 @@ def native_runtime(tmp_path_factory: pytest.TempPathFactory) -> Iterator[RcloneR
     rt.initialize(config_path=config_path)
     yield rt
     rt.close()
+
+
+@pytest.fixture
+def embedded(native_runtime: RcloneRuntime):
+    """An `execution="embedded"` client sharing the session's one
+    initialized runtime, for CLI-vs-embedded parity tests.
+    """
+    from rclone_kit.client import Rclone
+
+    return Rclone(None, execution="embedded", runtime=native_runtime)
+
+
+@pytest.fixture
+def cli():
+    """The CLI-backed equivalent of `embedded`, built from the exact same
+    fork commit (`build/native/<target>/rclone.exe`).
+    """
+    from rclone_kit.client import Rclone
+
+    assert EXECUTABLE_PATH is not None
+    return Rclone(None, rclone_exe=EXECUTABLE_PATH)

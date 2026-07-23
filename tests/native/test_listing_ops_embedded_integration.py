@@ -14,26 +14,14 @@ from pathlib import Path
 
 import pytest
 
-from conftest import EXECUTABLE_PATH, NATIVE_EXECUTABLE_AVAILABLE
+from conftest import NATIVE_EXECUTABLE_AVAILABLE
 from rclone_kit.client import Rclone
-from rclone_kit.native.runtime import RcloneRuntime
 from rclone_kit.types import ListingOption
 
 pytestmark = pytest.mark.skipif(
     not NATIVE_EXECUTABLE_AVAILABLE,
     reason="No built native executable found; run scripts/native/build.py first.",
 )
-
-
-@pytest.fixture
-def embedded(native_runtime: RcloneRuntime) -> Rclone:
-    return Rclone(None, execution="embedded", runtime=native_runtime)
-
-
-@pytest.fixture
-def cli() -> Rclone:
-    assert EXECUTABLE_PATH is not None
-    return Rclone(None, rclone_exe=EXECUTABLE_PATH)
 
 
 def test_stat_matches_cli_for_an_existing_file(
