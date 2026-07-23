@@ -1,5 +1,5 @@
 """Unit tests for the embedded RC-backed transfer operations (CLI-to-C-ABI
-migration ledger rows T01, T02, T07).
+migration ledger rows T01, T02, T06, T07, T08).
 
 Drives `_JobMonitor` with a fake `RcJobClient` (the same harness
 `tests/unit/test_job.py` uses), so these tests exercise request mapping and
@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
@@ -23,6 +24,8 @@ from rclone_kit.operation import JobState, JobStatus, TransferStats
 from rclone_kit.operations.transfer_ops_embedded import (
     cleanup_embedded,
     copy_file_to_embedded,
+    copy_files_embedded,
+    delete_files_embedded,
     purge_dir_embedded,
 )
 from rclone_kit.rc.jobs import RcJobRef
@@ -67,30 +70,54 @@ class FakeJobClient:
     """A minimal fake `RcJobClient`: every started job settles immediately
     (on the first poll) with one canned success/failure outcome, mirroring
     `tests/unit/test_job.py`'s harness but simplified for these
-    single-call, no-progress operations."""
+    single-call, no-progress operations.
+
+    `self.success`/`self.error` set the default outcome for every job;
+    `queue_outcomes()` overrides that default for jobs started next, one
+    outcome consumed per `start()` call in order - so a composite-operation
+    test can make partition N fail while every other partition succeeds,
+    without needing to know a job's ID in advance.
+    """
 
     def __init__(self) -> None:
         self.starts: list[tuple[str, dict, str]] = []
         self._next_job_id = 1
         self.success = True
         self.error = ""
+        self._queued_outcomes: list[tuple[bool, str]] = []
+        self._outcome_by_job_id: dict[int, tuple[bool, str]] = {}
+        self.files_from_contents: list[list[str]] = []
+
+    def queue_outcomes(self, outcomes: list[tuple[bool, str]]) -> None:
+        self._queued_outcomes = list(outcomes)
 
     def start(self, method: str, params: Mapping[str, object], group: str) -> RcJobRef:
         job_id = self._next_job_id
         self._next_job_id += 1
         self.starts.append((method, dict(params), group))
+        filter_opt = params.get("_filter")
+        if isinstance(filter_opt, dict) and filter_opt.get("FilesFrom"):
+            # Read eagerly: the temp file is gone by the time the test
+            # inspects this, since the caller's `TemporaryDirectory` has
+            # already closed by then.
+            (files_from_path,) = filter_opt["FilesFrom"]
+            content = Path(files_from_path).read_text(encoding="utf-8")
+            self.files_from_contents.append(content.splitlines())
+        if self._queued_outcomes:
+            self._outcome_by_job_id[job_id] = self._queued_outcomes.pop(0)
         return RcJobRef(job_id=job_id, execute_id=f"exec-{job_id}", group=group)
 
     def status(self, ref: RcJobRef) -> JobStatus:
+        success, error = self._outcome_by_job_id.get(ref.job_id, (self.success, self.error))
         return JobStatus(
             job_id=ref.job_id,
             execute_id=ref.execute_id,
             group=ref.group,
-            state=JobState.SUCCEEDED if self.success else JobState.FAILED,
+            state=JobState.SUCCEEDED if success else JobState.FAILED,
             started_at=_NOW,
             ended_at=_NOW + timedelta(seconds=1),
             duration=1.0,
-            error=None if self.success else (self.error or "boom"),
+            error=None if success else (error or "boom"),
             output={},
         )
 
@@ -250,3 +277,265 @@ def test_cleanup_embedded_never_raises_on_failure() -> None:
     result = cleanup_embedded(_monitor(job_client), _CLIENT_ID, "remote:")
 
     assert result.ok is False
+
+
+class TestCopyFilesEmbedded:
+    def test_empty_file_list_starts_no_jobs_and_is_ok(self) -> None:
+        job_client = FakeJobClient()
+
+        result = copy_files_embedded(
+            _monitor(job_client), _CLIENT_ID, _empty_config(), "src:", "dst:", []
+        )
+
+        assert result.ok is True
+        assert result.job_ids == ()
+        assert job_client.starts == []
+
+    def test_rejects_other_args_without_starting_any_job(self) -> None:
+        job_client = FakeJobClient()
+
+        with pytest.raises(UnsupportedEmbeddedOperationError):
+            copy_files_embedded(
+                _monitor(job_client),
+                _CLIENT_ID,
+                _empty_config(),
+                "src:",
+                "dst:",
+                ["a.txt"],
+                other_args=["--foo"],
+            )
+
+        assert job_client.starts == []
+
+    def test_rejects_a_remote_qualified_entry_without_starting_any_job(self) -> None:
+        job_client = FakeJobClient()
+
+        with pytest.raises(ValueError, match="not allowed for copy_files"):
+            copy_files_embedded(
+                _monitor(job_client), _CLIENT_ID, _empty_config(), "src:", "dst:", ["remote:a.txt"]
+            )
+
+        assert job_client.starts == []
+
+    def test_single_partition_starts_one_rclonekit_copy_job(self) -> None:
+        job_client = FakeJobClient()
+
+        result = copy_files_embedded(
+            _monitor(job_client),
+            _CLIENT_ID,
+            _empty_config(),
+            "src:base",
+            "dst:base",
+            ["a.txt", "b.txt"],
+        )
+
+        assert result.ok is True
+        assert len(job_client.starts) == 1
+        method, params, _group = job_client.starts[0]
+        assert method == "rclonekit/copy"
+        assert params["srcFs"] == "src:base"
+        assert params["dstFs"] == "dst:base"
+        assert params["createEmptySrcDirs"] is False
+        assert job_client.files_from_contents == [["a.txt", "b.txt"]]
+
+    def test_default_transfer_tuning_matches_copy_historical_profile(self) -> None:
+        job_client = FakeJobClient()
+
+        copy_files_embedded(
+            _monitor(job_client), _CLIENT_ID, _empty_config(), "src:base", "dst:base", ["a.txt"]
+        )
+
+        _method, params, _group = job_client.starts[0]
+        assert params["_config"] == {
+            "Checkers": 1000,
+            "Transfers": 32,
+            "LowLevelRetries": 10,
+            "Retries": 3,
+        }
+
+    def test_overridden_transfer_tuning_is_encoded(self) -> None:
+        job_client = FakeJobClient()
+
+        copy_files_embedded(
+            _monitor(job_client),
+            _CLIENT_ID,
+            _empty_config(),
+            "src:base",
+            "dst:base",
+            ["a.txt"],
+            checkers=4,
+            transfers=2,
+            low_level_retries=1,
+            retries=1,
+            retries_sleep="10s",
+            timeout="5m",
+            max_backlog=100,
+            metadata=True,
+        )
+
+        _method, params, _group = job_client.starts[0]
+        assert params["_config"] == {
+            "Checkers": 4,
+            "Transfers": 2,
+            "LowLevelRetries": 1,
+            "Retries": 1,
+            "RetriesInterval": "10s",
+            "Timeout": "5m",
+            "MaxBacklog": 100,
+            "Metadata": True,
+        }
+
+    def test_two_partitions_each_start_their_own_job(self) -> None:
+        job_client = FakeJobClient()
+
+        result = copy_files_embedded(
+            _monitor(job_client),
+            _CLIENT_ID,
+            _empty_config(),
+            "src:base",
+            "dst:base",
+            ["dirA/a.txt", "dirB/b.txt"],
+        )
+
+        assert result.ok is True
+        assert len(job_client.starts) == 2
+        assert len(result.job_ids) == 2
+        src_values = {params["srcFs"] for _method, params, _group in job_client.starts}
+        assert src_values == {"src:base/dirA", "src:base/dirB"}
+
+    def test_one_failed_partition_does_not_abort_collecting_the_other(self) -> None:
+        job_client = FakeJobClient()
+        job_client.queue_outcomes([(False, "boom"), (True, "")])
+
+        result = copy_files_embedded(
+            _monitor(job_client),
+            _CLIENT_ID,
+            _empty_config(),
+            "src:base",
+            "dst:base",
+            ["dirA/a.txt", "dirB/b.txt"],
+            check=False,
+        )
+
+        assert len(job_client.starts) == 2
+        assert result.ok is False
+        assert len(result.job_ids) == 2
+        assert len(result.warnings) == 1
+        assert "boom" in (result.error or "")
+
+    def test_check_true_raises_operation_failed_error_after_every_partition_settles(self) -> None:
+        job_client = FakeJobClient()
+        job_client.queue_outcomes([(False, "boom"), (True, "")])
+
+        with pytest.raises(OperationFailedError) as excinfo:
+            copy_files_embedded(
+                _monitor(job_client),
+                _CLIENT_ID,
+                _empty_config(),
+                "src:base",
+                "dst:base",
+                ["dirA/a.txt", "dirB/b.txt"],
+                check=True,
+            )
+
+        assert len(job_client.starts) == 2
+        assert len(excinfo.value.result.job_ids) == 2
+
+
+class TestDeleteFilesEmbedded:
+    def test_empty_file_list_starts_no_jobs_and_is_ok(self) -> None:
+        job_client = FakeJobClient()
+
+        result = delete_files_embedded(_monitor(job_client), _CLIENT_ID, _empty_config(), [])
+
+        assert result.ok is True
+        assert job_client.starts == []
+
+    def test_rejects_other_args_without_starting_any_job(self) -> None:
+        job_client = FakeJobClient()
+
+        with pytest.raises(UnsupportedEmbeddedOperationError):
+            delete_files_embedded(
+                _monitor(job_client),
+                _CLIENT_ID,
+                _empty_config(),
+                ["remote:a.txt"],
+                other_args=["--foo"],
+            )
+
+        assert job_client.starts == []
+
+    def test_single_partition_starts_an_operations_delete_job(self) -> None:
+        job_client = FakeJobClient()
+
+        result = delete_files_embedded(
+            _monitor(job_client), _CLIENT_ID, _empty_config(), ["remote:bucket/a.txt"]
+        )
+
+        assert result.ok is True
+        assert len(job_client.starts) == 1
+        method, params, _group = job_client.starts[0]
+        assert method == "operations/delete"
+        assert params["fs"] == "remote:bucket"
+        assert params["_config"] == {"Checkers": 1000, "Transfers": 1000}
+        assert job_client.files_from_contents == [["a.txt"]]
+
+    def test_rmdirs_true_follows_a_successful_delete_with_rmdirs(self) -> None:
+        job_client = FakeJobClient()
+
+        delete_files_embedded(
+            _monitor(job_client), _CLIENT_ID, _empty_config(), ["remote:bucket/a.txt"], rmdirs=True
+        )
+
+        assert [method for method, _params, _group in job_client.starts] == [
+            "operations/delete",
+            "operations/rmdirs",
+        ]
+        _method, rmdirs_params, _group = job_client.starts[1]
+        assert rmdirs_params == {"fs": "remote:bucket", "remote": "", "leaveRoot": True}
+
+    def test_rmdirs_true_skips_rmdirs_when_delete_fails(self) -> None:
+        job_client = FakeJobClient()
+        job_client.success = False
+
+        result = delete_files_embedded(
+            _monitor(job_client),
+            _CLIENT_ID,
+            _empty_config(),
+            ["remote:bucket/a.txt"],
+            rmdirs=True,
+            check=False,
+        )
+
+        assert [method for method, _params, _group in job_client.starts] == ["operations/delete"]
+        assert result.ok is False
+
+    def test_two_partitions_each_start_their_own_job(self) -> None:
+        job_client = FakeJobClient()
+
+        result = delete_files_embedded(
+            _monitor(job_client),
+            _CLIENT_ID,
+            _empty_config(),
+            ["remote1:bucket/a.txt", "remote2:bucket/b.txt"],
+        )
+
+        assert result.ok is True
+        assert len(job_client.starts) == 2
+        assert len(result.job_ids) == 2
+
+    def test_check_true_raises_operation_failed_error_after_every_partition_settles(self) -> None:
+        job_client = FakeJobClient()
+        job_client.queue_outcomes([(False, "boom"), (True, "")])
+
+        with pytest.raises(OperationFailedError) as excinfo:
+            delete_files_embedded(
+                _monitor(job_client),
+                _CLIENT_ID,
+                _empty_config(),
+                ["remote1:bucket/a.txt", "remote2:bucket/b.txt"],
+                check=True,
+            )
+
+        assert len(job_client.starts) == 2
+        assert len(excinfo.value.result.job_ids) == 2

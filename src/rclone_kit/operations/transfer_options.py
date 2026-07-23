@@ -18,6 +18,7 @@ _POSITIVE_INT_FIELDS = (
     "low_level_retries",
     "retries",
     "multi_thread_streams",
+    "max_backlog",
 )
 
 _CONFIG_KEYS = {
@@ -26,6 +27,10 @@ _CONFIG_KEYS = {
     "low_level_retries": "LowLevelRetries",
     "retries": "Retries",
     "multi_thread_streams": "MultiThreadStreams",
+    "retries_sleep": "RetriesInterval",
+    "timeout": "Timeout",
+    "max_backlog": "MaxBacklog",
+    "metadata": "Metadata",
 }
 
 
@@ -36,6 +41,10 @@ class TransferOptions:
     `create_empty_src_dirs` is not part of `_config`: it is its own RC
     method parameter (`createEmptySrcDirs`) on `sync/copy`/`rclonekit/copy`,
     encoded separately by the caller, not by `encode_transfer_options_config`.
+
+    `retries_sleep`/`timeout` take the same duration-string shape as their
+    CLI flag values (e.g. `"10s"`); `fs.ConfigInfo`'s `RetriesInterval`/
+    `Timeout` fields parse that string identically over RC.
     """
 
     checkers: int | None = None
@@ -43,6 +52,10 @@ class TransferOptions:
     low_level_retries: int | None = None
     retries: int | None = None
     multi_thread_streams: int | None = None
+    retries_sleep: str | None = None
+    timeout: str | None = None
+    max_backlog: int | None = None
+    metadata: bool | None = None
     create_empty_src_dirs: bool = False
 
     def __post_init__(self) -> None:

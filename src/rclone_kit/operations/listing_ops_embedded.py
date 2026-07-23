@@ -12,8 +12,10 @@ difference (L05, L10), not a regression to reconcile away.
 from __future__ import annotations
 
 import random
+import warnings
 from collections.abc import Generator
 from fnmatch import fnmatch
+from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING, cast
 
 from rclone_kit.convert import convert_to_str
@@ -22,12 +24,14 @@ from rclone_kit.dir import Dir
 from rclone_kit.dir_listing import DirListing
 from rclone_kit.exceptions import UnsupportedEmbeddedOperationError
 from rclone_kit.file import File
+from rclone_kit.operations.listing_ops import _MIN_FILES_FOR_BATCH_LISTING, build_size_result
 from rclone_kit.rc.client import RcCallable
+from rclone_kit.rc.errors import RcCallError
 from rclone_kit.rc.paths import RcPath
 from rclone_kit.remote import Remote
 from rclone_kit.rpath import RcloneJsonEntry, RPath
-from rclone_kit.types import ListingOption, Order, SizeSuffix
-from rclone_kit.util import to_path
+from rclone_kit.types import ListingOption, Order, SizeResult, SizeSuffix
+from rclone_kit.util import get_check, get_verbose, to_path, write_files_from
 
 if TYPE_CHECKING:
     from rclone_kit.access import ListingAccess
@@ -181,6 +185,72 @@ def fetch_size_file_embedded(rc_client: RcCallable, access: ListingAccess, src: 
     """
     file = _stat_item(rc_client, access, src, files_only=True)
     return SizeSuffix(file.size)
+
+
+def fetch_size_files_embedded(
+    rc_client: RcCallable,
+    access: ListingAccess,
+    src: str,
+    files: list[str],
+    fast_list: bool = False,
+    other_args: list[str] | None = None,
+    check: bool | None = False,
+    verbose: bool | None = None,
+) -> SizeResult:
+    """Get the size of a list of files via one `operations/list` RC call
+    (Wave E design, decision E6): unlike T06/T08, this never partitions -
+    a single call already covers every requested file regardless of how
+    many directories/remotes they span, exactly like the CLI backend's own
+    single `lsjson --files-from` invocation.
+
+    Raises `UnsupportedEmbeddedOperationError` if `other_args` is nonempty.
+    `check=True` (never the default) lets the RC failure (`RcCallError`)
+    propagate; `check=False` warns and reports an empty listing instead,
+    matching `fetch_size_files`'s own CLI-backend contract.
+    """
+    if other_args:
+        raise UnsupportedEmbeddedOperationError("size_files (other_args)")
+    verbose = get_verbose(verbose)
+    check = get_check(check)
+    if not files:
+        return SizeResult(prefix=src, total_size=0, file_sizes={})
+    if len(files) < _MIN_FILES_FOR_BATCH_LISTING:
+        full_path = f"{src}/{files[0]}"
+        tmp = access.size_file(full_path)
+        return SizeResult(prefix=src, total_size=tmp.as_int(), file_sizes={files[0]: tmp.as_int()})
+    if fast_list:
+        warnings.warn(
+            "It's not recommended to use --fast-list with size_files as this will perform poorly on large repositories since the entire repository has to be scanned.",
+            stacklevel=2,
+        )
+
+    target = RcPath.parse(src)
+    params: dict[str, object] = {
+        "fs": target.fs,
+        "remote": target.remote,
+        "opt": {"filesOnly": True, "recurse": True},
+    }
+    if fast_list:
+        params["_config"] = {"UseListR": True}
+
+    with TemporaryDirectory() as tmpdir:
+        include_files_txt = write_files_from(tmpdir, list(files))
+        params["_filter"] = {"FilesFrom": [str(include_files_txt)]}
+        try:
+            result = rc_client.call("operations/list", **params)
+        except RcCallError as error:
+            if check:
+                raise
+            warnings.warn(f"Error getting file sizes: {error}", stacklevel=2)
+            result = {"list": []}
+
+    remote_name, parent_path = _split_remote_name_and_path(src)
+    remote = Remote(name=remote_name, rclone=access)
+    all_files = [
+        File(RPath.from_dict(cast(RcloneJsonEntry, item), remote, parent_path=parent_path))
+        for item in result.get("list", [])
+    ]
+    return build_size_result(src, all_files)
 
 
 def check_exists_embedded(rc_client: RcCallable, access: ListingAccess, src: str) -> bool:

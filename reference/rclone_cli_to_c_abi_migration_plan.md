@@ -556,6 +556,51 @@ Implement files-from `_filter` encoding and multi-job aggregation. Preserve part
 without constructing fake subprocesses. Stress test thousands of files, multiple remotes, duplicate
 inputs, empty inputs, cancellation, and one partition failing while others complete.
 
+Wave E is now done, following the normative design in
+[`native_c_abi_wave_e_review_and_design.md`](native_c_abi_wave_e_review_and_design.md) (which
+supersedes this table's original "partitioned async `sync/copy` jobs" plan for T06, for the same
+reason Wave D moved `copy()`/`copy_dir()`/`copy_remote()` off a bare `sync/copy`: it does not
+reproduce the CLI's high-level retry loop):
+
+- `rclone_kit.rc.jobs.parse_operation_attempts()` parses `rclonekit/copy`'s `output["attempts"]`
+  array, wired into `job.py`'s `_settle_terminal` so every `OperationResult` it produces carries real
+  attempts - not just for T06's aggregate, but retroactively for Wave D's own `start_copy()`/`copy()`
+  too, closing a gap Phase D7 had deliberately deferred. `operations/transfer_options.py`'s
+  `TransferOptions` gained `retries_sleep`/`timeout`/`max_backlog`/`metadata` fields (the same
+  `fs.ConfigInfo` `_config` keys `copy_files_partitioned` already used on the CLI side), so one
+  options type still covers every embedded copy/sync-shaped RC call.
+- `copy_files_embedded()`/`delete_files_embedded()` (`operations/transfer_ops_embedded.py`) partition
+  exactly like their CLI counterparts (`group_files()`, unchanged) - one `rclonekit/copy` job per
+  common-prefix partition for T06, one `operations/delete` job per remote/common-prefix partition for
+  T08 (followed by `operations/rmdirs(remote="", leaveRoot=true)` when `rmdirs=True` and that
+  partition's delete succeeded, reproducing `delete`'s own `--rmdirs` sequence exactly, not a new
+  one). Every partition is started before any is waited on, and every partition is collected before
+  `check=True` can raise, so a partial failure never loses a still-running sibling's result.
+  `_aggregate_results()` folds every partition into one `OperationResult` (`job_ids`/`attempts`
+  spanning every partition, one `OperationWarning` per failed partition), matching this row's own
+  ledger note ("one `OperationResult` containing attempts, not a list of processes") without
+  changing `copy_files()`'s existing public `list[CompletedProcess]` return type - the embedded path
+  returns a single-element list wrapping the aggregate, deferring any public-signature harmonization
+  to Wave I. `max_partition_workers` is reinterpreted as a start-batch size rather than a Python
+  thread pool: an RC job is already concurrent on rclone's side the moment `start()` returns, so no
+  thread pool is needed for an already-async call.
+- `fetch_size_files_embedded()` (`operations/listing_ops_embedded.py`) is a single, non-partitioned
+  `operations/list` call (`opt.filesOnly`/`opt.recurse` plus `_filter.FilesFrom`, `_config.UseListR`
+  when `fast_list=True`) - correcting this row's original `composite_rc` categorization to
+  `direct_rc`, since a single call already covers every requested file regardless of how many
+  directories/remotes they span (only T06/T08 partition, because only they *write*, and a write per
+  remote/directory boundary is the thing that needs isolating). The `<2`-file shortcut still
+  delegates to the already-embedded `fetch_size_file_embedded()`. The dedup/warn/prefix-strip
+  post-processing that turns a flat file listing into a `SizeResult` was extracted into
+  `listing_ops.build_size_result()`, shared by both backends instead of duplicated.
+- Empirically confirmed (not assumed) for both T06 and T08: a `FilesFrom` entry naming a file that
+  does not exist is not an error - `sync.CopyDir`/`operations.Delete` simply do not visit it during
+  their walk, matching each command's own CLI behavior. `_filter.FilesFrom`/`_config` compose with
+  every RC method used here (including the downstream `rclonekit/copy` endpoint) because
+  `fs/rc/jobs/job.go`'s `NewJob` parses both generically for any call, sync or async, before
+  dispatching to the method-specific handler - confirmed by reading that dispatch path, not assumed
+  from the RC framework's documented intent.
+
 ### Wave F — streaming and bytes
 
 Ledger: L02–L04, T09–T10, T13, D10–D11.

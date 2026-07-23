@@ -25,6 +25,7 @@ from rclone_kit.operations.listing_ops_embedded import (
     fetch_listremotes_embedded,
     fetch_ls_embedded,
     fetch_size_file_embedded,
+    fetch_size_files_embedded,
     fetch_stat_embedded,
     stream_diff_embedded,
 )
@@ -49,8 +50,13 @@ class FakeAccess:
 
     Only used so these tests satisfy `access`'s declared type; the functions
     under test here never call any of its methods, they only forward `self`
-    into `Remote`/`RPath.set_rclone`.
+    into `Remote`/`RPath.set_rclone` - except `size_file`, which the
+    `size_files` batch shortcut calls directly, so it's settable.
     """
+
+    def __init__(self) -> None:
+        self.size_file_calls: list[str] = []
+        self.size_file_result: SizeSuffix | None = None
 
     def _run(
         self, cmd: list[str], check: bool = False, capture: bool | Path | None = None
@@ -86,7 +92,10 @@ class FakeAccess:
         raise NotImplementedError
 
     def size_file(self, src: str) -> SizeSuffix:
-        raise NotImplementedError
+        self.size_file_calls.append(src)
+        if self.size_file_result is None:
+            raise NotImplementedError
+        return self.size_file_result
 
 
 _FILE_ITEM = {
@@ -505,5 +514,91 @@ def test_stream_diff_embedded_rejects_other_args() -> None:
 
     with pytest.raises(UnsupportedEmbeddedOperationError):
         list(stream_diff_embedded(client, "src:bucket", "dst:bucket", other_args=["--foo"]))
+
+    assert client.calls == []
+
+
+def test_fetch_size_files_embedded_empty_list_short_circuits() -> None:
+    client = FakeRcClient()
+
+    result = fetch_size_files_embedded(client, access=FakeAccess(), src="remote:base", files=[])
+
+    assert result.total_size == 0
+    assert result.file_sizes == {}
+    assert client.calls == []
+
+
+def test_fetch_size_files_embedded_single_file_uses_size_file_shortcut() -> None:
+    client = FakeRcClient()
+    access = FakeAccess()
+    access.size_file_result = SizeSuffix(42)
+
+    result = fetch_size_files_embedded(client, access=access, src="remote:base", files=["a.txt"])
+
+    assert result.total_size == 42
+    assert result.file_sizes == {"a.txt": 42}
+    assert access.size_file_calls == ["remote:base/a.txt"]
+    assert client.calls == []
+
+
+def test_fetch_size_files_embedded_batch_requests_operations_list_with_files_from() -> None:
+    client = FakeRcClient()
+    client.responses["operations/list"] = {
+        "list": [
+            {
+                "Path": "a.txt",
+                "Name": "a.txt",
+                "Size": 5,
+                "MimeType": "text/plain",
+                "ModTime": "2024-01-01T00:00:00Z",
+                "IsDir": False,
+            },
+            {
+                "Path": "b.txt",
+                "Name": "b.txt",
+                "Size": 7,
+                "MimeType": "text/plain",
+                "ModTime": "2024-01-01T00:00:00Z",
+                "IsDir": False,
+            },
+        ]
+    }
+
+    result = fetch_size_files_embedded(
+        client, access=FakeAccess(), src="remote:", files=["a.txt", "b.txt"]
+    )
+
+    assert result.total_size == 12
+    assert result.file_sizes == {"a.txt": 5, "b.txt": 7}
+    method, params = client.calls[0]
+    assert method == "operations/list"
+    assert params["fs"] == "remote:"
+    assert params["opt"] == {"filesOnly": True, "recurse": True}
+    assert "FilesFrom" in params["_filter"]
+
+
+def test_fetch_size_files_embedded_fast_list_sets_use_list_r() -> None:
+    client = FakeRcClient()
+    client.responses["operations/list"] = {"list": []}
+
+    fetch_size_files_embedded(
+        client, access=FakeAccess(), src="remote:", files=["a.txt", "b.txt"], fast_list=True
+    )
+
+    _method, params = client.calls[0]
+    assert params["_config"] == {"UseListR": True}
+
+
+def test_fetch_size_files_embedded_rejects_other_args() -> None:
+    client = FakeRcClient()
+
+    with pytest.raises(UnsupportedEmbeddedOperationError):
+        fetch_size_files_embedded(
+            client,
+            access=FakeAccess(),
+            src="remote:",
+            files=["a.txt", "b.txt"],
+            other_args=["--foo"],
+        )
 
     assert client.calls == []

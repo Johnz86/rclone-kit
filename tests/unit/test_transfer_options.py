@@ -69,7 +69,7 @@ def test_negative_is_rejected(field_name: str) -> None:
 )
 def test_bool_is_rejected_even_though_it_is_technically_an_int(field_name: str) -> None:
     with pytest.raises(ValueError, match="positive integer"):
-        TransferOptions(**{field_name: True})
+        TransferOptions(**{field_name: True})  # type: ignore[arg-type]
 
 
 def test_none_is_valid_for_every_field() -> None:
@@ -81,3 +81,31 @@ def test_none_is_valid_for_every_field() -> None:
         multi_thread_streams=None,
     )
     assert encode_transfer_options_config(options) == {}
+
+
+def test_files_from_fields_map_to_their_exact_go_config_key() -> None:
+    options = TransferOptions(
+        retries_sleep="10s",
+        timeout="5m",
+        max_backlog=5000,
+        metadata=True,
+    )
+
+    assert encode_transfer_options_config(options) == {
+        "RetriesInterval": "10s",
+        "Timeout": "5m",
+        "MaxBacklog": 5000,
+        "Metadata": True,
+    }
+
+
+def test_metadata_false_is_still_encoded_explicitly() -> None:
+    options = TransferOptions(metadata=False)
+
+    assert encode_transfer_options_config(options) == {"Metadata": False}
+
+
+@pytest.mark.parametrize("field_name", ["max_backlog"])
+def test_max_backlog_zero_is_rejected(field_name: str) -> None:
+    with pytest.raises(ValueError, match="positive integer"):
+        TransferOptions(**{field_name: 0})  # type: ignore[arg-type]

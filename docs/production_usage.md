@@ -437,9 +437,10 @@ rclone = Rclone(CONFIG_PATH, execution="embedded")
 ```
 
 Every ported method keeps its CLI signature and return type: `copy()`, `copy_to()`, `copy_dir()`,
-`copy_remote()`, `purge()`, and `cleanup()` all still return `CompletedProcess`, and `check=True`
-still raises on failure. Existing CLI-mode code that only inspects `.ok`/`.returncode` needs no
-changes to run embedded. Two differences are deliberate, not oversights:
+`copy_remote()`, `purge()`, `cleanup()`, `copy_files()`, and `delete_files()` all still return
+`CompletedProcess` (`size_files()` returns `SizeResult`, unaffected by execution mode either way), and
+`check=True` still raises on failure. Existing CLI-mode code that only inspects `.ok`/`.returncode`
+needs no changes to run embedded. Two differences are deliberate, not oversights:
 
 - an embedded client rejects `other_args`/`args` with `UnsupportedEmbeddedOperationError` instead of
   silently dropping them - there is no subprocess argument vector to append arbitrary rclone flags to,
@@ -493,6 +494,29 @@ while not handle.done:
     print(f"{stats.bytes}/{stats.total_bytes} bytes, {stats.transfers} files")
     time.sleep(5)
 ```
+
+### `copy_files()`/`delete_files()`: partitioned operations under one result
+
+`copy_files()` and `delete_files()` partition their file list exactly like the CLI backend does
+(one job per common directory/remote prefix, so unrelated transfers run concurrently), but under
+embedded execution every partition folds into one `OperationResult` before returning - not one
+per partition. A partial failure never aborts collecting the rest: every partition runs to
+completion first, and only then does `check=True` raise (once, for the aggregate) if any partition
+failed.
+
+```python
+result = rclone.copy_files(source, destination, ["a.txt", "b/c.txt"], check=False)
+if not result[0].ok:
+    for warning in result[0].operation_result.warnings:
+        print(warning.message)  # "<partition src> -> <partition dst>: <error>", one per failure
+```
+
+`copy_files()` keeps its documented `list[CompletedProcess]` return type for both execution modes;
+under `execution="embedded"` that list always has exactly one element, wrapping the aggregate result
+(`job_ids`/`attempts`/`stats` span every partition). `delete_files()` already returned a single
+`CompletedProcess` under the CLI backend, so its embedded shape is unchanged. A file entry that
+does not exist is not an error in either operation - it is simply not visited during the underlying
+walk - matching each command's own CLI behavior.
 
 ### `CompletedProcess` is a compatibility type, not a real process result
 

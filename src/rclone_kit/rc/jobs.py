@@ -27,6 +27,11 @@ assumed from rclone's RC help text:
   (`{"name", "bytes", "size", "speed", "percentage", "eta"}` per entry -
   see `native/rclone/fs/accounting/stats_groups.go`'s documented shape) and
   `checking` (a list of plain name strings).
+- `rclonekit/copy`'s `job/status.output` is `{"attempts": [...]}`, one
+  entry per high-level retry attempt (`copyAttempt` in
+  `librclone/rclonekit/rc/copy.go`): `{"number", "startTime", "endTime",
+  "duration", "ok", "error" (omitted when empty), "fatalError",
+  "retryError"}`. Every other RC method's `output` simply lacks this key.
 """
 
 from __future__ import annotations
@@ -36,7 +41,13 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Protocol
 
 from rclone_kit.exceptions import JobIdentityError, OperationStartError
-from rclone_kit.operation import ActiveTransfer, JobState, JobStatus, TransferStats
+from rclone_kit.operation import (
+    ActiveTransfer,
+    JobState,
+    JobStatus,
+    OperationAttempt,
+    TransferStats,
+)
 from rclone_kit.rc.errors import RcCallError
 
 if TYPE_CHECKING:
@@ -189,6 +200,43 @@ def _parse_active_transfer(entry: object) -> ActiveTransfer:
         percentage=_optional_percentage(entry, "percentage"),
         eta_seconds=_optional_number(entry, "eta"),
     )
+
+
+def _parse_operation_attempt(entry: object) -> OperationAttempt:
+    if not isinstance(entry, dict):
+        raise ValueError(f"attempt entry must be an object, got {entry!r}")
+    started_at = _parse_go_time(entry["startTime"], field="attempt startTime")
+    ended_at = _parse_go_time(entry["endTime"], field="attempt endTime")
+    if started_at is None:
+        raise ValueError(f"attempt startTime {entry['startTime']!r} must not be the zero time")
+    if ended_at is None:
+        raise ValueError(f"attempt endTime {entry['endTime']!r} must not be the zero time")
+    return OperationAttempt(
+        number=_require_int(entry, "number"),
+        started_at=started_at,
+        ended_at=ended_at,
+        duration=_require_number(entry, "duration"),
+        ok=_require_bool(entry, "ok"),
+        error=entry.get("error") or None,
+        fatal_error=_require_bool(entry, "fatalError"),
+        retry_error=_require_bool(entry, "retryError"),
+    )
+
+
+def parse_operation_attempts(output: Mapping[str, object]) -> tuple[OperationAttempt, ...]:
+    """Parse `rclonekit/copy`'s `output["attempts"]` array (`copyAttempt` in
+    `librclone/rclonekit/rc/copy.go`) into `OperationAttempt`s.
+
+    Any other RC method's `output` has no `"attempts"` key, so this returns
+    `()` for it - the same value `OperationResult.attempts` always had
+    before this parser existed.
+    """
+    attempts = output.get("attempts")
+    if attempts is None:
+        return ()
+    if not isinstance(attempts, list):
+        raise ValueError(f"attempts must be a list, got {attempts!r}")
+    return tuple(_parse_operation_attempt(entry) for entry in attempts)
 
 
 def _parse_transfer_stats(payload: Mapping[str, object]) -> TransferStats:

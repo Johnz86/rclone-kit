@@ -15,7 +15,12 @@ import pytest
 from rclone_kit.exceptions import JobIdentityError, OperationStartError
 from rclone_kit.operation import JobState
 from rclone_kit.rc.errors import RcCallError
-from rclone_kit.rc.jobs import RcJobNotFoundError, RcJobRef, RcloneRcJobClient
+from rclone_kit.rc.jobs import (
+    RcJobNotFoundError,
+    RcJobRef,
+    RcloneRcJobClient,
+    parse_operation_attempts,
+)
 
 
 class FakeRcClient:
@@ -383,3 +388,74 @@ class TestDeleteStats:
         job_client.delete_stats("g")
 
         assert client.calls == [("core/stats-delete", {"group": "g"})]
+
+
+def _attempt_payload(**overrides: object) -> dict:
+    base: dict[str, object] = {
+        "number": 1,
+        "startTime": "2026-07-23T20:24:38.3442603+02:00",
+        "endTime": "2026-07-23T20:24:38.3862217+02:00",
+        "duration": 0.0419614,
+        "ok": True,
+        "fatalError": False,
+        "retryError": False,
+    }
+    base.update(overrides)
+    return base
+
+
+class TestParseOperationAttempts:
+    def test_missing_attempts_key_returns_empty_tuple(self) -> None:
+        assert parse_operation_attempts({}) == ()
+
+    def test_single_successful_attempt_is_parsed(self) -> None:
+        attempts = parse_operation_attempts({"attempts": [_attempt_payload()]})
+
+        assert len(attempts) == 1
+        attempt = attempts[0]
+        assert attempt.number == 1
+        assert attempt.ok is True
+        assert attempt.error is None
+        assert attempt.fatal_error is False
+        assert attempt.retry_error is False
+
+    def test_empty_error_string_becomes_none(self) -> None:
+        attempts = parse_operation_attempts({"attempts": [_attempt_payload(error="")]})
+
+        assert attempts[0].error is None
+
+    def test_failed_attempt_carries_its_error(self) -> None:
+        attempts = parse_operation_attempts(
+            {"attempts": [_attempt_payload(ok=False, error="directory not found", retryError=True)]}
+        )
+
+        assert attempts[0].ok is False
+        assert attempts[0].error == "directory not found"
+        assert attempts[0].retry_error is True
+
+    def test_multiple_attempts_preserve_order(self) -> None:
+        attempts = parse_operation_attempts(
+            {
+                "attempts": [
+                    _attempt_payload(number=1, ok=False, error="boom"),
+                    _attempt_payload(number=2, ok=True),
+                ]
+            }
+        )
+
+        assert [a.number for a in attempts] == [1, 2]
+        assert [a.ok for a in attempts] == [False, True]
+
+    def test_non_list_attempts_is_rejected(self) -> None:
+        with pytest.raises(ValueError, match="attempts"):
+            parse_operation_attempts({"attempts": {"not": "a list"}})
+
+    def test_non_object_attempt_entry_is_rejected(self) -> None:
+        with pytest.raises(ValueError, match="attempt entry"):
+            parse_operation_attempts({"attempts": ["not an object"]})
+
+    def test_zero_time_attempt_start_is_rejected(self) -> None:
+        with pytest.raises(ValueError, match="zero time"):
+            parse_operation_attempts(
+                {"attempts": [_attempt_payload(startTime="0001-01-01T00:00:00Z")]}
+            )

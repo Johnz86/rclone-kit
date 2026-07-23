@@ -251,6 +251,60 @@ class TestWaitSuccessAndFailure:
         assert result.ok is False
         assert result.error == "boom"
 
+    def test_wait_result_carries_attempts_from_job_output(self) -> None:
+        job_client = FakeJobClient()
+        monitor = _monitor(job_client)
+        _stub_stats(job_client, "g1")
+        handle = monitor.start_job(
+            "rclonekit/copy",
+            {},
+            group="g1",
+            operation="copy",
+            source="a",
+            destination="b",
+            check=True,
+        )
+        attempt_payload = {
+            "number": 1,
+            "startTime": "2026-07-23T20:24:38.3442603+02:00",
+            "endTime": "2026-07-23T20:24:38.3862217+02:00",
+            "duration": 0.04,
+            "ok": True,
+            "fatalError": False,
+            "retryError": False,
+        }
+        job_client.queue_status(
+            handle.job_id,
+            _status(
+                handle.job_id,
+                handle.execute_id,
+                "g1",
+                state=JobState.SUCCEEDED,
+                output={"attempts": [attempt_payload]},
+            ),
+        )
+
+        result = handle.wait(timeout=_WAIT_TIMEOUT)
+
+        assert len(result.attempts) == 1
+        assert result.attempts[0].number == 1
+        assert result.attempts[0].ok is True
+
+    def test_wait_result_attempts_is_empty_when_output_has_no_attempts_key(self) -> None:
+        job_client = FakeJobClient()
+        monitor = _monitor(job_client)
+        _stub_stats(job_client, "g1")
+        handle = monitor.start_job(
+            "sync/copy", {}, group="g1", operation="copy", source="a", destination="b", check=True
+        )
+        job_client.queue_status(
+            handle.job_id, _status(handle.job_id, handle.execute_id, "g1", state=JobState.SUCCEEDED)
+        )
+
+        result = handle.wait(timeout=_WAIT_TIMEOUT)
+
+        assert result.attempts == ()
+
     def test_wait_timeout_raises_without_settling(self) -> None:
         job_client = FakeJobClient()
         monitor = _monitor(job_client)

@@ -13,8 +13,8 @@ Skipped automatically when no built native target exists (run
 from pathlib import Path
 
 import pytest
-
 from conftest import NATIVE_EXECUTABLE_AVAILABLE
+
 from rclone_kit.client import Rclone
 from rclone_kit.diff import DiffOption
 from rclone_kit.types import ListingOption
@@ -51,9 +51,7 @@ def test_stat_raises_file_not_found_matching_cli(
         cli.stat(src)
 
 
-def test_modtime_is_transitively_embedded_through_stat(
-    tmp_path: Path, embedded: Rclone
-) -> None:
+def test_modtime_is_transitively_embedded_through_stat(tmp_path: Path, embedded: Rclone) -> None:
     (tmp_path / "hello.txt").write_bytes(b"hello")
     src = f"{tmp_path}/hello.txt"
 
@@ -67,9 +65,40 @@ def test_size_file_matches_cli(tmp_path: Path, embedded: Rclone, cli: Rclone) ->
     (tmp_path / "hello.txt").write_bytes(b"hello world!")
     src = f"{tmp_path}/hello.txt"
 
-    assert embedded.size_file(src).as_int() == cli.size_file(src).as_int() == len(
-        b"hello world!"
-    )
+    assert embedded.size_file(src).as_int() == cli.size_file(src).as_int() == len(b"hello world!")
+
+
+def test_size_files_matches_cli_for_a_batch_of_files(
+    tmp_path: Path, embedded: Rclone, cli: Rclone
+) -> None:
+    (tmp_path / "a.txt").write_bytes(b"aaa")
+    (tmp_path / "b.txt").write_bytes(b"bb")
+    (tmp_path / "c.txt").write_bytes(b"ignored")
+    src = str(tmp_path)
+
+    embedded_result = embedded.size_files(src, ["a.txt", "b.txt"])
+    cli_result = cli.size_files(src, ["a.txt", "b.txt"])
+
+    assert embedded_result.total_size == cli_result.total_size == 5
+    assert embedded_result.file_sizes == cli_result.file_sizes == {"a.txt": 3, "b.txt": 2}
+
+
+def test_size_files_single_file_uses_the_size_file_shortcut(
+    tmp_path: Path, embedded: Rclone
+) -> None:
+    (tmp_path / "solo.txt").write_bytes(b"twelve bytes")
+
+    result = embedded.size_files(str(tmp_path), ["solo.txt"])
+
+    assert result.total_size == len(b"twelve bytes")
+    assert result.file_sizes == {"solo.txt": len(b"twelve bytes")}
+
+
+def test_size_files_empty_list_returns_zero(tmp_path: Path, embedded: Rclone) -> None:
+    result = embedded.size_files(str(tmp_path), [])
+
+    assert result.total_size == 0
+    assert result.file_sizes == {}
 
 
 def test_exists_matches_cli_for_present_and_missing_paths(
@@ -115,9 +144,7 @@ def test_ls_non_recursive_matches_cli(tmp_path: Path, embedded: Rclone, cli: Rcl
     embedded_names = sorted(f.name for f in embedded_listing.files) + sorted(
         d.name for d in embedded_listing.dirs
     )
-    cli_names = sorted(f.name for f in cli_listing.files) + sorted(
-        d.name for d in cli_listing.dirs
-    )
+    cli_names = sorted(f.name for f in cli_listing.files) + sorted(d.name for d in cli_listing.dirs)
 
     assert embedded_names == cli_names == ["a.txt", "sub"]
 
@@ -143,9 +170,7 @@ def test_ls_bounded_recursion_matches_cli(tmp_path: Path, embedded: Rclone, cli:
     embedded_names = sorted(f.name for f in embedded_listing.files) + sorted(
         d.name for d in embedded_listing.dirs
     )
-    cli_names = sorted(f.name for f in cli_listing.files) + sorted(
-        d.name for d in cli_listing.dirs
-    )
+    cli_names = sorted(f.name for f in cli_listing.files) + sorted(d.name for d in cli_listing.dirs)
     assert embedded_names == cli_names == ["a.txt", "b.txt", "deeper", "sub"]
 
 
@@ -245,7 +270,9 @@ def test_diff_differ_and_match_not_supported_by_cli_but_work_embedded(
 ) -> None:
     src, dst = _make_diff_tree(tmp_path)
 
-    differ_paths = {i.path for i in embedded.diff(str(src), str(dst), diff_option=DiffOption.DIFFER)}
+    differ_paths = {
+        i.path for i in embedded.diff(str(src), str(dst), diff_option=DiffOption.DIFFER)
+    }
     match_paths = {i.path for i in embedded.diff(str(src), str(dst), diff_option=DiffOption.MATCH)}
 
     assert differ_paths == {"differs.txt"}

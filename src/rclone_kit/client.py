@@ -18,7 +18,7 @@ from rclone_kit.command_flags import FLAG_FAST_LIST
 from rclone_kit.completed_process import CompletedProcess
 from rclone_kit.config import Config
 from rclone_kit.config_discovery import find_conf_file
-from rclone_kit.convert import convert_to_str
+from rclone_kit.convert import convert_to_filestr_list, convert_to_str
 from rclone_kit.diff import DiffItem, DiffOption
 from rclone_kit.dir import Dir
 from rclone_kit.dir_listing import DirListing
@@ -65,6 +65,7 @@ from rclone_kit.operations.listing_ops_embedded import (
     fetch_listremotes_embedded,
     fetch_ls_embedded,
     fetch_size_file_embedded,
+    fetch_size_files_embedded,
     fetch_stat_embedded,
     stream_diff_embedded,
 )
@@ -83,6 +84,8 @@ from rclone_kit.operations.transfer_ops import (
 from rclone_kit.operations.transfer_ops_embedded import (
     cleanup_embedded,
     copy_file_to_embedded,
+    copy_files_embedded,
+    delete_files_embedded,
     purge_dir_embedded,
 )
 from rclone_kit.operations.transfer_options import TransferOptions, encode_transfer_options_config
@@ -705,7 +708,35 @@ class Rclone:
 
         Args:
             payload: Dictionary of source and destination file paths
+
+        Embedded mode returns a single-element list wrapping one
+        aggregated `OperationResult` spanning every partition (see
+        `native_c_abi_wave_e_review_and_design.md`, decision E7); `verbose`
+        has no embedded equivalent (there is no subprocess log stream) and
+        is silently ignored there.
         """
+        if self._rc_client is not None:
+            result = copy_files_embedded(
+                self._ensure_job_monitor(),
+                self._client_id,
+                self.config,
+                src,
+                dst,
+                files,
+                check=check,
+                max_backlog=max_backlog,
+                checkers=checkers,
+                transfers=transfers,
+                low_level_retries=low_level_retries,
+                retries=retries,
+                retries_sleep=retries_sleep,
+                metadata=metadata,
+                timeout=timeout,
+                max_partition_workers=max_partition_workers,
+                multi_thread_streams=multi_thread_streams,
+                other_args=other_args,
+            )
+            return [CompletedProcess.from_operation_result(result)]
         return copy_files_partitioned(
             self._backend,
             src,
@@ -850,7 +881,22 @@ class Rclone:
         max_partition_workers: int | None = None,
         other_args: list[str] | None = None,
     ) -> CompletedProcess:
-        """Delete a directory"""
+        """Delete a directory.
+
+        `verbose` has no embedded equivalent and is silently ignored there.
+        """
+        if self._rc_client is not None:
+            result = delete_files_embedded(
+                self._ensure_job_monitor(),
+                self._client_id,
+                self.config,
+                convert_to_filestr_list(files),
+                check=check,
+                rmdirs=rmdirs,
+                max_partition_workers=max_partition_workers,
+                other_args=other_args,
+            )
+            return CompletedProcess.from_operation_result(result)
         return delete_files_partitioned(
             self._backend,
             files,
@@ -1243,6 +1289,17 @@ class Rclone:
         verbose: bool | None = None,
     ) -> SizeResult:
         """Get the size of a list of files. Example of files items: "remote:bucket/to/file"."""
+        if self._rc_client is not None:
+            return fetch_size_files_embedded(
+                self._rc_client,
+                self,
+                src,
+                files,
+                fast_list=fast_list,
+                other_args=other_args,
+                check=check,
+                verbose=verbose,
+            )
         return fetch_size_files(
             self._backend,
             self,

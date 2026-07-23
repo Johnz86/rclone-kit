@@ -172,6 +172,35 @@ def fetch_size_file(access: ListingAccess, src: str) -> SizeSuffix:
     return SizeSuffix(dirlist.files[0].size)
 
 
+def build_size_result(src: str, all_files: list[File]) -> SizeResult:
+    """Fold a flat listing of `File`s under `src` into a `SizeResult`.
+
+    Shared by the CLI (`fetch_size_files`) and embedded
+    (`listing_ops_embedded.fetch_size_files_embedded`) backends: both list
+    the same files, they just get there via a different RC/subprocess call,
+    so the dedup/warn/prefix-strip logic only needs to exist once.
+    """
+    file_sizes: dict[str, int] = {}
+    f: File
+    for f in all_files:
+        p = f.to_string(include_remote=True)
+        if p in file_sizes:
+            warnings.warn(f"Duplicate file found: {p}", stacklevel=2)
+            continue
+        size = f.size
+        if size == 0:
+            warnings.warn(f"File size is 0: {p}", stacklevel=2)
+        file_sizes[p] = f.size
+    total_size = sum(file_sizes.values())
+    file_sizes_path_corrected: dict[str, int] = {}
+    for path, size in file_sizes.items():
+        prefix = src.rstrip("/") + "/"
+        if not path.startswith(prefix):
+            raise ValueError(f"Listed path {path!r} is outside source {src!r}")
+        file_sizes_path_corrected[path.removeprefix(prefix)] = size
+    return SizeResult(prefix=src, total_size=total_size, file_sizes=file_sizes_path_corrected)
+
+
 def fetch_size_files(
     backend: RcloneBackend,
     access: ListingAccess,
@@ -223,28 +252,7 @@ def fetch_size_files(
         paths: list[RPath] = RPath.from_json_str(stdout, remote, parent_path=parent_path)
 
         all_files += [File(p) for p in paths]
-    file_sizes: dict[str, int] = {}
-    f: File
-    for f in all_files:
-        p = f.to_string(include_remote=True)
-        if p in file_sizes:
-            warnings.warn(f"Duplicate file found: {p}", stacklevel=2)
-            continue
-        size = f.size
-        if size == 0:
-            warnings.warn(f"File size is 0: {p}", stacklevel=2)
-        file_sizes[p] = f.size
-    total_size = sum(file_sizes.values())
-    file_sizes_path_corrected: dict[str, int] = {}
-    for path, size in file_sizes.items():
-        prefix = src.rstrip("/") + "/"
-        if not path.startswith(prefix):
-            raise ValueError(f"Listed path {path!r} is outside source {src!r}")
-        file_sizes_path_corrected[path.removeprefix(prefix)] = size
-    out: SizeResult = SizeResult(
-        prefix=src, total_size=total_size, file_sizes=file_sizes_path_corrected
-    )
-    return out
+    return build_size_result(src, all_files)
 
 
 def stream_diff(

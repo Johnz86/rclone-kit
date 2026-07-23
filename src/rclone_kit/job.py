@@ -32,7 +32,7 @@ from rclone_kit.exceptions import (
     OperationTimeoutError,
 )
 from rclone_kit.operation import JobState, JobStatus, OperationResult, TransferStats
-from rclone_kit.rc.jobs import RcJobNotFoundError, RcJobRef
+from rclone_kit.rc.jobs import RcJobNotFoundError, RcJobRef, parse_operation_attempts
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -355,7 +355,7 @@ class _JobMonitor:
             job_ids=(record.ref.job_id,),
             stats=final_stats,
             warnings=(),
-            attempts=(),
+            attempts=parse_operation_attempts(status.output),
             started_at=status.started_at,
             ended_at=status.ended_at,
             duration=status.duration,

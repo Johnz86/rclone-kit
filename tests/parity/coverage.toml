@@ -279,13 +279,14 @@ notes = "operations/stat with files-only."
 [[row]]
 id = "L09"
 method = "size_files"
-decision = "composite_rc"
-owner_module = "rclone_kit.operations.listing_ops"
-status = "planned"
-parity_test = ""
-windows = false
+decision = "direct_rc"
+owner_module = "rclone_kit.operations.listing_ops_embedded"
+status = "cli_parity_tested"
+parity_test = "tests/native/test_listing_ops_embedded_integration.py::test_size_files_matches_cli_for_a_batch_of_files"
+windows = true
 linux = false
-notes = "Wave E; needs _filter.FilesFrom plus _config.MaxDepth/UseListR."
+failure_contract_complete = true
+notes = "Wave E Phase E4. Single operations/list call with opt.filesOnly/recurse and _filter.FilesFrom (never partitioned - unlike T06/T08, one call already covers every requested file); the <2-file shortcut delegates to the existing fetch_size_file_embedded (operations/stat). The dedup/warn/prefix-strip post-processing was extracted into a shared build_size_result() used by both the CLI and embedded backends. Corrected the ledger's original decision from composite_rc to direct_rc, matching the design review's own finding that this row never needs the job engine."
 
 [[row]]
 id = "L10"
@@ -402,12 +403,13 @@ notes = "Consolidates with T03's start_copy() engine; Remote values convert to t
 id = "T06"
 method = "copy_files"
 decision = "composite_rc"
-owner_module = "rclone_kit.client"
-status = "planned"
-parity_test = ""
-windows = false
+owner_module = "rclone_kit.operations.transfer_ops_embedded"
+status = "cli_parity_tested"
+parity_test = "tests/native/test_copy_files_and_delete_files_embedded_integration.py::test_copy_files_matches_cli_for_a_selected_subset"
+windows = true
 linux = false
-notes = "Wave E; partitioned async sync/copy jobs with _filter.FilesFrom."
+failure_contract_complete = true
+notes = "Wave E Phase E2. Partitioned rclonekit/copy jobs (not a bare sync/copy - correcting the ledger's original decision to keep F1's retry-loop fix), one per group_files() common-prefix partition, each with _filter.FilesFrom pointing at that partition's own temp file. Every partition is started before any is waited on and every partition is collected before check=True can raise, so a partial failure never loses a still-running sibling's result (native_c_abi_wave_e_review_and_design.md, decision E3). All partitions fold into one OperationResult via _aggregate_results(), with job_ids/attempts spanning every partition - closing the OperationResult.attempts gap (parse_operation_attempts, wired into job.py) for this row and, transitively, for start_copy()/copy() (T03) too. Empirically confirmed: a FilesFrom entry naming a missing source file is silently skipped (not an error), the same as T08's operations/delete."
 
 [[row]]
 id = "T07"
@@ -424,12 +426,13 @@ notes = "operations/purge, now started as an async job through _JobMonitor (Phas
 id = "T08"
 method = "delete_files"
 decision = "composite_rc"
-owner_module = "rclone_kit.client"
-status = "planned"
-parity_test = ""
-windows = false
+owner_module = "rclone_kit.operations.transfer_ops_embedded"
+status = "cli_parity_tested"
+parity_test = "tests/native/test_copy_files_and_delete_files_embedded_integration.py::test_delete_files_removes_only_the_listed_files"
+windows = true
 linux = false
-notes = "Wave E."
+failure_contract_complete = true
+notes = "Wave E Phase E3. Partitioned operations/delete jobs (fs = the group_files() remote/common-prefix key, _filter.FilesFrom pointing at that partition's temp file), each followed by operations/rmdirs(remote=\"\", leaveRoot=true) when rmdirs=True and that partition's delete succeeded - reproducing the delete command's own --rmdirs sequence (cmd/delete/delete.go), not a new one. Same aggregation/never-abort-collection model as T06. Empirically confirmed: a FilesFrom entry naming a missing file does not raise (operations.Delete simply does not visit it)."
 
 [[row]]
 id = "T09"
