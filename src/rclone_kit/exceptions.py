@@ -84,6 +84,23 @@ class S3MergeError(RcloneKitError):
     """
 
 
+class UnsupportedEmbeddedOperationError(RcloneKitError):
+    """Raised when a method that still requires the CLI backend is called on
+    an `execution="embedded"` `Rclone` client.
+
+    Per the CLI-to-C-ABI migration plan's invariant against silent
+    subprocess fallback: an embedded runtime never launches `rclone.exe`
+    because an operation has not been ported yet, it raises this instead.
+    """
+
+    def __init__(self, method: str) -> None:
+        self.method = method
+        super().__init__(
+            f"Rclone.{method}() is not yet available with execution='embedded'; "
+            "construct this client with execution='cli' to use it."
+        )
+
+
 class S3UploadError(RcloneKitError):
     """Raised when a resumable S3 multipart upload fails to upload one or
     more chunks after retries are exhausted.

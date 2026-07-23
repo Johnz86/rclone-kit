@@ -365,6 +365,18 @@ tests, documentation, public imports, packaging, and downstream compatibility.
 
 Ledger: C01, C03, M01, D08.
 
+Status: C01 (opt-in `execution="embedded"` construction), M01
+(`obscure()` over `core/obscure`), and `rc/paths.py`'s `RcPath` are
+implemented, unit tested against a fake binding, and native/DLL tested,
+including a CLI-reveal round-trip parity check for M01. C03 has an embedded
+counterpart (`config_discovery.find_conf_file_embedded`) that queries
+`config/paths` through a throwaway runtime instead of shelling out, proven
+equivalent to the CLI path in a subprocess-isolated native test (the ABI's
+initialize-once-per-process rule means it cannot share a runtime with other
+native tests). `rc/options.py` and the machine-readable
+`tests/parity/coverage.toml` from "Immediate next migration artifacts" are
+not yet started.
+
 Add:
 
 ```text

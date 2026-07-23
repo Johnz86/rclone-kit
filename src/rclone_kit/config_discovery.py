@@ -70,6 +70,62 @@ def find_conf_file(
     return None
 
 
+def find_conf_file_embedded(
+    *,
+    explicit_path: Path | None = None,
+    library_path: Path | None = None,
+) -> Path | None:
+    """Find a config via explicit path, environment, then the embedded
+    native runtime's own default-path discovery - no `rclone` subprocess.
+
+    Mirrors `find_conf_file`'s precedence exactly so the two are directly
+    comparable in a parity test; only the final fallback step differs.
+    """
+    if explicit_path is not None:
+        return explicit_path
+
+    if env_value := os.environ.get(_RCLONE_CONFIG_ENV_VAR):
+        return Path(env_value)
+
+    config_file = _config_paths_via_embedded_runtime(library_path).config_file
+    if config_file is not None and config_file.exists():
+        return config_file
+    return None
+
+
+def _config_paths_via_embedded_runtime(library_path: Path | None) -> RclonePaths:
+    """Ask a transient, throwaway `RcloneRuntime` where rclone's default
+    config path is, by initializing it with no config path and reading back
+    `config/paths` - the same RC method `_config_paths_via_executable` shells
+    out for, without spawning a process.
+    """
+    from rclone_kit.native.errors import NativeError
+    from rclone_kit.native.library import resolve_library_path
+    from rclone_kit.native.runtime import RcloneRuntime
+    from rclone_kit.rc.client import RcClient
+    from rclone_kit.rc.errors import RcCallError
+
+    try:
+        resolved_library = resolve_library_path(library_path)
+    except NativeError as error:
+        raise ConfigDiscoveryError("resolve the native rclone-kit library") from error
+
+    runtime = RcloneRuntime.from_library_path(resolved_library)
+    try:
+        runtime.initialize(config_path=None)
+        paths = RcClient(runtime).call("config/paths")
+    except (NativeError, RcCallError) as error:
+        raise ConfigDiscoveryError("query config/paths from the embedded runtime") from error
+    finally:
+        runtime.close()
+
+    return RclonePaths(
+        config_file=Path(paths["config"]) if paths.get("config") else None,
+        cache_dir=Path(paths["cache"]) if paths.get("cache") else None,
+        temp_dir=Path(paths["temp"]) if paths.get("temp") else None,
+    )
+
+
 def _config_paths_via_executable(rclone_exe: Path | None) -> RclonePaths:
     """Invoke ``rclone config paths`` through an explicit or resolved binary."""
     try:

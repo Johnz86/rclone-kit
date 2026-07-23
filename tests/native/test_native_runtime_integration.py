@@ -9,61 +9,28 @@ against a fake binding and always runs.
 """
 
 import os
-import platform as _platform
-from collections.abc import Iterator
 from pathlib import Path
 
 import psutil
 import pytest
 
+from conftest import NATIVE_LIBRARY_AVAILABLE
 from rclone_kit.native.runtime import RcloneRuntime
 from rclone_kit.rc.client import RcClient
 from rclone_kit.rc.errors import RcCallError
-from rclone_kit.runtime.exceptions import UnsupportedPlatformError
-from rclone_kit.runtime.native_platform import resolve_native_target
 
-_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 _MEMORY_BUCKET_REMOTE = "rc-client-bucket/hello.txt"
 _MEMORY_TEST_CONTENT = b"rclone-kit native runtime integration test\n"
 
-
-def _built_library_path() -> Path | None:
-    try:
-        target = resolve_native_target(system=_platform.system(), machine=_platform.machine())
-    except UnsupportedPlatformError:
-        return None
-    candidate = (
-        _REPO_ROOT
-        / "build"
-        / "native"
-        / f"{target.operating_system.value}-{target.architecture.value}"
-        / target.library_filename
-    )
-    return candidate if candidate.is_file() else None
-
-
-_LIBRARY_PATH = _built_library_path()
-
 pytestmark = pytest.mark.skipif(
-    _LIBRARY_PATH is None,
+    not NATIVE_LIBRARY_AVAILABLE,
     reason="No built native library found; run scripts/native/build.py first.",
 )
 
 
-@pytest.fixture(scope="module")
-def runtime(tmp_path_factory: pytest.TempPathFactory) -> Iterator[RcloneRuntime]:
-    """Module-scoped: `RcloneKitInitialize` is a once-per-*process* ABI
-    operation (loading the same shared library path twice via `ctypes.CDLL`
-    within one process returns a handle to the same already-loaded module),
-    so every test in this file must share one initialized runtime rather
-    than each calling `initialize()` fresh.
-    """
-    assert _LIBRARY_PATH is not None
-    config_path = tmp_path_factory.mktemp("native-runtime-integration") / "rclone.conf"
-    rt = RcloneRuntime.from_library_path(_LIBRARY_PATH)
-    rt.initialize(config_path=config_path)
-    yield rt
-    rt.close()
+@pytest.fixture
+def runtime(native_runtime: RcloneRuntime) -> RcloneRuntime:
+    return native_runtime
 
 
 def test_build_info_reports_expected_abi_version(runtime: RcloneRuntime) -> None:

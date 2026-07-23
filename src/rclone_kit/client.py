@@ -10,7 +10,7 @@ from collections.abc import Generator
 from datetime import datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal, Self
 
 from rclone_kit.backend import CliRcloneBackend, RcloneBackend
 from rclone_kit.command_flags import FLAG_FAST_LIST
@@ -20,12 +20,14 @@ from rclone_kit.config_discovery import find_conf_file
 from rclone_kit.diff import DiffItem, DiffOption
 from rclone_kit.dir import Dir
 from rclone_kit.dir_listing import DirListing
-from rclone_kit.exceptions import RcloneCommandError
+from rclone_kit.exceptions import RcloneCommandError, UnsupportedEmbeddedOperationError
 from rclone_kit.file import File
 from rclone_kit.file_stream import FilesStream
 from rclone_kit.fs.filesystem import FSPath, RemoteFS
 from rclone_kit.http_server import HttpServer
 from rclone_kit.mount import Mount
+from rclone_kit.native.library import resolve_library_path
+from rclone_kit.native.runtime import RcloneRuntime
 from rclone_kit.operations.config_ops import (
     check_is_s3,
     fetch_config_paths,
@@ -62,6 +64,7 @@ from rclone_kit.operations.transfer_ops import (
 from rclone_kit.operations.walk import walk
 from rclone_kit.optional_dependency import MissingOptionalDependencyError
 from rclone_kit.process import Process
+from rclone_kit.rc.client import RcClient
 from rclone_kit.remote import Remote
 from rclone_kit.rpath import RPath
 from rclone_kit.s3.types import S3UploadTarget
@@ -78,6 +81,7 @@ from rclone_kit.types import (
 from rclone_kit.util import (
     get_rclone_exe,
     get_verbose,
+    make_temp_config_file,
     to_path,
     upgrade_rclone,
 )
@@ -87,6 +91,39 @@ if TYPE_CHECKING:
     from rclone_kit.s3.types import S3Credentials
 
 logger = logging.getLogger(__name__)
+
+
+class _UnsupportedEmbeddedBackend:
+    """`RcloneBackend` stand-in for `execution="embedded"` clients.
+
+    Every unmigrated method still reaches rclone through `self._backend`
+    (directly, or via `_run`/`_launch_process`); this raises a typed
+    `UnsupportedEmbeddedOperationError` from both entry points instead of
+    silently launching a subprocess, per the CLI-to-C-ABI migration plan's
+    no-silent-fallback invariant. Keeping `self._backend`'s declared type as
+    plain `RcloneBackend` (never `RcloneBackend | None`) also keeps every
+    existing CLI call site's type checking unchanged.
+    """
+
+    def run(
+        self,
+        command: tuple[str, ...],
+        *,
+        check: bool = False,
+        capture: bool | Path | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        del check, capture
+        raise UnsupportedEmbeddedOperationError(command[0] if command else "run")
+
+    def launch(
+        self,
+        command: tuple[str, ...],
+        *,
+        capture: bool | None = None,
+        log: Path | None = None,
+    ) -> Process:
+        del capture, log
+        raise UnsupportedEmbeddedOperationError(command[0] if command else "launch")
 
 
 def _to_rclone_conf(config: Config | Path | None) -> Config:
@@ -118,6 +155,9 @@ class Rclone:
         rclone_exe: Path | None = None,
         *,
         backend: RcloneBackend | None = None,
+        execution: Literal["embedded", "cli"] = "cli",
+        library_path: Path | None = None,
+        runtime: RcloneRuntime | None = None,
     ) -> None:
         """Bind a config and executable, or accept a caller-supplied backend.
 
@@ -126,9 +166,49 @@ class Rclone:
         ``launch`` only) and does not expose its own configuration, so when a
         custom ``backend`` is supplied the caller is responsible for passing
         the matching ``rclone_conf`` alongside it.
+
+        ``execution="embedded"`` is opt-in per the CLI-to-C-ABI migration
+        plan: it loads (or accepts) one ``RcloneRuntime`` and initializes it
+        with an immutable config path derived from ``rclone_conf``, but only
+        the ported subset of methods (currently ``obscure()``) actually uses
+        it. Every other method still requires ``execution="cli"`` and raises
+        ``UnsupportedEmbeddedOperationError`` otherwise. ``backend`` and
+        ``rclone_exe`` are CLI-only concepts and are rejected together with
+        ``execution="embedded"``.
         """
         if isinstance(rclone_conf, Path) and not rclone_conf.exists():
             raise ValueError(f"Rclone config file not found: {rclone_conf}")
+
+        self.execution = execution
+        self._embedded_runtime: RcloneRuntime | None = None
+        self._owns_embedded_runtime = False
+        self._rc_client: RcClient | None = None
+
+        if execution == "embedded":
+            if backend is not None or rclone_exe is not None:
+                raise ValueError(
+                    "backend and rclone_exe are CLI-only and cannot be combined with "
+                    "execution='embedded'"
+                )
+            if runtime is not None and library_path is not None:
+                raise ValueError("supply at most one of runtime and library_path")
+            self._backend: RcloneBackend = _UnsupportedEmbeddedBackend()
+            self.config = _to_rclone_conf(rclone_conf)
+            config_path = self._embedded_config_path(rclone_conf)
+            if runtime is not None:
+                self._embedded_runtime = runtime
+            else:
+                self._embedded_runtime = RcloneRuntime.from_library_path(
+                    resolve_library_path(library_path)
+                )
+                self._owns_embedded_runtime = True
+            if not self._embedded_runtime.initialized:
+                self._embedded_runtime.initialize(config_path=config_path)
+            self._rc_client = RcClient(self._embedded_runtime)
+            return
+
+        if runtime is not None or library_path is not None:
+            raise ValueError("runtime and library_path require execution='embedded'")
         if backend is None:
             resolved_executable = get_rclone_exe(rclone_exe)
             if rclone_conf is None:
@@ -140,6 +220,37 @@ class Rclone:
 
         self._backend = backend
         self.config: Config = _to_rclone_conf(rclone_conf)
+
+    @staticmethod
+    def _embedded_config_path(rclone_conf: Path | Config | None) -> Path | None:
+        """Resolve the immutable config path passed to `RcloneRuntime.initialize`.
+
+        `None` and an explicit `Path` are used directly - no subprocess is
+        needed to resolve either. A `Config` value is materialized to its own
+        temp file at most once per `Config` instance, reusing the same
+        mechanism the CLI backend uses.
+        """
+        if rclone_conf is None:
+            return None
+        if isinstance(rclone_conf, Path):
+            return rclone_conf
+        return rclone_conf.materialize(make_temp_config_file)
+
+    def close(self) -> None:
+        """Release resources this client owns. Idempotent.
+
+        Only closes the embedded runtime if this client created it itself;
+        an injected `runtime` outlives this client, matching
+        `RcloneRuntime`'s own single-owner closing rule.
+        """
+        if self._owns_embedded_runtime and self._embedded_runtime is not None:
+            self._embedded_runtime.close()
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *_exc_info: object) -> None:
+        self.close()
 
     def _run(
         self, cmd: list[str], check: bool = False, capture: bool | Path | None = None
@@ -213,6 +324,8 @@ class Rclone:
 
     def obscure(self, password: str) -> str:
         """Obscure a password for use in rclone config files."""
+        if self._rc_client is not None:
+            return self._rc_client.call("core/obscure", clear=password)["obscured"]
         return obscure_password(self._backend, password)
 
     def ls_stream(
