@@ -323,3 +323,26 @@ def test_config_paths_dispatches_to_rc_client_when_embedded() -> None:
 
     assert [p.name for p in paths] == ["rclone.conf", "cache", "tmp"]
     rclone.close()
+
+
+def test_is_s3_and_get_s3_credentials_work_unmodified_under_embedded_execution() -> None:
+    """M05/M06 need no embedded adapter at all: both already operate only on
+    `self.config`, never on `self._backend`/`self._rc_client`, so they work
+    identically regardless of execution mode. Asserts no RC call happens.
+    """
+    binding = FakeBinding()
+    config = Config(
+        "[myremote]\n"
+        "type = s3\n"
+        "provider = AWS\n"
+        "access_key_id = AKIAEXAMPLE\n"
+        "secret_access_key = secretexample\n"
+    )
+    rclone = Rclone(config, execution="embedded", runtime=RcloneRuntime(binding))
+
+    assert rclone.is_s3("myremote:mybucket/key.txt") is True
+    creds = rclone.get_s3_credentials("myremote:mybucket/key.txt")
+
+    assert creds.access_key_id == "AKIAEXAMPLE"
+    assert binding.rpc_calls == []
+    rclone.close()

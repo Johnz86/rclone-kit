@@ -419,10 +419,12 @@ L01 (`ls()`/`operations/list`) is also done: `src=None` still lists remotes via 
 to `opt.filesOnly`/`dirsOnly`; glob/order filtering stays pure Python, unchanged from the CLI path.
 Native parity tests cover non-recursive, unlimited-recursion, bounded-recursion, and files-only
 listings against the real DLL and the same-commit CLI executable on a real nested directory tree.
-Wave B's only remaining rows are M04 (`config_show`, needs a bridge extension for exact legacy
-sensitivity behavior), M05/M06 (already Python-only, no CLI dependency to migrate), and
-`rc/options.py` (no typed option encoder needed yet - every mapping done so far has been simple
-enough to inline).
+M05/M06 (`is_s3`/`get_s3_credentials`) needed no adapter or code change at all and are verified
+complete: both operate only on `self.config`, never on `self._backend`/`self._rc_client`, so they
+already behave identically under either execution mode - a dedicated test asserts zero RC calls
+happen. Wave B's only remaining row is M04 (`config_show`, needs a bridge extension for exact legacy
+sensitivity behavior); `rc/options.py` has not been needed yet, since every option mapping done so
+far has been simple enough to inline directly in its adapter.
 
 ### Wave C — checks, walking, and comparison
 
