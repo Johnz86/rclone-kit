@@ -1,0 +1,3 @@
+[submodule "native/rclone"]
+	path = native/rclone
+	url = https://github.com/Johnz86/rclone.git

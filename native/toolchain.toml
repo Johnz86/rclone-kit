@@ -1,0 +1,10 @@
+schema = 1
+go_version = "1.26.5"
+c_abi_version = 1
+rclone_upstream_version = "1.74.x"
+rclone_fork_url = "https://github.com/Johnz86/rclone.git"
+rclone_integration_branch = "rclone-kit/integration-v1"
+rclone_oauth_branch = "oauth-public-redirect"
+windows_compiler = "llvm-mingw-20260616-ucrt-x86_64"
+windows_compiler_cc = "C:\\Programs\\llvm-mingw\\bin\\x86_64-w64-mingw32-gcc.exe"
+linux_wheel_policy = "manylinux2014_x86_64"
