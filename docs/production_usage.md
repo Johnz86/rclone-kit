@@ -804,8 +804,13 @@ database URLs out of logs because they may contain credentials.
 
 ## Remote control processes
 
-Use rclone remote control only on a trusted network interface. Supply
-authentication whenever the endpoint is reachable outside the process:
+`launch_server()`/`remote_control()`/`webgui()` are deprecated and CLI-only - each now emits a
+`DeprecationWarning` but keeps working exactly as before. An `execution="embedded"` client already
+provides direct in-process RC access, so `launch_server()`/`remote_control()`'s reason for existing
+(driving a *separate*, externally-addressed `rclone rcd`) has no embedded equivalent planned; a
+standalone RC HTTP client for that specific use case is planned to replace them, but does not exist
+yet. Use rclone remote control only on a trusted network interface, and supply authentication
+whenever the endpoint is reachable outside the process:
 
 ```python
 with rclone.launch_server(
@@ -825,6 +830,16 @@ with rclone.launch_server(
 ```
 
 The `Process` context terminates the server and its child process tree.
+
+`upgrade_rclone()` is likewise deprecated and CLI-only (it downloads/installs a verified `rclone`
+executable, which `execution="embedded"` never needs - the native library ships with the package).
+Query `Rclone.native_build_info()` on an embedded client instead for the equivalent "which rclone
+build am I actually running" information:
+
+```python
+info = rclone.native_build_info()
+print(info.rclone_version, info.rclone_commit, info.go_version, info.target)
+```
 
 ## Logging and error handling
 

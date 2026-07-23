@@ -39,11 +39,11 @@ id = "C02"
 method = "upgrade_rclone"
 decision = "deprecate"
 owner_module = "rclone_kit.client"
-status = "planned"
-parity_test = ""
-windows = false
+status = "unit_tested"
+parity_test = "tests/unit/test_deprecated_methods.py::test_upgrade_rclone_warns"
+windows = true
 linux = false
-notes = ""
+notes = "Wave I. Now emits DeprecationWarning pointing at Rclone.native_build_info() (new: wraps RcloneRuntime.build_info(), embedded-only) as the replacement 'which rclone am I running' query. Behavior is unchanged; still CLI-only."
 
 [[row]]
 id = "C03"
@@ -83,33 +83,33 @@ id = "C06"
 method = "webgui"
 decision = "deprecate"
 owner_module = "rclone_kit.client"
-status = "planned"
-parity_test = ""
-windows = false
+status = "unit_tested"
+parity_test = "tests/unit/test_deprecated_methods.py::test_webgui_warns"
+windows = true
 linux = false
-notes = ""
+notes = "Wave I. Now emits DeprecationWarning; will not be ported to execution='embedded' (web GUI management is not a storage-library responsibility)."
 
 [[row]]
 id = "C07"
 method = "launch_server"
 decision = "deprecate"
 owner_module = "rclone_kit.client"
-status = "planned"
-parity_test = ""
-windows = false
+status = "unit_tested"
+parity_test = "tests/unit/test_deprecated_methods.py::test_launch_server_warns"
+windows = true
 linux = false
-notes = ""
+notes = "Wave I. Now emits DeprecationWarning; execution='embedded' already provides direct in-process RC access with no external rclone rcd needed, so this will not be ported."
 
 [[row]]
 id = "C08"
 method = "remote_control"
 decision = "deprecate"
 owner_module = "rclone_kit.client"
-status = "planned"
-parity_test = ""
-windows = false
+status = "unit_tested"
+parity_test = "tests/unit/test_deprecated_methods.py::test_remote_control_warns"
+windows = true
 linux = false
-notes = ""
+notes = "Wave I. Now emits DeprecationWarning; this method's meaning (drive a separate, externally-addressed rclone process over RC HTTP) is unrelated to this client's own execution mode and does not belong on Rclone - a standalone RC HTTP client is planned to replace it, not yet built."
 
 [[row]]
 id = "C09"

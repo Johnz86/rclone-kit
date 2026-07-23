@@ -737,6 +737,28 @@ Deprecate generic CLI control and subprocess-shaped results. Make embedded execu
 after every non-deprecated method is complete. Publish one compatibility release retaining explicit
 CLI mode and collect failures before final removal.
 
+Wave I is partially done, following the normative design in
+[`native_c_abi_wave_i_review_and_design.md`](native_c_abi_wave_i_review_and_design.md): C02/C06–C08
+(deprecation) are complete. This wave's own exit gate - "make embedded execution the default only
+after every non-deprecated method is complete" - is **not** reachable yet, since `mount()`/
+`mount_s3()` (Wave H, R01/R02) remain genuinely blocked on FUSE/WinFsp production build toolchain
+work that does not exist yet. No default was flipped and no CLI-only code was removed; D01–D11/
+D19–D21 (this plan's own internal/distribution-removal ledger) stay as they were, since every one of
+their gates is tied to other rows reaching `complete` first, which has not happened.
+
+- **C06/C07/C08** (`webgui`/`launch_server`/`remote_control`) now emit `DeprecationWarning` on every
+  call, with behavior completely unchanged - each is CLI-only with no planned embedded port (web GUI
+  management isn't a storage-library concern; embedded execution already provides direct in-process
+  RC with no external `rclone rcd` needed; `remote_control()`'s "drive a separate, externally-
+  addressed rclone process" meaning is unrelated to this client's own execution mode and a standalone
+  RC HTTP client is planned to replace it, not yet built).
+- **C02** (`upgrade_rclone`) also now warns, but additionally gained a real replacement this row's own
+  ledger note named: `Rclone.native_build_info()`, wrapping the already-existing (since the bridge's
+  first slice) `RcloneRuntime.build_info()` - ABI version, rclone version/commit, Go version, build
+  tags, target. Embedded-only (`EmbeddedOnlyOperationError` under `execution="cli"`): the native
+  library is linked at build/package time, never downloaded/verified per call the way
+  `upgrade_rclone()`'s CLI-mode flow is.
+
 ### Wave J — executable-free wheels
 
 Ledger: D02, D06–D07, D16–D18.

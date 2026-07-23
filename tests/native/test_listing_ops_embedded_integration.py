@@ -17,6 +17,7 @@ from conftest import NATIVE_EXECUTABLE_AVAILABLE
 
 from rclone_kit.client import Rclone
 from rclone_kit.diff import DiffOption
+from rclone_kit.exceptions import EmbeddedOnlyOperationError
 from rclone_kit.types import ListingOption
 
 pytestmark = pytest.mark.skipif(
@@ -125,6 +126,21 @@ def test_config_paths_returns_a_config_cache_temp_triple(embedded: Rclone) -> No
 
     assert len(paths) == 3
     assert all(isinstance(p, Path) for p in paths)
+
+
+def test_native_build_info_reports_a_real_build(embedded: Rclone) -> None:
+    # Wave I design, C02: the embedded replacement for upgrade_rclone()'s
+    # old "which rclone am I running" concern.
+    info = embedded.native_build_info()
+
+    assert info.abi_version >= 1
+    assert info.rclone_version
+    assert info.go_version
+
+
+def test_native_build_info_requires_embedded_execution(cli: Rclone) -> None:
+    with pytest.raises(EmbeddedOnlyOperationError):
+        cli.native_build_info()
 
 
 def _make_tree(root: Path) -> None:

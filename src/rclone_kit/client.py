@@ -36,6 +36,7 @@ from rclone_kit.fs.filesystem import FSPath, RemoteFS
 from rclone_kit.http_server import HttpServer
 from rclone_kit.job import JobHandle, _JobMonitor
 from rclone_kit.mount import Mount
+from rclone_kit.native.build_info import NativeBuildInfo
 from rclone_kit.native.library import resolve_library_path
 from rclone_kit.native.runtime import RcloneRuntime
 from rclone_kit.operations.config_ops import (
@@ -206,7 +207,21 @@ class Rclone:
 
     @staticmethod
     def upgrade_rclone() -> Path:
-        """Download and install the verified rclone executable."""
+        """Download and install the verified rclone executable.
+
+        Deprecated (Wave I design, C02): CLI-only, and only relevant for
+        `execution="cli"` deployments. `execution="embedded"` links the
+        native library the package already ships and needs no separate
+        download/install step - query `Rclone.native_build_info()` for the
+        equivalent "which rclone build am I running" information instead.
+        """
+        warnings.warn(
+            "Rclone.upgrade_rclone() is deprecated and CLI-only; execution='embedded' "
+            "links the packaged native library directly and needs no separate download - "
+            "use Rclone(..., execution='embedded').native_build_info() instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         return upgrade_rclone()
 
     @staticmethod
@@ -349,6 +364,23 @@ class Rclone:
     def __exit__(self, *_exc_info: object) -> None:
         self.close()
 
+    def native_build_info(self) -> NativeBuildInfo:
+        """Report which native rclone build this embedded client links:
+        ABI version, rclone version/commit, Go version, build tags, and
+        target platform (Wave I design, C02).
+
+        Embedded-only (raises `EmbeddedOnlyOperationError` under
+        `execution="cli"`): this is the replacement for
+        `upgrade_rclone()`'s old "which rclone am I running" concern - the
+        native library is linked at build/package time, not
+        downloaded/verified per call, so there is no CLI-mode equivalent
+        to fall back to.
+        """
+        if self._rc_client is None:
+            raise EmbeddedOnlyOperationError("native_build_info")
+        assert self._embedded_runtime is not None
+        return self._embedded_runtime.build_info()
+
     def _run(
         self, cmd: list[str], check: bool = False, capture: bool | Path | None = None
     ) -> subprocess.CompletedProcess[str]:
@@ -366,7 +398,18 @@ class Rclone:
         return Path("cache")
 
     def webgui(self, other_args: list[str] | None = None) -> Process:
-        """Launch the Rclone web GUI."""
+        """Launch the Rclone web GUI.
+
+        Deprecated (Wave I design, C06): web GUI management is not a
+        storage-library responsibility, and this method is CLI-only with
+        no embedded equivalent planned - it will not be ported.
+        """
+        warnings.warn(
+            "Rclone.webgui() is deprecated and CLI-only; web GUI management does not "
+            "belong in this library and will not be ported to execution='embedded'.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         cmd = ["rcd", "--rc-web-gui"]
         if other_args:
             cmd += other_args
@@ -385,7 +428,20 @@ class Rclone:
         password: str | None = None,
         other_args: list[str] | None = None,
     ) -> Process:
-        """Launch the Rclone server so it can receive commands"""
+        """Launch the Rclone server so it can receive commands.
+
+        Deprecated (Wave I design, C07): an `execution="embedded"` client
+        already provides direct RC access in-process, with no external
+        `rclone rcd` needed at all - this method is CLI-only and will not
+        be ported.
+        """
+        warnings.warn(
+            "Rclone.launch_server() is deprecated and CLI-only; execution='embedded' "
+            "already provides direct in-process RC access with no external 'rclone rcd' "
+            "needed, and this method will not be ported.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         cmd = ["rcd"]
         if addr is not None:
             cmd += ["--rc-addr", addr]
@@ -407,6 +463,24 @@ class Rclone:
         capture: bool | None = None,
         other_args: list[str] | None = None,
     ) -> CompletedProcess:
+        """Run `rclone rc` against an external `--rc-addr`.
+
+        Deprecated (Wave I design, C08): this method's meaning (drive a
+        *separate*, externally-addressed rclone process over its RC HTTP
+        API) is unrelated to this client's own embedded/CLI execution and
+        does not belong on `Rclone` - a future standalone HTTP RC client
+        for exactly this use case is planned, without reusing the C ABI
+        runtime this class wraps. This method's behavior is not changing;
+        only its future location is.
+        """
+        warnings.warn(
+            "Rclone.remote_control() is deprecated; driving a separate, externally-"
+            "addressed rclone process over RC HTTP is unrelated to this client's own "
+            "execution mode and does not belong on Rclone - a standalone RC HTTP client "
+            "is planned to replace it.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         cmd = ["rc"]
         if addr:
             cmd += ["--rc-addr", addr]
