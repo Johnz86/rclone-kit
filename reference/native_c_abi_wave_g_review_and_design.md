@@ -91,6 +91,11 @@ copy/serve rows migrating first"); Wave G completed the list/read/write/copy sid
 Wave H's job, not this one's. `tests/parity/coverage.toml`'s T15 row stays `planned`, with its notes
 updated to name the specific blocking call site rather than left as a generic "depends on" pointer.
 
+**Update (post-Wave H):** this specific blocker is resolved - `serve_http()` is now embedded-capable
+(Wave H). T15's row was re-checked, not left stale; see `tests/parity/coverage.toml`'s current T15
+notes for what's actually left (a live-S3-credential gap in the merge step, unrelated to CLI-vs-
+embedded execution and shared by every other S3-multipart test in this repo).
+
 ## 5. Test coverage plan
 
 `RemoteFS` is backend-agnostic (only depends on the `RemoteFSAccess` protocol `Rclone` satisfies

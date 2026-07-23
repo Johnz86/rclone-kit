@@ -767,6 +767,17 @@ Remove executable staging, runtime download, resolver, hashes, and wheel assets.
 matching executable in CI and publishing it as a GitHub diagnostic/upstream artifact, but do not
 install it with the Python package.
 
+Wave J is blocked and was not started - see
+[`native_c_abi_wave_j_review_and_design.md`](native_c_abi_wave_j_review_and_design.md). Every one of
+D02/D06/D07/D16-D18's own removal gates requires CLI compatibility mode to already be removed from
+the supported release, which requires Wave I's exit gate (embedded made the default), which requires
+Wave H's R01/R02 (`mount`/`mount_s3`) to be ported, which requires FUSE/WinFsp production build
+toolchain work that does not exist yet. Removing the executable resolver/wheel assets now would break
+every `execution="cli"` deployment - still this library's default - for no compensating benefit,
+since embedded execution cannot yet reach parity. This is a documented, verified blocker, not an
+oversight: nothing further can responsibly be designed or built for this wave until that precondition
+chain is satisfied.
+
 ## Per-row implementation checklist
 
 Each ledger row moves through these statuses in its pull request:

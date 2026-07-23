@@ -513,7 +513,7 @@ status = "planned"
 parity_test = ""
 windows = false
 linux = false
-notes = "Blocked on Wave H, not Wave G: upload_parts_resumable() (s3/multipart/upload_parts_resumable.py) calls self.serve_http(src_dir) as a load-bearing part of the resumable-upload flow itself (MultipartAccess's own protocol declares serve_http for this). serve_http() is not embedded-capable until Wave H (R01-R05/D12-D13) ports serve; correctly raises UnsupportedEmbeddedOperationError under execution='embedded' today. list/read/write/copy (this method's other dependencies) are already migrated (Wave G)."
+notes = "Wave G's blocker (upload_parts_resumable()'s self.serve_http(src_dir) dependency) is now resolved by Wave H's serve_http() port - re-checked after Wave H landed, not left stale. Every rclone-kit-side dependency (access.copy_to, self.size_file, self.serve_http) is now embedded-capable. The one remaining gap is unrelated to CLI-vs-embedded execution: upload_parts_server_side_merge.py's merge step uses a real boto3 s3_client (upload_part_copy/complete_multipart_upload) regardless of execution mode, so exercising it at all - under either backend - needs live S3 credentials this environment does not have, the same pre-existing constraint every other S3-multipart test in this repo already has. Status stays planned pending that live verification, not because of any known embedded-specific gap."
 
 [[row]]
 id = "F01"
