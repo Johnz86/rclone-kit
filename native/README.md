@@ -67,3 +67,18 @@ working `.dll`, loadable and callable repeatedly from Python `ctypes`
 without leaks or crashes. Plain (non-cgo) executable builds may continue
 using either compiler; `go build .` for `rclone.exe` was not affected by
 the bigobj issue.
+
+### Known quirk: spurious `vcs.modified=true`/`-dirty` on Windows
+
+On this machine (`core.autocrlf=true`), `go build -buildvcs=true`'s own
+embedded VCS stamp reports `vcs.modified=true` (surfacing as a `-dirty`
+suffix in `RcloneKitBuildInfo`'s `rcloneCommit`) even immediately after a
+clean checkout, verified independently clean by `git status --porcelain`,
+`git diff --name-status HEAD`, and `git ls-files --others --exclude-standard`
+all returning empty. This reproduces across a forced `-a` rebuild and with
+the parent `rclone-kit` checkout itself stashed clean, so it is not caused by
+the parent superproject's state. It is a known Go/git tooling interaction
+with CRLF line-ending conversion, not a real dirty submodule. Treat
+`scripts/native/build.py`'s own `native-manifest.json` `fork.worktree_clean`
+field (computed directly from `git status --porcelain`) as authoritative;
+do not use the DLL's self-reported build info to judge worktree cleanliness.

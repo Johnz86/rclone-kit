@@ -60,7 +60,7 @@ rclone_kit = ["assets/*", "assets/**/*"]
 target-version = "py313"
 line-length = 100
 src = ["src", "tests", "scripts"]
-extend-exclude = ["reference"]
+extend-exclude = ["reference", "native"]
 
 [tool.ruff.lint]
 select = [
@@ -211,7 +211,7 @@ quote-style = "double"
 # reach it. Declaring it here lets `tests/unit/test_verify_distribution.py`
 # do a bare `import verify_distribution`, mirroring the `pythonpath`
 # entry pytest itself uses for the same import at test-run time.
-extraPaths = ["scripts"]
+extraPaths = ["scripts", "scripts/native"]
 strict = [
     "src/rclone_kit/command_flags.py",
     "src/rclone_kit/settings.py",
@@ -222,7 +222,7 @@ strict = [
 addopts = "-ra --strict-markers"
 testpaths = ["tests"]
 # "." lets tests/unit/test_build_backend.py do a bare `import _build_backend`.
-pythonpath = ["tests", "scripts", "."]
+pythonpath = ["tests", "scripts", "scripts/native", "."]
 markers = [
     "cloud: requires external cloud credentials",
     "mount: requires operating-system mount support",
