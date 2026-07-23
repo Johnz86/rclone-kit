@@ -22,10 +22,12 @@ from rclone_kit.convert import convert_to_str
 from rclone_kit.exceptions import UnsupportedEmbeddedOperationError
 from rclone_kit.rc.client import RcCallable
 from rclone_kit.rc.errors import RcCallError
+from rclone_kit.rc.fs_spec import encode_fs_spec
 from rclone_kit.rc.paths import RcPath
 from rclone_kit.util import get_check
 
 if TYPE_CHECKING:
+    from rclone_kit.config import Config
     from rclone_kit.dir import Dir
     from rclone_kit.file import File
 
@@ -42,6 +44,7 @@ def _synthetic_completed_process(
 
 def copy_file_to_embedded(
     rc_client: RcCallable,
+    config: Config,
     src: File | str,
     dst: File | str,
     check: bool | None = None,
@@ -51,7 +54,11 @@ def copy_file_to_embedded(
 
     Both sides split at their final path component: `operations/copyfile`
     needs `srcFs`/`dstFs` to be navigable directory roots, never the bare
-    file paths themselves.
+    file paths themselves. Each side's resulting `fs` value is then passed
+    through `encode_fs_spec`, so a configured S3/B2 remote gets rclone's
+    RC config-object form (`_name`/`_root`/`no_check_bucket`) instead of a
+    plain string - matching the CLI backend's `--s3-no-check-bucket`,
+    which has no `_config` equivalent. Every other target is unaffected.
 
     Raises `RcCallError` when `check` resolves `True` (the default) and the
     RC call fails; otherwise returns a `CompletedProcess` whose `.ok`
@@ -68,9 +75,9 @@ def copy_file_to_embedded(
     try:
         rc_client.call(
             "operations/copyfile",
-            srcFs=src_target.fs,
+            srcFs=encode_fs_spec(config, src_target.fs),
             srcRemote=src_target.remote,
-            dstFs=dst_target.fs,
+            dstFs=encode_fs_spec(config, dst_target.fs),
             dstRemote=dst_target.remote,
         )
     except RcCallError as error:

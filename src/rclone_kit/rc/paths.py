@@ -47,9 +47,20 @@ class RcPath:
         """Parse `path` into its remote root (or local path) and the
         remainder, treating a single-letter-plus-colon prefix as a Windows
         drive rather than a remote name.
+
+        An inline remote (`:backend,param=value:path`) is split at its
+        *second* colon, not its first - the first colon only opens the
+        connection-string prefix, so naively splitting at the first colon
+        would put nothing but a bare `":"` in `fs` and swallow the real
+        backend/parameter prefix into `remote`.
         """
         if _is_windows_drive_prefix(path):
             return cls(fs=path, remote="")
+        if path.startswith(":"):
+            second_colon = path.find(":", 1)
+            if second_colon == -1:
+                return cls(fs=path, remote="")
+            return cls(fs=path[: second_colon + 1], remote=path[second_colon + 1 :].strip("/"))
         remote_name, colon, rest = path.partition(":")
         if not colon:
             return cls(fs=path, remote="")
@@ -66,9 +77,17 @@ class RcPath:
         path is not a valid `fs` value, since rclone's local backend treats
         `fs` as a directory to open, not a file to stat directly.
 
-        Raises `ValueError` if there is no path component left to split off:
-        a bare remote root (`"remote:"`) or a bare local root with no
-        separator (`"C:"`, `"/"`).
+        A local path with no directory separator at all (a bare relative
+        basename like `"file.txt"`) splits to `fs="."`, `remote="file.txt"`
+        - the CLI accepts this and resolves its parent as the current
+        directory, so rejecting it here would make this helper stricter
+        than the behavior it replaces. A trailing separator is stripped
+        before splitting, so a bare directory reference (`"foo/"`) still
+        yields a name rather than an empty one.
+
+        Raises `ValueError` if there is no path component left to split off
+        at all: a bare remote root (`"remote:"`) or a bare local root with
+        no path component (`"C:"`, `"/"`).
         """
         if self.remote:
             parent, sep, name = self.remote.rpartition("/")
@@ -77,11 +96,16 @@ class RcPath:
             return RcPath(fs=f"{self.fs}{parent}", remote=name)
         if self.fs.endswith(":"):
             raise ValueError(f"{self!r} has no path component to split into parent and name")
-        split_index = max(self.fs.rfind("\\"), self.fs.rfind("/"))
-        name = self.fs[split_index + 1 :]
-        if split_index == -1 or not name:
+        trimmed = self.fs.rstrip("\\/")
+        if not trimmed:
             raise ValueError(f"{self!r} has no path component to split into parent and name")
-        return RcPath(fs=self.fs[: split_index + 1], remote=name)
+        split_index = max(trimmed.rfind("\\"), trimmed.rfind("/"))
+        if split_index == -1:
+            return RcPath(fs=".", remote=trimmed)
+        name = trimmed[split_index + 1 :]
+        if not name:
+            raise ValueError(f"{self!r} has no path component to split into parent and name")
+        return RcPath(fs=trimmed[: split_index + 1], remote=name)
 
     def __str__(self) -> str:
         return f"{self.fs}{self.remote}"

@@ -9,6 +9,7 @@ semantics without a built native library. Native-DLL parity is covered by
 
 import pytest
 
+from rclone_kit.config import Config
 from rclone_kit.exceptions import UnsupportedEmbeddedOperationError
 from rclone_kit.operations.transfer_ops_embedded import (
     cleanup_embedded,
@@ -16,6 +17,18 @@ from rclone_kit.operations.transfer_ops_embedded import (
     purge_dir_embedded,
 )
 from rclone_kit.rc.errors import RcCallError
+
+_S3_CONFIG_TEXT = """
+[do-remote]
+type = s3
+provider = DigitalOcean
+access_key_id = AKIAEXAMPLE
+secret_access_key = super-secret
+"""
+
+
+def _empty_config() -> Config:
+    return Config("")
 
 
 class FakeRcClient:
@@ -38,7 +51,7 @@ class FakeRcClient:
 def test_copy_file_to_embedded_splits_parent_and_name_on_both_sides() -> None:
     client = FakeRcClient()
 
-    copy_file_to_embedded(client, "remote:path/to/a.txt", "remote:other/b.txt")
+    copy_file_to_embedded(client, _empty_config(), "remote:path/to/a.txt", "remote:other/b.txt")
 
     assert client.calls == [
         (
@@ -53,10 +66,34 @@ def test_copy_file_to_embedded_splits_parent_and_name_on_both_sides() -> None:
     ]
 
 
+def test_copy_file_to_embedded_encodes_an_s3_source_with_no_check_bucket() -> None:
+    client = FakeRcClient()
+
+    copy_file_to_embedded(
+        client, Config(_S3_CONFIG_TEXT), "do-remote:bucket/a.txt", "remote:other/b.txt"
+    )
+
+    assert client.calls == [
+        (
+            "operations/copyfile",
+            {
+                "srcFs": {
+                    "_name": "do-remote",
+                    "_root": "bucket",
+                    "no_check_bucket": "true",
+                },
+                "srcRemote": "a.txt",
+                "dstFs": "remote:other",
+                "dstRemote": "b.txt",
+            },
+        )
+    ]
+
+
 def test_copy_file_to_embedded_returns_ok_completed_process_on_success() -> None:
     client = FakeRcClient()
 
-    result = copy_file_to_embedded(client, "remote:a.txt", "remote:b.txt")
+    result = copy_file_to_embedded(client, _empty_config(), "remote:a.txt", "remote:b.txt")
 
     assert result.ok is True
     assert result.returncode == 0
@@ -67,14 +104,16 @@ def test_copy_file_to_embedded_raises_by_default_on_failure() -> None:
     client.errors["operations/copyfile"] = RcCallError("operations/copyfile", 500, {})
 
     with pytest.raises(RcCallError):
-        copy_file_to_embedded(client, "remote:a.txt", "remote:b.txt")
+        copy_file_to_embedded(client, _empty_config(), "remote:a.txt", "remote:b.txt")
 
 
 def test_copy_file_to_embedded_wraps_failure_when_check_is_false() -> None:
     client = FakeRcClient()
     client.errors["operations/copyfile"] = RcCallError("operations/copyfile", 500, {})
 
-    result = copy_file_to_embedded(client, "remote:a.txt", "remote:b.txt", check=False)
+    result = copy_file_to_embedded(
+        client, _empty_config(), "remote:a.txt", "remote:b.txt", check=False
+    )
 
     assert result.ok is False
     assert result.returncode != 0
@@ -84,7 +123,9 @@ def test_copy_file_to_embedded_rejects_other_args() -> None:
     client = FakeRcClient()
 
     with pytest.raises(UnsupportedEmbeddedOperationError):
-        copy_file_to_embedded(client, "remote:a.txt", "remote:b.txt", other_args=["--foo"])
+        copy_file_to_embedded(
+            client, _empty_config(), "remote:a.txt", "remote:b.txt", other_args=["--foo"]
+        )
 
     assert client.calls == []
 

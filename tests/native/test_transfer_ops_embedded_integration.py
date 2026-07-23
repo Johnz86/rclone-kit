@@ -34,6 +34,21 @@ def test_copy_to_matches_cli_for_a_real_file(tmp_path: Path, embedded: Rclone, c
     assert embedded_dst.read_bytes() == cli_dst.read_bytes() == b"hello world"
 
 
+def test_copy_to_works_with_bare_relative_basenames(
+    tmp_path: Path, embedded: Rclone, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Regression test for design-review finding F8: RcPath.as_parent_and_name()
+    # used to reject a bare relative filename with no directory separator
+    # ("src.txt") instead of resolving its parent as the current directory,
+    # which is what the CLI does.
+    monkeypatch.chdir(tmp_path)
+    Path("src.txt").write_bytes(b"relative basename works")
+
+    embedded.copy_to("src.txt", "dst.txt")
+
+    assert Path("dst.txt").read_bytes() == b"relative basename works"
+
+
 def test_copy_to_raises_by_default_on_missing_source(
     tmp_path: Path, embedded: Rclone
 ) -> None:

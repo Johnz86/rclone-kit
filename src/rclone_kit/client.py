@@ -612,7 +612,7 @@ class Rclone:
         """
         if self._rc_client is not None:
             return copy_file_to_embedded(
-                self._rc_client, src, dst, check=check, other_args=other_args
+                self._rc_client, self.config, src, dst, check=check, other_args=other_args
             )
         return copy_file_to(
             self._backend,
