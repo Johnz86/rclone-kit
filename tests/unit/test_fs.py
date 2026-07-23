@@ -10,8 +10,14 @@ from tempfile import TemporaryDirectory
 
 import pytest
 
+from rclone_kit.completed_process import CompletedProcess
+from rclone_kit.dir_listing import DirListing
 from rclone_kit.exceptions import FilesystemError
+from rclone_kit.file import File
 from rclone_kit.fs.filesystem import FSPath, RealFS, RemoteFS
+from rclone_kit.http_server import HttpServer
+from rclone_kit.remote import Remote
+from rclone_kit.rpath import RPath
 
 HERE = Path(__file__).parent
 DB_PATH = HERE / "test.db"
@@ -170,6 +176,164 @@ def test_real_fs_path_truediv_still_uses_native_path_semantics() -> None:
         child = parent / "sub" / "file.txt"
 
         assert child.path == (Path(temp_dir) / "sub" / "file.txt").as_posix()
+
+
+class FakeRemoteFSAccess:
+    """A fake `RemoteFSAccess` (CLI-to-C-ABI migration Wave G design):
+    every method the protocol declares, none of which touch a real
+    process or network call."""
+
+    def __init__(self) -> None:
+        self.serve_http_calls: list[str] = []
+        self.exists_result = False
+        self.stat_result: File | None = None
+        self.ls_result: DirListing | None = None
+
+    def serve_http(
+        self, src: str, addr: str | None = None, other_args: list[str] | None = None
+    ) -> HttpServer:
+        del addr, other_args
+        self.serve_http_calls.append(src)
+        server = object.__new__(HttpServer)
+        server.process = None
+        return server
+
+    def is_s3(self, dst: str) -> bool:
+        del dst
+        return False
+
+    def copy_file_s3(self, src: Path, dst: str, verbose: bool | None = None) -> None:
+        raise NotImplementedError
+
+    def copy_to(self, src: str, dst: str) -> CompletedProcess:
+        raise NotImplementedError
+
+    def read_bytes(self, src: str) -> bytes:
+        raise NotImplementedError
+
+    def write_bytes(self, data: bytes, dst: str) -> None:
+        raise NotImplementedError
+
+    def delete_files(self, files: str) -> CompletedProcess:
+        raise NotImplementedError
+
+    def exists(self, src: object) -> bool:
+        del src
+        return self.exists_result
+
+    def stat(self, src: str) -> File:
+        del src
+        if self.stat_result is None:
+            raise FileNotFoundError("not found")
+        return self.stat_result
+
+    def ls(self, src: str, max_depth: int | None = None) -> DirListing:
+        del src, max_depth
+        assert self.ls_result is not None
+        return self.ls_result
+
+
+def _rpath_item(name: str, *, is_dir: bool) -> RPath:
+    access = FakeRemoteFSAccess()
+    remote = Remote(name="remote", rclone=access)  # type: ignore[arg-type]
+    rpath = RPath(
+        remote=remote,
+        path=name,
+        name=name,
+        size=0,
+        mime_type="text/plain",
+        mod_time="2024-01-01T00:00:00Z",
+        is_dir=is_dir,
+    )
+    rpath.set_rclone(access)  # type: ignore[arg-type]
+    return rpath
+
+
+def _file_item(name: str, *, is_dir: bool) -> File:
+    # Matches Rclone.stat()'s own real contract: it always wraps in a
+    # `File`, never a `Dir`, even for a directory target - callers check
+    # `.path.is_dir`, not the wrapper's own type.
+    return File(_rpath_item(name, is_dir=is_dir))
+
+
+def test_remote_fs_construction_never_calls_serve_http() -> None:
+    access = FakeRemoteFSAccess()
+
+    fs = RemoteFS(access, "remote:base")
+
+    assert fs.server is None
+    assert access.serve_http_calls == []
+
+
+def test_remote_fs_serve_starts_the_server_lazily_and_caches_it() -> None:
+    access = FakeRemoteFSAccess()
+    fs = RemoteFS(access, "remote:base")
+
+    server1 = fs.serve()
+    server2 = fs.serve()
+
+    assert access.serve_http_calls == ["remote:base"]
+    assert server1 is server2
+
+
+def test_remote_fs_exists_delegates_to_access_exists() -> None:
+    access = FakeRemoteFSAccess()
+    access.exists_result = True
+    fs = RemoteFS(access, "remote:base")
+
+    assert fs.exists("remote:base/a.txt") is True
+
+
+def test_remote_fs_is_dir_and_is_file_use_stat() -> None:
+    access = FakeRemoteFSAccess()
+    access.stat_result = _file_item("sub", is_dir=True)
+    fs = RemoteFS(access, "remote:base")
+
+    assert fs.is_dir("remote:base/sub") is True
+    assert fs.is_file("remote:base/sub") is False
+
+
+def test_remote_fs_is_dir_and_is_file_are_false_when_stat_raises() -> None:
+    access = FakeRemoteFSAccess()
+    fs = RemoteFS(access, "remote:base")
+
+    assert fs.is_dir("remote:base/missing") is False
+    assert fs.is_file("remote:base/missing") is False
+
+
+def test_remote_fs_ls_splits_files_and_dirs_with_trailing_slash_marker() -> None:
+    access = FakeRemoteFSAccess()
+    access.ls_result = DirListing(
+        [_rpath_item("a.txt", is_dir=False), _rpath_item("sub", is_dir=True)]
+    )
+    fs = RemoteFS(access, "remote:base")
+
+    files, dirs = fs.ls("remote:base")
+
+    assert files == ["a.txt"]
+    assert dirs == ["sub/"]
+
+
+def test_remote_fs_ls_raises_file_not_found_when_access_ls_fails() -> None:
+    class _FailingAccess(FakeRemoteFSAccess):
+        def ls(self, src: str, max_depth: int | None = None) -> DirListing:
+            del src, max_depth
+            raise RuntimeError("boom")
+
+    fs = RemoteFS(_FailingAccess(), "remote:base")
+
+    with pytest.raises(FileNotFoundError):
+        fs.ls("remote:base")
+
+
+def test_remote_fs_dispose_is_a_no_op_without_a_started_server() -> None:
+    access = FakeRemoteFSAccess()
+    fs = RemoteFS(access, "remote:base")
+
+    fs.dispose()
+    fs.dispose()
+
+    assert fs.server is None
 
 
 if __name__ == "__main__":

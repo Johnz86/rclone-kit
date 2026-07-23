@@ -659,6 +659,33 @@ Ledger: F01–F05, T15, D14–D15.
 Rewrite `RemoteFS` to use RC operations directly. Stop launching HTTP serve at construction. Adapt
 multipart/resumable consumers to direct list/stat/read or an explicitly requested `ServeHandle`.
 
+Wave G (F01–F05) is now done, following the normative design in
+[`native_c_abi_wave_g_review_and_design.md`](native_c_abi_wave_g_review_and_design.md). D14/D15 are
+not action items here, for the same reason as D10/D11 in Wave F (their gate is "F01–F05 pass"/"F06
+passes" - they record when it becomes safe to remove `RemoteFS`'s old HTTP-serve-based
+implementation and `File.read_text`'s private generic execution, which belongs to Wave I).
+
+- **F04 turned out to already be functionally complete**: `RemoteFS.read_bytes`/`write_binary`/
+  `copy`/`remove` already called `rclone.read_bytes()`/`write_bytes()`/`copy_to()`/`delete_files()`
+  directly - embedded-capable since Waves D/E/F - and never depended on the HTTP server at all.
+  Corrected the ledger's original `composite_rc` decision to `transitive`.
+- **F01/F03**: `RemoteFS.__init__` no longer calls `serve_http()` (an explicit, lazy `serve()`
+  method exists for a future consumer that genuinely needs a real `HttpServer`); `exists`/`is_dir`/
+  `is_file`/`ls` now go straight through `rclone.exists()`/`stat()`/`ls()` (`operations/stat`/
+  `operations/list`) instead of HTTP HEAD/autoindex parsing, removing the dependency on rclone's
+  HTML shape and `httpx` for ordinary filesystem access. This may incidentally fix a known,
+  currently-skipped cloud-test bug (`tests/cloud/test_fs_remote.py`'s
+  `test_create_and_remove_remote_fs`, skipped for HTTP-autoindex staleness immediately after a
+  delete) - plausible, since the rewrite bypasses that autoindex cache entirely, but not yet
+  confirmed against a live bucket from this environment.
+- **T15 (`copy_file_s3_resumable`) is genuinely blocked on Wave H, not completed here**: read before
+  assuming - `upload_parts_resumable()` (`s3/multipart/upload_parts_resumable.py`) calls
+  `self.serve_http(src_dir)` as a load-bearing part of the resumable-upload flow itself. `serve_http`
+  is not embedded-capable until Wave H ports serve; this correctly raises
+  `UnsupportedEmbeddedOperationError` under `execution="embedded"` today, per the no-silent-fallback
+  invariant. `tests/parity/coverage.toml`'s T15 row stays `planned`, with its notes naming this exact
+  blocking call site.
+
 ### Wave H — serve and mount resources
 
 Ledger: R01–R05, D12–D13.

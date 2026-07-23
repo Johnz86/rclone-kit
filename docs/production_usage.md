@@ -586,8 +586,10 @@ comparisons; disable it if its memory use is unsuitable for the inventory.
 
 ## Filesystem-style remote access
 
-`RemoteFS` and `FSPath` offer a small `pathlib`-like interface backed by a
-scoped local HTTP server:
+`RemoteFS` and `FSPath` offer a small `pathlib`-like interface. Constructing one binds no port and
+starts no server - `exists()`/`is_dir()`/`is_file()`/`ls()` go straight through RC (`operations/stat`/
+`operations/list`), and `read_bytes()`/`write_binary()`/`copy()`/`remove()` go through the same
+`copy_to()`/`read_bytes()`/`write_bytes()`/`delete_files()` methods described above:
 
 ```python
 with rclone.filesystem("archive:jobs") as remote_fs:
@@ -606,10 +608,11 @@ with rclone.filesystem("archive:jobs") as remote_fs:
             print(current, dirnames, filenames)
 ```
 
-Scope `RemoteFS` with `with`, especially in web services and workers. It owns
-an rclone HTTP process. `FSPath.write_bytes()` buffers its input, and remote
-`mkdir()` is not supported because object stores usually represent
-directories as prefixes.
+Scope `RemoteFS` with `with` regardless - it may still hold other resources (and its `dispose()` must
+run for those) even though the common path starts no server. `FSPath.write_bytes()` buffers its
+input, and remote `mkdir()` is not supported because object stores usually represent directories as
+prefixes. Call `remote_fs.serve(addr=...)` explicitly if some other code genuinely needs a real
+`HttpServer` (e.g. multipart/resumable transfers) - it is never started implicitly.
 
 Local paths can use the same interface without launching rclone:
 

@@ -513,62 +513,63 @@ status = "planned"
 parity_test = ""
 windows = false
 linux = false
-notes = "Depends on list/read/write/copy/serve rows migrating first."
+notes = "Blocked on Wave H, not Wave G: upload_parts_resumable() (s3/multipart/upload_parts_resumable.py) calls self.serve_http(src_dir) as a load-bearing part of the resumable-upload flow itself (MultipartAccess's own protocol declares serve_http for this). serve_http() is not embedded-capable until Wave H (R01-R05/D12-D13) ports serve; correctly raises UnsupportedEmbeddedOperationError under execution='embedded' today. list/read/write/copy (this method's other dependencies) are already migrated (Wave G)."
 
 [[row]]
 id = "F01"
 method = "filesystem"
 decision = "composite_rc"
 owner_module = "rclone_kit.fs.filesystem"
-status = "planned"
-parity_test = ""
-windows = false
+status = "cli_parity_tested"
+parity_test = "tests/native/test_remote_fs_embedded_integration.py::test_filesystem_constructs_without_starting_a_server"
+windows = true
 linux = false
-notes = "Wave G; must bind no port and start no server at construction."
+notes = "Wave G. RemoteFS.__init__ no longer calls serve_http(); an HTTP server is only created on explicit, on-demand request via the new RemoteFS.serve() method."
 
 [[row]]
 id = "F02"
 method = "cwd"
 decision = "transitive"
 owner_module = "rclone_kit.client"
-status = "planned"
-parity_test = ""
-windows = false
+status = "cli_parity_tested"
+parity_test = "tests/native/test_remote_fs_embedded_integration.py::test_read_write_copy_remove_still_work_through_fspath"
+windows = true
 linux = false
-notes = "Depends on F01."
+notes = "Transitive from F01; confirmed with a dedicated test rather than left inferred."
 
 [[row]]
 id = "F03"
 method = "RemoteFS.exists/is_file/is_dir/ls"
 decision = "direct_rc"
 owner_module = "rclone_kit.fs.filesystem"
-status = "planned"
-parity_test = ""
-windows = false
+status = "cli_parity_tested"
+parity_test = "tests/native/test_remote_fs_embedded_integration.py::test_exists_matches_cli_for_present_and_missing_paths"
+windows = true
 linux = false
-notes = "Wave G."
+failure_contract_complete = true
+notes = "Wave G. exists/is_dir/is_file/ls now go straight through Rclone.exists()/stat()/ls() (operations/stat, operations/list) instead of HTTP HEAD/autoindex parsing - removing the dependency on rclone's HTML shape and httpx for ordinary filesystem access. May incidentally fix a known, currently-skipped cloud-test bug (tests/cloud/test_fs_remote.py's test_create_and_remove_remote_fs, skipped for HTTP-autoindex staleness after delete) - plausible but not yet confirmed against a live bucket."
 
 [[row]]
 id = "F04"
 method = "RemoteFS.read_bytes/write_binary/copy/remove"
-decision = "composite_rc"
+decision = "transitive"
 owner_module = "rclone_kit.fs.filesystem"
-status = "planned"
-parity_test = ""
-windows = false
+status = "cli_parity_tested"
+parity_test = "tests/native/test_remote_fs_embedded_integration.py::test_read_write_copy_remove_still_work_through_fspath"
+windows = true
 linux = false
-notes = "Wave G; depends on T02/T08/T09/T11/T13."
+notes = "Discovered already functionally complete: these four already called rclone.read_bytes()/write_bytes()/copy_to()/delete_files() directly, embedded-capable since Waves D/E/F - they never depended on the HTTP server F01/F03 removed. Corrected the ledger's original decision from composite_rc to transitive."
 
 [[row]]
 id = "F05"
 method = "RemoteFS.dispose"
 decision = "runtime"
 owner_module = "rclone_kit.fs.filesystem"
-status = "planned"
-parity_test = ""
-windows = false
+status = "cli_parity_tested"
+parity_test = "tests/native/test_remote_fs_embedded_integration.py::test_dispose_is_a_no_op_when_no_server_was_ever_started"
+windows = true
 linux = false
-notes = "Wave G."
+notes = "Wave G. Now a true no-op in the normal facade (no server exists unless serve() was explicitly called), matching this row's own ledger note."
 
 [[row]]
 id = "F06"
