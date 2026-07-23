@@ -9,7 +9,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event, Semaphore
-from typing import Self
+from typing import Protocol, Self
 from urllib.parse import quote
 
 import httpx
@@ -17,10 +17,19 @@ import httpx
 from rclone_kit.chunk_store import get_chunk_tmpdir
 from rclone_kit.exceptions import HttpFetchError
 from rclone_kit.file_part import FilePart
-from rclone_kit.process import Process
 from rclone_kit.s3.multipart.file_info import S3FileInfo
 from rclone_kit.types import Range, SizeSuffix
 from rclone_kit.util import random_str
+
+
+class _DisposableServerHandle(Protocol):
+    """Whatever `HttpServer` sits on top of - a CLI `Process` or an
+    embedded `ServeHandle` - `HttpServer` itself only ever needs to know
+    whether it's still alive and how to tear it down, never anything
+    execution-mode-specific."""
+
+    def dispose(self) -> None: ...
+
 
 _TIMEOUT = 10 * 60
 _PUT_WARNING_EMITTED = Event()
@@ -126,10 +135,10 @@ def _concatenate_chunks(chunk_files: list[Path], dst_path: Path) -> None:
 class HttpServer:
     """HTTP server configuration."""
 
-    def __init__(self, url: str, subpath: str, process: Process) -> None:
+    def __init__(self, url: str, subpath: str, process: _DisposableServerHandle) -> None:
         self.url = url
         self.subpath = subpath
-        self.process: Process | None = process
+        self.process: _DisposableServerHandle | None = process
 
     def _get_file_url(self, path: str | Path) -> str:
         escaped_path = quote(str(path).lstrip("/"), safe="/")

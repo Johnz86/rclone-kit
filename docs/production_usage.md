@@ -657,7 +657,10 @@ The `Range` end is exclusive. The server context manager shuts down the
 process even if a download raises. Bind to the automatically selected
 localhost port unless another process must reach the endpoint. If a fixed
 address is required, restrict it with host firewall and deployment network
-policy.
+policy. `serve_http()` works the same way under `execution="embedded"` - the
+`HttpServer` facade it returns is identical either way, since it always talks
+to the running server over real HTTP regardless of which execution mode
+started it.
 
 ## Mounts and WebDAV
 
@@ -697,9 +700,13 @@ with rclone.mount_s3(
 
 Mounts are operational infrastructure: provision disk for the VFS cache,
 monitor its utilization, and run mount-specific smoke tests on the target OS.
+`mount()`/`mount_s3()` are CLI-only for now - embedded execution has no mount
+support yet (it needs a production build with FUSE/WinFsp wired in, which does
+not exist yet; calling either under `execution="embedded"` raises
+`UnsupportedEmbeddedOperationError`).
 
-`serve_webdav()` returns a long-lived `Process`. Bind it to a private
-interface, require credentials, and scope it:
+`serve_webdav()` returns a long-lived handle. Bind it to a private interface,
+require credentials, and scope it:
 
 ```python
 with rclone.serve_webdav(
@@ -707,10 +714,15 @@ with rclone.serve_webdav(
     user="service-user",
     password=webdav_password,
     addr="127.0.0.1:9080",
-) as process:
-    assert process.poll() is None
+) as handle:
     run_consumer()
 ```
+
+The handle is a `Process` under `execution="cli"` or a `ServeHandle` under
+`execution="embedded"` - both support the context manager and `.dispose()`,
+but only `Process` exposes subprocess-specific attributes like `.poll()`;
+write code that only depends on the shared surface if it must run under both
+execution modes.
 
 ## S3-optimized operations
 

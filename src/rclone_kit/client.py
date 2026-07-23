@@ -73,6 +73,10 @@ from rclone_kit.operations.listing_ops_embedded import (
 )
 from rclone_kit.operations.mount_ops import launch_mount, launch_s3_mount
 from rclone_kit.operations.serve_ops import launch_http_server, launch_webdav_server
+from rclone_kit.operations.serve_ops_embedded import (
+    fetch_serve_http_embedded,
+    fetch_serve_webdav_embedded,
+)
 from rclone_kit.operations.transfer_ops import (
     copy_between_remotes,
     copy_byte_range,
@@ -99,10 +103,12 @@ from rclone_kit.rc.client import RcClient
 from rclone_kit.rc.fs_spec import encode_fs_spec
 from rclone_kit.rc.jobs import RcloneRcJobClient
 from rclone_kit.rc.list_stream import RcloneRcListStreamClient
+from rclone_kit.rc.serve import RcloneRcServeClient
 from rclone_kit.remote import Remote
 from rclone_kit.rpath import RPath
 from rclone_kit.s3.types import S3UploadTarget
 from rclone_kit.scan_missing_folders import scan_missing_folders
+from rclone_kit.serve_handle import ServeHandle
 from rclone_kit.types import (
     ListingOption,
     ModTimeStrategy,
@@ -122,6 +128,7 @@ from rclone_kit.util import (
 )
 
 if TYPE_CHECKING:
+    from rclone_kit.rc.serve import RcServeClient
     from rclone_kit.s3.api import S3Client
     from rclone_kit.s3.types import S3Credentials
 
@@ -249,6 +256,8 @@ class Rclone:
         self._owns_embedded_runtime = False
         self._rc_client: RcClient | None = None
         self._job_monitor: _JobMonitor | None = None
+        self._serve_client: RcServeClient | None = None
+        self._serve_handles: set[ServeHandle] = set()
 
         if execution == "embedded":
             if backend is not None or rclone_exe is not None:
@@ -312,12 +321,16 @@ class Rclone:
         responsibility) before finalizing the runtime. Raises
         `OperationShutdownError` and leaves the runtime open, rather than
         reporting a false close, if a job cannot be confirmed settled
-        within the shutdown deadline.
+        within the shutdown deadline. Also stops every `serve/start`
+        instance this client started but never explicitly disposed
+        (Wave H design, R05: "runtime tracks only resources it owns").
 
         Only closes the embedded runtime itself if this client created it;
         an injected `runtime` outlives this client, matching
         `RcloneRuntime`'s own single-owner closing rule.
         """
+        for handle in list(self._serve_handles):
+            handle.dispose()
         if self._job_monitor is not None:
             all_settled = self._job_monitor.shutdown(
                 deadline_seconds=_JOB_SHUTDOWN_DEADLINE_SECONDS
@@ -776,6 +789,20 @@ class Rclone:
             self._job_monitor = _JobMonitor(RcloneRcJobClient(self._rc_client))
         return self._job_monitor
 
+    def _ensure_serve_client(self) -> RcServeClient:
+        if self._serve_client is None:
+            assert self._rc_client is not None
+            self._serve_client = RcloneRcServeClient(self._rc_client)
+        return self._serve_client
+
+    def _track_serve_handle(self, handle: ServeHandle) -> ServeHandle:
+        """Track `handle` so `close()` disposes it if the caller never
+        does - R05's "runtime tracks only resources it owns". Disposal is
+        idempotent, so no bookkeeping is needed for a handle the caller
+        already disposed directly before `close()` runs."""
+        self._serve_handles.add(handle)
+        return handle
+
     def start_copy(
         self,
         src: Dir | Remote | str,
@@ -1212,8 +1239,8 @@ class Rclone:
         addr: str = "localhost:2049",
         allow_other: bool = False,
         other_args: list[str] | None = None,
-    ) -> Process:
-        """Serve a remote or directory via NFS.
+    ) -> Process | ServeHandle:
+        """Serve a remote or directory via WebDAV.
 
         Args:
             src: Remote or directory to serve
@@ -1221,11 +1248,29 @@ class Rclone:
             allow_other: Allow other users to access the share
 
         Returns:
-            Process: The running webdev server process
+            The running WebDAV server: a `Process` under `execution="cli"`,
+            or a `ServeHandle` under `execution="embedded"` (Wave H design,
+            R03) - both expose `.dispose()`/context-manager close, but
+            otherwise have different surfaces, since a `Process` has no
+            embedded equivalent to fall back to.
 
         Raises:
-            ValueError: If the NFS server fails to start
+            ValueError: If the WebDAV server fails to start (CLI backend)
+            UnsupportedEmbeddedOperationError: if `other_args` is nonempty
+                (embedded backend)
         """
+        if self._rc_client is not None:
+            if other_args:
+                raise UnsupportedEmbeddedOperationError("serve_webdav (other_args)")
+            handle = fetch_serve_webdav_embedded(
+                self._ensure_serve_client(),
+                convert_to_str(src),
+                user,
+                password,
+                addr,
+                allow_other=allow_other,
+            )
+            return self._track_serve_handle(handle)
         return launch_webdav_server(
             self._backend,
             src,
@@ -1248,6 +1293,15 @@ class Rclone:
             src: Remote or directory to serve
             addr: Network address and port to serve on (default: localhost:8080)
         """
+        if self._rc_client is not None:
+            if other_args:
+                raise UnsupportedEmbeddedOperationError("serve_http (other_args)")
+            http_server = fetch_serve_http_embedded(
+                self._ensure_serve_client(), src, "minimal", addr=addr
+            )
+            assert isinstance(http_server.process, ServeHandle)
+            self._track_serve_handle(http_server.process)
+            return http_server
         return launch_http_server(
             self._backend,
             src,

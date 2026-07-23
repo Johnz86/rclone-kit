@@ -591,7 +591,7 @@ status = "planned"
 parity_test = ""
 windows = false
 linux = false
-notes = "Wave H; mount/mount, returns MountHandle/compatible Mount."
+notes = "Blocked on a production build toolchain gap, not attempted this wave: mount/mount is wired (cmd/mountlib registered, R05) and correctly errors ('mount option specified is not registered, or is invalid') rather than crashing, since no platform mount implementation (cmd/mount for FUSE, cmd/cmount for WinFsp) is compiled in - scripts/native/build.py --profile only implements 'development' (no-mount build tags) today. Porting this method needs that toolchain to exist first."
 
 [[row]]
 id = "R02"
@@ -602,37 +602,39 @@ status = "planned"
 parity_test = ""
 windows = false
 linux = false
-notes = "Wave H; preset over R01."
+notes = "Depends on R01; blocked for the same reason."
 
 [[row]]
 id = "R03"
 method = "serve_webdav"
 decision = "direct_rc"
-owner_module = "rclone_kit.client"
-status = "planned"
-parity_test = ""
-windows = false
+owner_module = "rclone_kit.operations.serve_ops_embedded"
+status = "cli_parity_tested"
+parity_test = "tests/native/test_serve_ops_embedded_integration.py::test_serve_webdav_starts_and_stops"
+windows = true
 linux = false
-notes = "Wave H; serve/start type=webdav."
+failure_contract_complete = true
+notes = "Wave H. serve/start type=webdav (cmd/serve/webdav, registered in the bridge - verified empirically it needs no FUSE/WinFsp toolchain, unlike mount). Returns a ServeHandle (id/addr/idempotent dispose), matching serve_webdav()'s historical Process return's actual usage (callers only ever kept it alive and disposed it, never touched Process-specific behavior). Also fixed a pre-existing 'via NFS' docstring/error-message bug (this method serves WebDAV, not NFS)."
 
 [[row]]
 id = "R04"
 method = "serve_http"
 decision = "direct_rc"
-owner_module = "rclone_kit.client"
-status = "planned"
-parity_test = ""
-windows = false
+owner_module = "rclone_kit.operations.serve_ops_embedded"
+status = "cli_parity_tested"
+parity_test = "tests/native/test_serve_ops_embedded_integration.py::test_serve_http_matches_cli_for_a_real_file"
+windows = true
 linux = false
-notes = "Wave H; serve/start type=http."
+failure_contract_complete = true
+notes = "Wave H. serve/start type=http (cmd/serve/http, registered in the bridge). HttpServer needed no behavioral changes at all - it only ever used its stored process for an alive-check and .dispose(), never anything Process-specific - only a widened constructor type (_DisposableServerHandle protocol) so it can wrap a ServeHandle instead of a Process. Every httpx-based method (get/put/delete/list/download) works unchanged over an embedded-started server."
 
 [[row]]
 id = "R05"
 method = "server listing/cleanup"
 decision = "direct_rc"
 owner_module = "rclone_kit.client"
-status = "planned"
-parity_test = ""
-windows = false
+status = "cli_parity_tested"
+parity_test = "tests/native/test_serve_ops_embedded_integration.py::test_close_disposes_serve_handles_the_caller_never_disposed"
+windows = true
 linux = false
-notes = "Wave H; serve/list/stop/stopall, mount/listmounts/unmountall."
+notes = "Wave H. Rclone tracks every ServeHandle it starts (self._serve_handles) and disposes each in close() (idempotent, so a handle the caller already disposed directly is a no-op) - mirroring _JobMonitor.shutdown()'s established Wave D pattern. mount/listmounts and mount/unmountall are wired (cmd/mountlib registered) and verified empirically (listmounts returns an empty list, unmountall succeeds trivially) but have nothing to reconcile without R01/R02's actual mount support, so no public API was added for them yet."

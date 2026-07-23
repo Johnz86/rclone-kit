@@ -146,7 +146,7 @@ def test_launch_webdav_server_raises_when_process_fails_to_start(
     rclone = _bare_rclone()
     rclone._launch_process = lambda *_args, **_kwargs: cast(Process, _FakeProcess(1))
 
-    with pytest.raises(ValueError, match="NFS serve process failed to start"):
+    with pytest.raises(ValueError, match="WebDAV serve process failed to start"):
         launch_webdav_server(
             rclone._backend,
             "remote:bucket",

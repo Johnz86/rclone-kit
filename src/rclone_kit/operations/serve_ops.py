@@ -22,9 +22,9 @@ def launch_webdav_server(
     allow_other: bool = False,
     other_args: list[str] | None = None,
 ) -> Process:
-    """Serve a remote or directory via NFS.
+    """Serve a remote or directory via WebDAV.
 
-    Raises `ValueError` if the NFS server fails to start.
+    Raises `ValueError` if the WebDAV server fails to start.
     """
     src_str = convert_to_str(src)
     cmd_list: list[str] = ["serve", "webdav", "--addr", addr, src_str]
@@ -36,7 +36,7 @@ def launch_webdav_server(
     proc = backend.launch(tuple(cmd_list))
     time.sleep(2)
     if proc.poll() is not None:
-        raise ValueError("NFS serve process failed to start")
+        raise ValueError("WebDAV serve process failed to start")
     return proc
 
 

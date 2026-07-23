@@ -693,6 +693,42 @@ Ledger: R01–R05, D12–D13.
 Implement typed handles and runtime-owned cleanup. Add explicit serve imports in the Go bridge and
 the required Windows cmount/Linux FUSE production build profiles. Run privileged platform tests.
 
+Wave H is partially done, following the normative design in
+[`native_c_abi_wave_h_review_and_design.md`](native_c_abi_wave_h_review_and_design.md): R03/R04/R05
+are complete; R01/R02 (`mount()`/`mount_s3()`) are genuinely blocked on the Windows cmount/Linux FUSE
+production build toolchain this section itself already calls out as needed, not attempted.
+
+- **R03/R04 (`serve_webdav`/`serve_http`)**: verified empirically, before writing any Python code,
+  that `cmd/serve/http`/`cmd/serve/webdav` need no platform driver (unlike mount) - both import
+  `cmd` (the shared root/helper package every leaf command needs), not `cmd/all`, and a real
+  `serve/start` → HTTP GET/webdav → `serve/stop` round trip worked against the freshly built DLL
+  before any Python wiring existed. `serve_http()`/`serve_webdav()` now dispatch to `serve/start
+  type=http`/`type=webdav` via a new `rc/serve.py` boundary module (mirroring `rc/jobs.py`/`rc/
+  list_stream.py`'s own conventions) and a new, deliberately minimal `ServeHandle` (`id`/`addr`/
+  idempotent `dispose()` - matching what `serve_webdav()`'s historical `Process` return was actually
+  used for, confirmed by search: no consumer ever touched `Process`-specific behavior on it).
+  `HttpServer` needed no behavioral changes at all to host an embedded server: it only ever used its
+  stored `process` for an alive-check and `.dispose()`, never anything `Process`-specific, so only
+  its constructor's type was widened (a two-line `_DisposableServerHandle` protocol) to accept a
+  `ServeHandle` in place of a `Process`. A pre-existing "via NFS" docstring/error-message bug on
+  `serve_webdav()` (this method serves WebDAV, not NFS) was fixed while touching this code, per this
+  row's own ledger note.
+- **R05 (server listing/cleanup)**: `Rclone` now tracks every `ServeHandle` it starts and disposes
+  each (idempotently) in `close()`, mirroring `_JobMonitor.shutdown()`'s established Wave D pattern -
+  "the runtime tracks only resources it owns." `cmd/mountlib` (the `mount/*` RC method registry, with
+  no dependency on `cmd`, FUSE, or WinFsp) was also registered and verified empirically:
+  `mount/listmounts` returns an empty list and `mount/unmountall` succeeds trivially with nothing
+  registered to unmount, while `mount/mount` itself correctly fails ("mount option specified is not
+  registered, or is invalid") rather than crashing or silently no-opping - but with no actual mount
+  support yet, there is nothing for a mount-listing API to reconcile, so no public surface was added
+  for it this wave.
+- **R01/R02 (`mount`/`mount_s3`)**: not completed, and not silently skipped either - confirmed via
+  the same empirical `mount/mount` call above that the RC method is already wired and fails honestly.
+  Actually porting these needs a real platform mount implementation (`cmd/mount`/FUSE on Linux,
+  `cmd/cmount`/WinFsp on Windows) compiled into a production build profile that does not exist yet
+  (`scripts/native/build.py --profile` only implements `development`, no-mount, today) - a distinct,
+  substantial toolchain undertaking from this wave's RC-wiring work.
+
 ### Wave I — public compatibility transition
 
 Ledger: C02, C06–C08, D01–D11, D19–D21.

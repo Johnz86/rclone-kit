@@ -27,6 +27,7 @@ from rclone_kit.exceptions import (
 from rclone_kit.native.runtime import RcloneRuntime
 from rclone_kit.process import Process
 from rclone_kit.remote import Remote
+from rclone_kit.serve_handle import ServeHandle
 
 _BUILD_INFO_JSON = json.dumps(
     {
@@ -606,3 +607,88 @@ def test_copy_remote_rejects_args_in_embedded_mode() -> None:
     with pytest.raises(UnsupportedEmbeddedOperationError):
         rclone.copy_remote(Remote("src", rclone), Remote("dst", rclone), args=["--foo"])
     rclone.close()
+
+
+def _set_serve_responses(binding: FakeBinding, *, serve_id: str = "http-1") -> None:
+    binding.rpc_responses_by_method[b"serve/start"] = (
+        200,
+        json.dumps({"id": serve_id, "addr": "127.0.0.1:54321"}).encode("utf-8"),
+    )
+    binding.rpc_responses_by_method[b"serve/stop"] = (200, b"{}")
+
+
+def test_serve_http_dispatches_to_rc_client_when_embedded() -> None:
+    binding = FakeBinding()
+    _set_serve_responses(binding)
+    rclone = Rclone(None, execution="embedded", runtime=RcloneRuntime(binding))
+
+    server = rclone.serve_http("remote:base")
+
+    assert server.url == "http://127.0.0.1:54321"
+    assert binding.rpc_calls[0][0] == b"serve/start"
+    server.shutdown()
+    rclone.close()
+
+
+def test_serve_http_rejects_other_args_in_embedded_mode() -> None:
+    binding = FakeBinding()
+    rclone = Rclone(None, execution="embedded", runtime=RcloneRuntime(binding))
+
+    with pytest.raises(UnsupportedEmbeddedOperationError):
+        rclone.serve_http("remote:base", other_args=["--foo"])
+    rclone.close()
+
+
+def test_serve_webdav_dispatches_to_rc_client_when_embedded() -> None:
+    binding = FakeBinding()
+    _set_serve_responses(binding, serve_id="webdav-1")
+    rclone = Rclone(None, execution="embedded", runtime=RcloneRuntime(binding))
+
+    handle = rclone.serve_webdav("remote:base", "alice", "hunter2", addr="127.0.0.1:0")
+    assert isinstance(handle, ServeHandle)
+
+    assert handle.id == "webdav-1"
+    assert handle.addr == "127.0.0.1:54321"
+    assert binding.rpc_calls[0][0] == b"serve/start"
+    handle.dispose()
+    rclone.close()
+
+
+def test_serve_webdav_rejects_other_args_in_embedded_mode() -> None:
+    binding = FakeBinding()
+    rclone = Rclone(None, execution="embedded", runtime=RcloneRuntime(binding))
+
+    with pytest.raises(UnsupportedEmbeddedOperationError):
+        rclone.serve_webdav("remote:base", "alice", "hunter2", other_args=["--foo"])
+    rclone.close()
+
+
+def test_close_disposes_serve_handles_the_caller_never_disposed() -> None:
+    binding = FakeBinding()
+    _set_serve_responses(binding)
+    rclone = Rclone(None, execution="embedded", runtime=RcloneRuntime(binding))
+
+    handle = rclone.serve_webdav("remote:base", "alice", "hunter2", addr="127.0.0.1:0")
+    assert isinstance(handle, ServeHandle)
+    assert handle.closed is False
+
+    rclone.close()
+
+    assert handle.closed is True
+    assert binding.rpc_calls[-1][0] == b"serve/stop"
+
+
+def test_close_does_not_double_stop_an_already_disposed_serve_handle() -> None:
+    binding = FakeBinding()
+    _set_serve_responses(binding)
+    rclone = Rclone(None, execution="embedded", runtime=RcloneRuntime(binding))
+
+    handle = rclone.serve_webdav("remote:base", "alice", "hunter2", addr="127.0.0.1:0")
+    assert isinstance(handle, ServeHandle)
+    handle.dispose()
+    stop_calls_after_manual_dispose = sum(1 for m, _ in binding.rpc_calls if m == b"serve/stop")
+
+    rclone.close()
+
+    stop_calls_after_close = sum(1 for m, _ in binding.rpc_calls if m == b"serve/stop")
+    assert stop_calls_after_close == stop_calls_after_manual_dispose == 1
