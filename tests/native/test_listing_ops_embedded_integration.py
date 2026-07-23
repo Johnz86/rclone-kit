@@ -17,6 +17,7 @@ import pytest
 from conftest import EXECUTABLE_PATH, NATIVE_EXECUTABLE_AVAILABLE
 from rclone_kit.client import Rclone
 from rclone_kit.native.runtime import RcloneRuntime
+from rclone_kit.types import ListingOption
 
 pytestmark = pytest.mark.skipif(
     not NATIVE_EXECUTABLE_AVAILABLE,
@@ -106,3 +107,76 @@ def test_config_paths_returns_a_config_cache_temp_triple(embedded: Rclone) -> No
 
     assert len(paths) == 3
     assert all(isinstance(p, Path) for p in paths)
+
+
+def _make_tree(root: Path) -> None:
+    (root / "a.txt").write_bytes(b"a")
+    (root / "sub").mkdir()
+    (root / "sub" / "b.txt").write_bytes(b"bb")
+    (root / "sub" / "deeper").mkdir()
+    (root / "sub" / "deeper" / "c.txt").write_bytes(b"ccc")
+
+
+def test_ls_non_recursive_matches_cli(tmp_path: Path, embedded: Rclone, cli: Rclone) -> None:
+    _make_tree(tmp_path)
+    src = str(tmp_path)
+
+    embedded_listing = embedded.ls(src)
+    cli_listing = cli.ls(src)
+    embedded_names = sorted(f.name for f in embedded_listing.files) + sorted(
+        d.name for d in embedded_listing.dirs
+    )
+    cli_names = sorted(f.name for f in cli_listing.files) + sorted(
+        d.name for d in cli_listing.dirs
+    )
+
+    assert embedded_names == cli_names == ["a.txt", "sub"]
+
+
+def test_ls_unlimited_recursion_matches_cli(tmp_path: Path, embedded: Rclone, cli: Rclone) -> None:
+    _make_tree(tmp_path)
+    src = str(tmp_path)
+
+    embedded_paths = sorted(str(f.path) for f in embedded.ls(src, max_depth=-1).files)
+    cli_paths = sorted(str(f.path) for f in cli.ls(src, max_depth=-1).files)
+
+    assert embedded_paths == cli_paths
+    assert len(embedded_paths) == 3
+
+
+def test_ls_bounded_recursion_matches_cli(tmp_path: Path, embedded: Rclone, cli: Rclone) -> None:
+    _make_tree(tmp_path)
+    src = str(tmp_path)
+
+    embedded_listing = embedded.ls(src, max_depth=2)
+    cli_listing = cli.ls(src, max_depth=2)
+
+    embedded_names = sorted(f.name for f in embedded_listing.files) + sorted(
+        d.name for d in embedded_listing.dirs
+    )
+    cli_names = sorted(f.name for f in cli_listing.files) + sorted(
+        d.name for d in cli_listing.dirs
+    )
+    assert embedded_names == cli_names == ["a.txt", "b.txt", "deeper", "sub"]
+
+
+def test_ls_files_only_matches_cli(tmp_path: Path, embedded: Rclone, cli: Rclone) -> None:
+    _make_tree(tmp_path)
+    src = str(tmp_path)
+
+    embedded_listing = embedded.ls(src, max_depth=-1, listing_option=ListingOption.FILES_ONLY)
+    cli_listing = cli.ls(src, max_depth=-1, listing_option=ListingOption.FILES_ONLY)
+
+    assert embedded_listing.dirs == cli_listing.dirs == []
+    assert sorted(f.name for f in embedded_listing.files) == sorted(
+        f.name for f in cli_listing.files
+    )
+
+
+def test_ls_reads_file_sizes_correctly(tmp_path: Path, embedded: Rclone) -> None:
+    _make_tree(tmp_path)
+
+    listing = embedded.ls(str(tmp_path))
+
+    sizes = {f.name: f.size for f in listing.files}
+    assert sizes == {"a.txt": 1}

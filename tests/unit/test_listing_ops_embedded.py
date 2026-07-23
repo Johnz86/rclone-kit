@@ -20,6 +20,7 @@ from rclone_kit.operations.config_ops import fetch_config_paths_embedded
 from rclone_kit.operations.listing_ops_embedded import (
     check_exists_embedded,
     fetch_listremotes_embedded,
+    fetch_ls_embedded,
     fetch_size_file_embedded,
     fetch_stat_embedded,
 )
@@ -245,3 +246,115 @@ def test_fetch_listremotes_embedded_result_type_is_remote() -> None:
     remotes = fetch_listremotes_embedded(client, access=FakeAccess())
 
     assert isinstance(remotes[0], Remote)
+
+
+def test_fetch_ls_embedded_with_no_src_lists_remotes_as_root_dirs() -> None:
+    client = FakeRcClient()
+    client.responses["config/listremotes"] = {"remotes": ["alpha", "beta"]}
+
+    listing = fetch_ls_embedded(client, access=FakeAccess())
+
+    assert isinstance(listing, DirListing)
+    assert [d.remote.name for d in listing.dirs] == ["alpha", "beta"]
+    assert all(d.path.path == "" for d in listing.dirs)
+    assert client.calls == [("config/listremotes", {})]
+
+
+def test_fetch_ls_embedded_non_recursive_by_default() -> None:
+    client = FakeRcClient()
+    client.responses["operations/list"] = {"list": [_FILE_ITEM, _DIR_ITEM]}
+
+    listing = fetch_ls_embedded(client, access=FakeAccess(), src="remote:path/to")
+
+    assert client.calls == [("operations/list", {"fs": "remote:", "remote": "path/to"})]
+    assert len(listing.files) == 1
+    assert len(listing.dirs) == 1
+
+
+def test_fetch_ls_embedded_unlimited_recursion_sets_opt_recurse_only() -> None:
+    client = FakeRcClient()
+    client.responses["operations/list"] = {"list": []}
+
+    fetch_ls_embedded(client, access=FakeAccess(), src="remote:path", max_depth=-1)
+
+    assert client.calls == [
+        ("operations/list", {"fs": "remote:", "remote": "path", "opt": {"recurse": True}})
+    ]
+
+
+def test_fetch_ls_embedded_bounded_recursion_sets_config_max_depth() -> None:
+    client = FakeRcClient()
+    client.responses["operations/list"] = {"list": []}
+
+    fetch_ls_embedded(client, access=FakeAccess(), src="remote:path", max_depth=3)
+
+    assert client.calls == [
+        (
+            "operations/list",
+            {
+                "fs": "remote:",
+                "remote": "path",
+                "opt": {"recurse": True},
+                "_config": {"MaxDepth": 3},
+            },
+        )
+    ]
+
+
+def test_fetch_ls_embedded_zero_max_depth_is_non_recursive() -> None:
+    client = FakeRcClient()
+    client.responses["operations/list"] = {"list": []}
+
+    fetch_ls_embedded(client, access=FakeAccess(), src="remote:path", max_depth=0)
+
+    assert client.calls == [("operations/list", {"fs": "remote:", "remote": "path"})]
+
+
+@pytest.mark.parametrize(
+    ("listing_option", "expected_opt"),
+    [
+        (ListingOption.FILES_ONLY, {"filesOnly": True}),
+        (ListingOption.DIRS_ONLY, {"dirsOnly": True}),
+    ],
+)
+def test_fetch_ls_embedded_listing_option_maps_to_opt(
+    listing_option: ListingOption, expected_opt: dict[str, bool]
+) -> None:
+    client = FakeRcClient()
+    client.responses["operations/list"] = {"list": []}
+
+    fetch_ls_embedded(client, access=FakeAccess(), src="remote:path", listing_option=listing_option)
+
+    assert client.calls == [
+        ("operations/list", {"fs": "remote:", "remote": "path", "opt": expected_opt})
+    ]
+
+
+def test_fetch_ls_embedded_applies_glob_filter() -> None:
+    client = FakeRcClient()
+    client.responses["operations/list"] = {
+        "list": [
+            _FILE_ITEM,
+            {**_FILE_ITEM, "Path": "path/to/other.md", "Name": "other.md"},
+        ]
+    }
+
+    listing = fetch_ls_embedded(client, access=FakeAccess(), src="remote:path/to", glob="*.txt")
+
+    assert [f.name for f in listing.files] == ["object.txt"]
+
+
+def test_fetch_ls_embedded_reverse_order() -> None:
+    client = FakeRcClient()
+    client.responses["operations/list"] = {
+        "list": [
+            _FILE_ITEM,
+            {**_FILE_ITEM, "Path": "path/to/b.txt", "Name": "b.txt"},
+        ]
+    }
+
+    listing = fetch_ls_embedded(
+        client, access=FakeAccess(), src="remote:path/to", order=Order.REVERSE
+    )
+
+    assert [f.name for f in listing.files] == ["b.txt", "object.txt"]

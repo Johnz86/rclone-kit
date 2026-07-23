@@ -1,5 +1,5 @@
 """Embedded RC-backed listing/stat operations (CLI-to-C-ABI migration ledger
-rows M02, L05, L06/L07 (transitive), L08, L10).
+rows L01, M02, L05, L06/L07 (transitive), L08, L10).
 
 Parallels `listing_ops.py`'s CLI-backed functions; `Rclone` dispatches to
 whichever matches its `execution` mode. `operations/stat`'s `item` field is
@@ -11,14 +11,19 @@ difference (L05, L10), not a regression to reconcile away.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import random
+from fnmatch import fnmatch
+from typing import TYPE_CHECKING, cast
 
+from rclone_kit.dir import Dir
+from rclone_kit.dir_listing import DirListing
 from rclone_kit.file import File
 from rclone_kit.rc.client import RcCallable
 from rclone_kit.rc.paths import RcPath
 from rclone_kit.remote import Remote
-from rclone_kit.rpath import RPath
-from rclone_kit.types import SizeSuffix
+from rclone_kit.rpath import RcloneJsonEntry, RPath
+from rclone_kit.types import ListingOption, Order, SizeSuffix
+from rclone_kit.util import to_path
 
 if TYPE_CHECKING:
     from rclone_kit.access import ListingAccess
@@ -60,6 +65,77 @@ def _stat_item(rc_client: RcCallable, access: ListingAccess, src: str, *, files_
     )
     rpath.set_rclone(access)
     return File(rpath)
+
+
+def fetch_ls_embedded(
+    rc_client: RcCallable,
+    access: ListingAccess,
+    src: Dir | Remote | str | None = None,
+    max_depth: int | None = None,
+    glob: str | None = None,
+    order: Order = Order.NORMAL,
+    listing_option: ListingOption = ListingOption.ALL,
+) -> DirListing:
+    """List files in the given path via `operations/list`.
+
+    Mirrors `listing_ops.fetch_ls`'s exact semantics: `src=None` lists
+    configured remotes as root directories (no RC listing call involved,
+    same as the CLI path); `max_depth<0` recurses without limit,
+    `max_depth>0` recurses bounded by `_config.MaxDepth`, and `None`/`0`
+    list only the immediate target - matching `--recursive`/`--max-depth`'s
+    CLI behavior exactly.
+    """
+    if src is None:
+        list_remotes = fetch_listremotes_embedded(rc_client, access)
+        dirs = [Dir(remote) for remote in list_remotes]
+        for d in dirs:
+            d.path.path = ""
+        return DirListing([d.path for d in dirs])
+
+    if isinstance(src, str):
+        src = Dir(to_path(src, access))
+
+    remote = src.remote if isinstance(src, Dir) else src
+    parent_path = src.path.path if isinstance(src, Dir) else None
+
+    # `str(src)` reconstructs the exact original combined path (a `Dir`'s
+    # `Remote.name`/`RPath.path` split can itself be colon-naive for local
+    # paths - see `_split_remote_name_and_path` - but concatenating them
+    # back via `str()` always yields the original string), which
+    # `RcPath.parse` then splits Windows-drive-aware for the RC call.
+    target = RcPath.parse(str(src))
+    opt: dict[str, object] = {}
+    if listing_option == ListingOption.FILES_ONLY:
+        opt["filesOnly"] = True
+    elif listing_option == ListingOption.DIRS_ONLY:
+        opt["dirsOnly"] = True
+    config: dict[str, object] = {}
+    if max_depth is not None and max_depth != 0:
+        opt["recurse"] = True
+        if max_depth > 0:
+            config["MaxDepth"] = max_depth
+
+    params: dict[str, object] = {"fs": target.fs, "remote": target.remote}
+    if opt:
+        params["opt"] = opt
+    if config:
+        params["_config"] = config
+
+    result = rc_client.call("operations/list", **params)
+    paths = [
+        RPath.from_dict(cast(RcloneJsonEntry, item), remote, parent_path=parent_path)
+        for item in result.get("list", [])
+    ]
+    for p in paths:
+        p.set_rclone(access)
+
+    if glob is not None:
+        paths = [p for p in paths if fnmatch(p.path, glob)]
+    if order == Order.REVERSE:
+        paths.reverse()
+    elif order == Order.RANDOM:
+        random.shuffle(paths)
+    return DirListing(paths)
 
 
 def fetch_listremotes_embedded(rc_client: RcCallable, access: ListingAccess) -> list[Remote]:

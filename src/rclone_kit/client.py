@@ -54,6 +54,7 @@ from rclone_kit.operations.listing_ops import (
 from rclone_kit.operations.listing_ops_embedded import (
     check_exists_embedded,
     fetch_listremotes_embedded,
+    fetch_ls_embedded,
     fetch_size_file_embedded,
     fetch_stat_embedded,
 )
@@ -410,6 +411,16 @@ class Rclone:
         Returns:
             List of File objects found at the path
         """
+        if self._rc_client is not None:
+            return fetch_ls_embedded(
+                self._rc_client,
+                self,
+                src,
+                max_depth=max_depth,
+                glob=glob,
+                order=order,
+                listing_option=listing_option,
+            )
         return fetch_ls(
             self._backend,
             self,

@@ -413,8 +413,16 @@ ones, not only remote ones as first written. F06 is also done: `File.read_text()
 its associated client's `read_text()` instead of calling the private `_run(["cat", ...])` directly -
 this required widening `RPath`/`Remote`'s stored client type from `DomainAccess` to `ListingAccess`
 (a strict superset) so the delegation type-checks, with no behavior change for existing CLI callers.
-L01 (`ls()`/`operations/list`), M04 (`config_show`, needs a bridge extension), M05/M06 (already
-Python-only, no CLI dependency), and `rc/options.py` are not yet started.
+L01 (`ls()`/`operations/list`) is also done: `src=None` still lists remotes via M02's
+`config/listremotes` with no separate RC call, `max_depth<0`/`>0`/`None` map to
+`opt.recurse`/`_config.MaxDepth` exactly like `--recursive`/`--max-depth`, and `listing_option` maps
+to `opt.filesOnly`/`dirsOnly`; glob/order filtering stays pure Python, unchanged from the CLI path.
+Native parity tests cover non-recursive, unlimited-recursion, bounded-recursion, and files-only
+listings against the real DLL and the same-commit CLI executable on a real nested directory tree.
+Wave B's only remaining rows are M04 (`config_show`, needs a bridge extension for exact legacy
+sensitivity behavior), M05/M06 (already Python-only, no CLI dependency to migrate), and
+`rc/options.py` (no typed option encoder needed yet - every mapping done so far has been simple
+enough to inline).
 
 ### Wave C — checks, walking, and comparison
 
