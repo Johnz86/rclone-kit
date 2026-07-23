@@ -16,6 +16,10 @@ MANIFEST
 # never tracked source. See scripts/prepare_rclone_artifact.py.
 /src/rclone_kit/assets/rclone/
 
+# Unpinned research checkout of upstream rclone/rclone - never a build
+# input. The production source is the native/rclone submodule.
+/reference/rclone/
+
 # Test / lint caches
 .pytest_cache/
 .ruff_cache/
