@@ -159,12 +159,13 @@ notes = "config/paths after init."
 id = "M04"
 method = "config_show"
 decision = "bridge"
-owner_module = "rclone_kit.client"
-status = "planned"
-parity_test = ""
-windows = false
+owner_module = "rclone_kit.operations.config_ops"
+status = "cli_parity_tested"
+parity_test = "tests/native/test_listing_ops_embedded_integration.py::test_config_show_missing_remote_matches_cli"
+windows = true
 linux = false
-notes = "Needs a focused Go bridge extension for exact legacy obscure/no-obscure text behavior."
+failure_contract_complete = true
+notes = "Wave I re-check. Added rclonekit/configshow, a new Go RC method reproducing 'rclone config show'/'rclone config show <remote>''s exact plain-text output byte-for-byte (verified against the real CLI, including the '*** ENCRYPTED ***' password masking and the 'couldn't find type of fs' comment for an unknown remote) - config/dump and config/get exist but return JSON, not this exact text format. Discovered along the way that 'config show' has no --obscure/--no-obscure flags at all (only 'config create'/'config update' do) - confirmed empirically that the CLI backend's own flag pass-through for obscure/no_obscure already crashes ('unknown flag: --obscure') against a real build, a pre-existing bug unrelated to this migration. Embedded raises UnsupportedEmbeddedOperationError for either flag instead of silently reproducing that crash or pretending to honor a flag with no real effect."
 
 [[row]]
 id = "M05"

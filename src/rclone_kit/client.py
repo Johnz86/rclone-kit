@@ -45,6 +45,7 @@ from rclone_kit.operations.config_ops import (
     fetch_config_paths,
     fetch_config_paths_embedded,
     fetch_config_show,
+    fetch_config_show_embedded,
     fetch_s3_credentials,
     obscure_password,
 )
@@ -1488,8 +1489,18 @@ class Rclone:
         Raises:
             ValueError: if both `obscure` and `no_obscure` are set.
             RcloneCommandError: if the underlying `rclone config show`
-                invocation fails.
+                invocation fails (CLI backend).
+            UnsupportedEmbeddedOperationError: if `obscure` or `no_obscure`
+                is set (embedded backend) - `config show` has no such
+                flags of its own to begin with.
         """
+        if self._rc_client is not None:
+            return fetch_config_show_embedded(
+                self._rc_client,
+                remote=remote,
+                obscure=obscure,
+                no_obscure=no_obscure,
+            )
         return fetch_config_show(
             self._backend,
             remote=remote,

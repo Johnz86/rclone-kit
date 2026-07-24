@@ -1,11 +1,14 @@
 # Native C ABI migration: Wave I design (public compatibility transition)
 
-Status: partially done - C02/C06/C07/C08 (deprecation) complete; the wave's own full exit gate
-("make embedded execution the default only after every non-deprecated method is complete") is
-**still** not reachable - re-checked after Wave H's mount addendum resolved R01/R02, the remaining
-blockers are now M04 (`config_show`) and T15 (`copy_file_s3_resumable`); see the addendum below
+Status: partially done - C02/C06/C07/C08 (deprecation) complete; M04 (`config_show`) also now
+complete (second addendum below). The wave's own full exit gate ("make embedded execution the
+default only after every non-deprecated method is complete") is **still** not reachable: the sole
+remaining blocker is **T15** (`copy_file_s3_resumable`), which needs live S3 credentials this
+environment does not have - not something further coding can resolve. C04/C05 (`remove` decision
+rows) and C09 (`get_verbose`, explicitly annotated "not a migration blocker either way" in the
+ledger) do not independently block this gate.
 
-Date: 2026-07-24 (re-checked: 2026-07-24)
+Date: 2026-07-24 (re-checked: 2026-07-24; M04 addendum: 2026-07-24)
 
 Related documents:
 
@@ -56,6 +59,36 @@ Since Wave I's own exit gate requires *every* non-deprecated method complete, an
 no default was flipped and no CLI-only code was removed in this pass either. D01–D11/D19–D21 remain
 unchanged for the same reason, now transitively gated on M04/T15 instead of R01/R02.
 
+## 1b. Addendum: M04 (`config_show`) completed
+
+`config show`/`config show <remote>` had no RC equivalent at all: `config/dump` and `config/get`
+exist but return JSON, not this command's plain-text (INI-format) output. Added a new Go RC method,
+`rclonekit/configshow` (`native/rclone/librclone/rclonekit/rc/configshow.go`), that reproduces
+`config.ShowConfig()`/`config.ShowRemote()`'s exact text byte-for-byte - verified directly against
+the real CLI executable with a temporary config file containing a password field, not merely
+assumed from reading the Go source: same `\r\n`-terminated whole-file serialization, same
+`\n`-terminated single-remote section, same `*** ENCRYPTED ***` masking for password-typed options
+with a non-empty value, same `# couldn't find type of fs for "name"` comment for an unknown remote.
+
+Investigating this uncovered a genuine, pre-existing bug unrelated to this migration: `fetch_config_
+show()`'s CLI implementation passes `--obscure`/`--no-obscure` to `rclone config show`, but that
+subcommand has no such flags at all - only `config create`/`config update` do (confirmed by reading
+`cmd/config/config.go`, where those flags are registered exclusively on `configCreateCommand`/
+`configUpdateCommand`'s own `FlagSet`s). Calling `Rclone.config_show(obscure=True)` under
+`execution="cli"` today crashes with `unknown flag: --obscure` against a real build - confirmed
+empirically, not merely inferred - which the CLI unit test never caught since it only exercises a
+faked subprocess backend. Fixing that latent CLI bug is out of scope for this migration (whose
+premise is behavioral parity, not new features); `fetch_config_show_embedded()` instead raises
+`UnsupportedEmbeddedOperationError` for either flag, an honest "not supported" rather than silently
+reproducing the CLI's crash or pretending either flag has some effect it does not.
+
+`config show`'s own display logic (`ShowRemote`) never actually decrypts anything either, despite
+its own `Short` help text claiming "(decrypted) config file" - password-typed fields always show as
+the literal string `*** ENCRYPTED ***` when set, everything else shows its raw stored value
+verbatim. There is no controllable "obscure vs. not" toggle in this command's actual behavior at
+all; the challenge this row's ledger note called out was getting that always-on masking text exactly
+right in a from-scratch Go reimplementation, not honoring a flag that turns out not to exist.
+
 ## 2. Design decisions
 
 ### I1 - Deprecate in place; do not change behavior
@@ -90,3 +123,9 @@ its original action while emitting exactly the expected `DeprecationWarning`, an
 `native_build_info()` raises `EmbeddedOnlyOperationError` under a bare (non-embedded) client. Native
 tests confirm `native_build_info()` reports real values (a positive ABI version, non-empty rclone/Go
 version strings) against the built DLL, and that the CLI-backed client still lacks it entirely.
+
+M04 (`config_show`): unit tests (fake `RcClient`) cover the whole-config and single-remote request
+shapes and the `obscure`/`no_obscure` rejection paths. A native test asserts CLI/embedded parity for
+an unconfigured remote name (safe regardless of what either backend's own config file actually
+contains - see the test module's docstring) plus a whole-config sanity check and both rejection
+paths against the real built library.

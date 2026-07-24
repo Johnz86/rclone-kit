@@ -1,6 +1,6 @@
 """Native-backed parity check for the embedded RC-backed listing/stat
-operations (ledger rows M02, L05, L06/L07, L08, L10), against the CLI
-backend built from the exact same commit.
+operations (ledger rows M02, L05, L06/L07, L08, L10) and `config_show`
+(M04), against the CLI backend built from the exact same commit.
 
 Uses local filesystem paths, so no configured remote is required; reuses
 the shared, already-initialized `native_runtime` session fixture (see
@@ -17,7 +17,7 @@ from conftest import NATIVE_EXECUTABLE_AVAILABLE
 
 from rclone_kit.client import Rclone
 from rclone_kit.diff import DiffOption
-from rclone_kit.exceptions import EmbeddedOnlyOperationError
+from rclone_kit.exceptions import EmbeddedOnlyOperationError, UnsupportedEmbeddedOperationError
 from rclone_kit.types import ListingOption
 
 pytestmark = pytest.mark.skipif(
@@ -126,6 +126,31 @@ def test_config_paths_returns_a_config_cache_temp_triple(embedded: Rclone) -> No
 
     assert len(paths) == 3
     assert all(isinstance(p, Path) for p in paths)
+
+
+def test_config_show_whole_config_returns_text(embedded: Rclone) -> None:
+    assert isinstance(embedded.config_show(), str)
+
+
+def test_config_show_missing_remote_matches_cli(embedded: Rclone, cli: Rclone) -> None:
+    # Neither backend has this remote configured, regardless of whatever
+    # else is in either one's own config file - a safe CLI/embedded parity
+    # check without depending on shared config content (embedded's session
+    # runtime and the CLI backend's discovered rclone.conf are not the
+    # same file - see the module docstring).
+    remote = "definitely-not-a-real-remote-rclone-kit-test"
+
+    assert embedded.config_show(remote=remote) == cli.config_show(remote=remote)
+
+
+def test_config_show_rejects_obscure(embedded: Rclone) -> None:
+    with pytest.raises(UnsupportedEmbeddedOperationError):
+        embedded.config_show(obscure=True)
+
+
+def test_config_show_rejects_no_obscure(embedded: Rclone) -> None:
+    with pytest.raises(UnsupportedEmbeddedOperationError):
+        embedded.config_show(no_obscure=True)
 
 
 def test_native_build_info_reports_a_real_build(embedded: Rclone) -> None:

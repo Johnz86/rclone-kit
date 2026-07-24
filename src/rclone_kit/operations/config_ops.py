@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 from rclone_kit.backend import RcloneBackend
 from rclone_kit.config import Config, Parsed, Section
 from rclone_kit.config_discovery import parse_rclone_paths
-from rclone_kit.exceptions import RcloneCommandError
+from rclone_kit.exceptions import RcloneCommandError, UnsupportedEmbeddedOperationError
 from rclone_kit.s3.types import S3Credentials, S3Provider
 from rclone_kit.types import S3PathInfo
 from rclone_kit.util import get_verbose
@@ -106,6 +106,44 @@ def fetch_config_show(
         raise RcloneCommandError("config show", error.stderr or "", error) from error
     stdout = cp.stdout
     return stdout.decode("utf-8") if isinstance(stdout, bytes) else stdout
+
+
+def fetch_config_show_embedded(
+    rc_client: RcCallable,
+    remote: str | None = None,
+    obscure: bool = False,
+    no_obscure: bool = False,
+) -> str:
+    """Return the configuration text reported by `rclonekit/configshow`,
+    byte-for-byte identical to `rclone config show`/`rclone config show
+    <remote>`'s own plain-text output (Wave I addendum, M04).
+
+    `obscure`/`no_obscure` raise `UnsupportedEmbeddedOperationError` if
+    either is set: `config show` has no such flags at all (only `config
+    create`/`config update` do - confirmed empirically, `rclone config
+    show --obscure` fails with "unknown flag: --obscure" against a real
+    build), so the CLI backend's own flag pass-through for them was
+    already broken; embedded raises this explicitly rather than silently
+    reproducing that crash or pretending to honor a flag with no effect.
+
+    Raises:
+        ValueError: if both `obscure` and `no_obscure` are set (matching
+            `fetch_config_show`'s own check).
+        UnsupportedEmbeddedOperationError: if `obscure` or `no_obscure` is
+            set.
+    """
+    if obscure and no_obscure:
+        raise ValueError("obscure and no_obscure cannot both be enabled")
+    if obscure or no_obscure:
+        raise UnsupportedEmbeddedOperationError("config_show (obscure/no_obscure)")
+    params: dict[str, object] = {}
+    if remote is not None:
+        params["remote"] = remote
+    result = rc_client.call("rclonekit/configshow", **params)
+    text = result["text"]
+    if not isinstance(text, str):
+        raise ValueError(f"text must be a string, got {text!r}")
+    return text
 
 
 def check_is_s3(config: Config, dst: str) -> bool:

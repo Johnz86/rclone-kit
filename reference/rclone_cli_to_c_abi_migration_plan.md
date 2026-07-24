@@ -422,9 +422,14 @@ listings against the real DLL and the same-commit CLI executable on a real neste
 M05/M06 (`is_s3`/`get_s3_credentials`) needed no adapter or code change at all and are verified
 complete: both operate only on `self.config`, never on `self._backend`/`self._rc_client`, so they
 already behave identically under either execution mode - a dedicated test asserts zero RC calls
-happen. Wave B's only remaining row is M04 (`config_show`, needs a bridge extension for exact legacy
-sensitivity behavior); `rc/options.py` has not been needed yet, since every option mapping done so
-far has been simple enough to inline directly in its adapter.
+happen. M04 (`config_show`) was completed later, in Wave I's own M04 addendum (re-checked and
+finished once Wave H's mount work freed up the rest of that wave's exit gate) via a new
+`rclonekit/configshow` Go RC method - see
+[`native_c_abi_wave_i_review_and_design.md`](native_c_abi_wave_i_review_and_design.md)'s M04
+addendum for the full account, including a genuine pre-existing CLI bug it uncovered along the way
+(`config show` has no `--obscure`/`--no-obscure` flags at all, unlike what `fetch_config_show()`'s
+CLI path assumes). `rc/options.py` has not been needed yet, since every option mapping done so far
+has been simple enough to inline directly in its adapter.
 
 ### Wave C — checks, walking, and comparison
 
@@ -744,19 +749,28 @@ CLI mode and collect failures before final removal.
 
 Wave I is partially done, following the normative design in
 [`native_c_abi_wave_i_review_and_design.md`](native_c_abi_wave_i_review_and_design.md): C02/C06–C08
-(deprecation) are complete. This wave's own exit gate - "make embedded execution the default only
-after every non-deprecated method is complete" - is **still not** reachable, re-checked after Wave
-H's mount addendum landed: `mount()`/`mount_s3()` (R01/R02) are no longer the blocker, but two
-unrelated rows in `tests/parity/coverage.toml` remain `planned`: **M04** (`config_show`, needs a
-focused Go bridge extension for exact legacy obscure/no-obscure text behavior - genuine new Go work,
-not attempted here) and **T15** (`copy_file_s3_resumable`, every rclone-kit-side dependency is now
-embedded-capable since Wave H's `serve_http()` port, but its merge step uses a real `boto3` S3 client
-regardless of execution mode, so exercising it at all needs live S3 credentials this environment does
-not have - the same pre-existing constraint every other S3-multipart test already has, not an
-embedded-specific gap). No default was flipped and no CLI-only code was removed; D01–D11/D19–D21
+(deprecation) are complete, and M04 (`config_show`) was completed in a later addendum once Wave H's
+mount work freed up the rest of this wave's investigation. This wave's own exit gate - "make embedded
+execution the default only after every non-deprecated method is complete" - is **still not**
+reachable: the sole remaining row in `tests/parity/coverage.toml` blocking it is **T15**
+(`copy_file_s3_resumable`) - every rclone-kit-side dependency is now embedded-capable since Wave H's
+`serve_http()` port, but its merge step uses a real `boto3` S3 client regardless of execution mode, so
+exercising it at all needs live S3 credentials this environment does not have - the same pre-existing
+constraint every other S3-multipart test already has, not an embedded-specific gap, and not something
+further coding can resolve. No default was flipped and no CLI-only code was removed; D01–D11/D19–D21
 (this plan's own internal/distribution-removal ledger, including C04/C05's own `remove` rows) stay as
-they were, since every one of their gates is tied to M04/T15 (transitively, every internal caller)
+they were, since every one of their gates is tied to T15 (transitively, every internal caller)
 reaching `complete` first, which has not happened.
+
+- **M04** (`config_show`): `config show`/`config show <remote>` had no RC equivalent (`config/dump`/
+  `config/get` exist but return JSON, not this command's plain-text output). Added a new Go RC method,
+  `rclonekit/configshow`, reproducing that plain text byte-for-byte (verified against the real CLI
+  executable, not merely read from source) - including the `*** ENCRYPTED ***` password masking and
+  the "couldn't find type of fs" comment for an unknown remote. Uncovered a genuine, pre-existing CLI
+  bug along the way: `config show` has no `--obscure`/`--no-obscure` flags at all (only `config
+  create`/`config update` do), so `fetch_config_show()`'s CLI-mode flag pass-through for them already
+  crashes against a real build - not fixed here (out of migration scope), but not silently replicated
+  either: the embedded path raises `UnsupportedEmbeddedOperationError` for either flag instead.
 
 - **C06/C07/C08** (`webgui`/`launch_server`/`remote_control`) now emit `DeprecationWarning` on every
   call, with behavior completely unchanged - each is CLI-only with no planned embedded port (web GUI
@@ -783,14 +797,15 @@ Wave J is blocked and was not started - see
 [`native_c_abi_wave_j_review_and_design.md`](native_c_abi_wave_j_review_and_design.md). Every one of
 D02/D06/D07/D16-D18's own removal gates requires CLI compatibility mode to already be removed from
 the supported release, which requires Wave I's exit gate (embedded made the default), which -
-re-checked after Wave H's mount addendum resolved R01/R02 - now requires only M04
-(`config_show`'s Go bridge extension) and T15 (`copy_file_s3_resumable`'s live-S3-credential
-verification) to reach `complete`; the FUSE/WinFsp toolchain gate that previously sat in front of
-this chain is gone. Removing the executable resolver/wheel assets now would still break every
+re-checked after Wave H's mount addendum resolved R01/R02 and M04 was separately completed - now
+requires only T15 (`copy_file_s3_resumable`'s live-S3-credential verification) to reach `complete`;
+the FUSE/WinFsp toolchain gate that previously sat in front of this chain is gone, and so is the Go
+bridge work M04 needed. Removing the executable resolver/wheel assets now would still break every
 `execution="cli"` deployment - still this library's default - for no compensating benefit, since
 embedded execution cannot yet reach full parity. This is a documented, verified blocker, not an
-oversight: nothing further can responsibly be designed or built for this wave until that (now
-shorter) precondition chain is satisfied.
+oversight: nothing further can responsibly be designed or built for this wave until that (now much
+shorter) precondition chain is satisfied - and the one link left in it is an environment/credential
+gap, not an implementation gap.
 
 ## Per-row implementation checklist
 

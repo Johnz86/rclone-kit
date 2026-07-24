@@ -18,7 +18,7 @@ from rclone_kit.dir import Dir
 from rclone_kit.dir_listing import DirListing
 from rclone_kit.exceptions import UnsupportedEmbeddedOperationError
 from rclone_kit.file import File
-from rclone_kit.operations.config_ops import fetch_config_paths_embedded
+from rclone_kit.operations.config_ops import fetch_config_paths_embedded, fetch_config_show_embedded
 from rclone_kit.operations.listing_ops_embedded import (
     check_exists_embedded,
     check_is_synced_embedded,
@@ -237,6 +237,46 @@ def test_fetch_config_paths_embedded_omits_missing_values() -> None:
     paths = fetch_config_paths_embedded(client)
 
     assert paths == [Path("/home/user/rclone.conf")]
+
+
+def test_fetch_config_show_embedded_whole_config() -> None:
+    client = FakeRcClient()
+    client.responses["rclonekit/configshow"] = {"text": "[myremote]\ntype = sftp\n"}
+
+    text = fetch_config_show_embedded(client)
+
+    assert text == "[myremote]\ntype = sftp\n"
+    assert client.calls == [("rclonekit/configshow", {})]
+
+
+def test_fetch_config_show_embedded_sends_remote() -> None:
+    client = FakeRcClient()
+    client.responses["rclonekit/configshow"] = {"text": "[myremote]\ntype = sftp\n"}
+
+    fetch_config_show_embedded(client, remote="myremote")
+
+    assert client.calls == [("rclonekit/configshow", {"remote": "myremote"})]
+
+
+def test_fetch_config_show_embedded_rejects_obscure_and_no_obscure_together() -> None:
+    client = FakeRcClient()
+
+    with pytest.raises(ValueError, match="obscure"):
+        fetch_config_show_embedded(client, obscure=True, no_obscure=True)
+
+
+def test_fetch_config_show_embedded_rejects_obscure() -> None:
+    client = FakeRcClient()
+
+    with pytest.raises(UnsupportedEmbeddedOperationError):
+        fetch_config_show_embedded(client, obscure=True)
+
+
+def test_fetch_config_show_embedded_rejects_no_obscure() -> None:
+    client = FakeRcClient()
+
+    with pytest.raises(UnsupportedEmbeddedOperationError):
+        fetch_config_show_embedded(client, no_obscure=True)
 
 
 def test_stat_embedded_windows_drive_path_splits_parent_and_name() -> None:
