@@ -9,16 +9,30 @@ section, which this script implements. This is the single command a
 developer or CI job runs; no other script or manual shell sequence is the
 source of truth for a native build.
 
-The `development` profile builds with no mount support (`-tags cmount` is not
-passed). The `production` profile additionally passes `-tags cmount` and
-requires the WinFsp SDK (headers only, at build time) to be installed on the
-Windows build host - it does not need to be installed on end-user machines
-for anything except actually calling `mount()`/`mount_s3()`, which also needs
-the separate WinFsp runtime/driver installed and running (see
-`native_c_abi_wave_h_review_and_design.md`'s mount addendum for how this was
-verified against a real mount). Only `windows-amd64`, built on a Windows
-amd64 host, is implemented; the Linux target must be built inside a pinned
-manylinux container that does not exist yet.
+On Windows, the `development` profile builds with no mount support (`-tags
+cmount` is not passed). The `production` profile additionally passes `-tags
+cmount` and requires the WinFsp SDK (headers only, at build time) to be
+installed on the Windows build host - it does not need to be installed on
+end-user machines for anything except actually calling `mount()`/
+`mount_s3()`, which also needs the separate WinFsp runtime/driver installed
+and running (see `native_c_abi_wave_h_review_and_design.md`'s mount addendum
+for how this was verified against a real mount).
+
+On Linux, mount support needs no build tag and no build-time package at all:
+`cmd/mount` (bazil.org/fuse, pure Go, no cgo) is imported unconditionally in
+the bridge and is always the first mount implementation
+`mountlib.ResolveMountMethod` tries. It only needs the `fuse3` (or `fuse`)
+package's `fusermount3`/`fusermount` helper binary present at *runtime* on
+the end-user machine, analogous to WinFsp's runtime/driver on Windows -
+verified empirically inside a `quay.io/pypa/manylinux2014_x86_64` container
+with no `fuse-devel`/`pkg-config fuse` package installed at build time at
+all (see `native/README.md`'s Linux build section). `--profile production`
+on Linux therefore does not change which build tags are passed; it exists
+for command-line symmetry with Windows.
+
+Windows must be built on a Windows amd64 host (no cross-compilation); Linux
+must be built inside the pinned `quay.io/pypa/manylinux2014_x86_64` container
+(see `native/README.md`) for a genuinely manylinux2014-compatible result.
 
 Usage:
     uv run python scripts/native/build.py --target windows-amd64
@@ -44,6 +58,7 @@ from rclone_kit.runtime.native_platform import (
     native_target_choices,
     resolve_native_target,
 )
+from rclone_kit.runtime.platform import OperatingSystem
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 _NATIVE_ROOT = _REPO_ROOT / "native"
@@ -122,12 +137,31 @@ def _windows_cc(toolchain: dict) -> str:
     return cc_path
 
 
+def _linux_cc(toolchain: dict) -> str:
+    """Resolve the Linux C compiler by name from PATH.
+
+    Unlike Windows, this is a bare command name (`gcc` by default), not a
+    concrete installed path: inside the pinned manylinux2014 container, the
+    devtoolset gcc is already active on PATH for every shell, with no
+    per-machine path to pin (see `native/README.md`'s Linux build section).
+    """
+    cc_name = toolchain.get("linux_compiler_cc", "gcc")
+    cc_path = shutil.which(cc_name)
+    if cc_path is None:
+        raise NativeBuildError(
+            f"The {cc_name!r} executable (native/toolchain.toml's linux_compiler_cc) "
+            "was not found on PATH. See native/README.md's Linux build section."
+        )
+    return cc_path
+
+
 def _require_running_on_target_platform(target: NativeTarget) -> None:
     """Fail fast when `target` does not match the running host.
 
-    This script does not cross-compile: the Windows CC path is a concrete
-    installed toolchain, and no pinned Linux (manylinux) build environment is
-    wired up yet.
+    This script does not cross-compile: run it on a genuine Windows amd64
+    host for the `windows-amd64` target, or inside the pinned
+    `quay.io/pypa/manylinux2014_x86_64` container (see `native/README.md`)
+    for the `linux-amd64` target.
     """
     try:
         running_target = resolve_native_target(
@@ -169,11 +203,11 @@ def _require_winfsp_fuse_include_dir() -> Path:
     )
 
 
-def _build_env(cc_path: str, *, mount_tags: bool) -> dict[str, str]:
+def _build_env(target: NativeTarget, cc_path: str, *, mount_tags: bool) -> dict[str, str]:
     env = os.environ.copy()
     env["CGO_ENABLED"] = "1"
     env["CC"] = cc_path
-    if mount_tags:
+    if mount_tags and target.operating_system == OperatingSystem.WINDOWS:
         fuse_include_dir = _require_winfsp_fuse_include_dir()
         # CPATH is a plain gcc/clang search-path env var (not Go-specific):
         # matches upstream rclone's own Windows CI convention for the same
@@ -196,17 +230,35 @@ def _run_focused_go_tests(go_executable: str, env: dict[str, str]) -> None:
     )
 
 
-def _build_tags(mount_tags: bool) -> tuple[str, ...]:
-    return (_MOUNT_BUILD_TAG,) if mount_tags else ()
+def _build_tags(target: NativeTarget, mount_tags: bool) -> tuple[str, ...]:
+    """Return the Go build tags a build of `target` with `mount_tags` needs.
+
+    `cmount` is a Windows-only concept here: it selects cgofuse's WinFsp
+    path, the only mount implementation Windows has. Linux mount support
+    (`cmd/mount`, bazil.org/fuse) needs no build tag at all - it is
+    imported unconditionally and always tried first - so `mount_tags` on
+    Linux changes nothing about the actual `go build` invocation; passing
+    `cmount` there would additionally attempt cgofuse's Linux cgo path,
+    which needs `fuse-devel` at build time for no functional benefit, since
+    `cmd/mount` already wins.
+    """
+    if mount_tags and target.operating_system == OperatingSystem.WINDOWS:
+        return (_MOUNT_BUILD_TAG,)
+    return ()
 
 
-def _tags_args(mount_tags: bool) -> list[str]:
-    tags = _build_tags(mount_tags)
+def _tags_args(target: NativeTarget, mount_tags: bool) -> list[str]:
+    tags = _build_tags(target, mount_tags)
     return ["-tags", ",".join(tags)] if tags else []
 
 
 def _build_executable(
-    go_executable: str, env: dict[str, str], output_path: Path, *, mount_tags: bool
+    go_executable: str,
+    env: dict[str, str],
+    output_path: Path,
+    *,
+    target: NativeTarget,
+    mount_tags: bool,
 ) -> None:
     subprocess.run(
         [
@@ -214,7 +266,7 @@ def _build_executable(
             "build",
             "-trimpath",
             "-buildvcs=true",
-            *_tags_args(mount_tags),
+            *_tags_args(target, mount_tags),
             "-o",
             str(output_path),
             ".",
@@ -226,7 +278,12 @@ def _build_executable(
 
 
 def _build_library(
-    go_executable: str, env: dict[str, str], output_path: Path, *, mount_tags: bool
+    go_executable: str,
+    env: dict[str, str],
+    output_path: Path,
+    *,
+    target: NativeTarget,
+    mount_tags: bool,
 ) -> None:
     subprocess.run(
         [
@@ -235,7 +292,7 @@ def _build_library(
             "-trimpath",
             "-buildvcs=true",
             "-buildmode=c-shared",
-            *_tags_args(mount_tags),
+            *_tags_args(target, mount_tags),
             "-o",
             str(output_path),
             _BRIDGE_PACKAGE,
@@ -267,16 +324,20 @@ def build_native_target(
     toolchain = _toolchain_manifest()
     go_executable = _require_go_executable()
     _require_go_version_matches(go_executable, toolchain)
-    cc_path = _windows_cc(toolchain)
-    env = _build_env(cc_path, mount_tags=mount_tags)
+    cc_path = (
+        _windows_cc(toolchain)
+        if target.operating_system == OperatingSystem.WINDOWS
+        else _linux_cc(toolchain)
+    )
+    env = _build_env(target, cc_path, mount_tags=mount_tags)
 
     out_dir.mkdir(parents=True, exist_ok=True)
     executable_path = out_dir / target.executable_filename
     library_path = out_dir / target.library_filename
 
     _run_focused_go_tests(go_executable, env)
-    _build_executable(go_executable, env, executable_path, mount_tags=mount_tags)
-    _build_library(go_executable, env, library_path, mount_tags=mount_tags)
+    _build_executable(go_executable, env, executable_path, target=target, mount_tags=mount_tags)
+    _build_library(go_executable, env, library_path, target=target, mount_tags=mount_tags)
 
     shutil.copyfile(_ABI_HEADER_SOURCE, out_dir / _ABI_HEADER_OUTPUT_NAME)
     shutil.copyfile(_RCLONE_LICENSE_SOURCE, out_dir / _LICENSE_OUTPUT_NAME)
@@ -305,7 +366,7 @@ def build_native_target(
         toolchain=toolchain_info,
         target=target,
         outputs=outputs,
-        go_build_tags=_build_tags(mount_tags),
+        go_build_tags=_build_tags(target, mount_tags),
     )
     native_manifest.write_manifest(built_manifest, out_dir / _MANIFEST_OUTPUT_NAME)
     native_manifest.write_sha256sums(outputs, out_dir / _SHA256SUMS_OUTPUT_NAME)

@@ -389,6 +389,26 @@ def test_check_bundled_library_has_mount_support_passes_with_cmount_tag(tmp_path
     )
 
 
+def test_check_bundled_library_has_mount_support_always_passes_on_linux(tmp_path: Path) -> None:
+    """cmd/mount (bazil.org/fuse) is imported unconditionally on Linux with
+    no build tag of its own, so there is nothing to check in the manifest -
+    a Linux wheel with an empty go_build_tags list still has mount
+    support."""
+    base = "rclone_kit/assets/native/manylinux2014_x86_64"
+    members = {
+        f"{base}/librclone_kit.so": _FAKE_LIBRARY_CONTENT,
+        f"{base}/native-manifest.json": _native_manifest_bytes(
+            "librclone_kit.so", _FAKE_LIBRARY_DIGEST, go_build_tags=()
+        ),
+    }
+    wheel_path = _write_zip(tmp_path / _LINUX_WHEEL_NAME, members)
+
+    assert (
+        verify_distribution.check_bundled_library_has_mount_support(wheel_path, tuple(members))
+        == []
+    )
+
+
 def test_check_bundled_library_abi_version_flags_mismatch(tmp_path: Path) -> None:
     members = _windows_wheel_members(c_abi_version=999)
     wheel_path = _write_zip(tmp_path / _WINDOWS_WHEEL_NAME, members)

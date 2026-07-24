@@ -68,6 +68,116 @@ without leaks or crashes. Plain (non-cgo) executable builds may continue
 using either compiler; `go build .` for `rclone.exe` was not affected by
 the bigobj issue.
 
+## Linux build (local Docker verification)
+
+Linux native builds must happen inside the pinned `quay.io/pypa/manylinux2014_x86_64` container
+(matching `native/toolchain.toml`'s `linux_wheel_policy`), not on a bare Linux host: only that image
+gives a genuinely manylinux2014-compatible glibc baseline. This section is the exact, reproducible
+command sequence used to verify the whole native-library packaging pipeline for Linux locally, via
+Docker Desktop (WSL2 backend) on a Windows development machine - no new Docker image was built; only
+the standard, already-published PyPA image, with tools installed into a running container.
+
+Unlike Windows, no build-time WinFsp-equivalent SDK is needed at all for Linux mount support: see
+`native_c_abi_wave_h_review_and_design.md`'s Linux mount addendum for why `cmd/mount` (bazil.org/fuse,
+pure Go) needs no cgo or system FUSE headers to compile.
+
+### 1. Start a persistent container with the repo mounted and FUSE devices enabled
+
+```bash
+# From a bash shell (Git Bash on Windows needs MSYS_NO_PATHCONV=1 so /dev/fuse
+# and bash -c "..." arguments are not mangled into Windows paths).
+docker pull quay.io/pypa/manylinux2014_x86_64
+
+MSYS_NO_PATHCONV=1 docker run -d --name rclone-kit-linux-build \
+  --device /dev/fuse --cap-add SYS_ADMIN \
+  -v /d/GIT/python/rclone-kit:/work \
+  quay.io/pypa/manylinux2014_x86_64 sleep infinity
+```
+
+`--device /dev/fuse --cap-add SYS_ADMIN` are required to actually mount FUSE filesystems inside the
+container (needed only for the real mount verification in step 4, not for a plain build).
+
+### 2. Install the pinned Go toolchain (not present in the base image)
+
+```bash
+docker exec rclone-kit-linux-build bash -c "
+  curl -fsSL -o /tmp/go.tar.gz https://go.dev/dl/go1.26.5.linux-amd64.tar.gz &&
+  tar -C /usr/local -xzf /tmp/go.tar.gz &&
+  /usr/local/go/bin/go version
+"
+```
+
+The image already provides a devtoolset gcc (10.2.1 as pulled) active on `PATH` for every shell with
+no extra activation step, and `auditwheel`/`uv` preinstalled. No `fuse-devel`/`pkg-config fuse`
+package is needed at build time.
+
+### 3. Build the native library directly
+
+```bash
+docker exec -e PATH=/usr/local/go/bin:$PATH rclone-kit-linux-build bash -c "
+  cd /work/native/rclone &&
+  go build -trimpath -buildvcs=true -buildmode=c-shared \
+    -o /tmp/librclone_kit.so ./librclone/rclonekit
+"
+```
+
+Verify no `libfuse.so` dependency was pulled in, and inspect the referenced glibc symbol versions
+(should be well under manylinux2014's 2.17 baseline):
+
+```bash
+docker exec rclone-kit-linux-build bash -c "
+  ldd /tmp/librclone_kit.so
+  objdump -T /tmp/librclone_kit.so | grep -oE 'GLIBC_[0-9.]+' | sort -Vu
+"
+```
+
+### 4. Verify a real mount works (needs the `fuse3` runtime package)
+
+`bazil.org/fuse` shells out to `fusermount3`/`fusermount` for the kernel handshake even with
+`CAP_SYS_ADMIN`, so install the runtime package first:
+
+```bash
+docker exec rclone-kit-linux-build bash -c "yum install -y fuse3 fuse"
+```
+
+Then drive the real C ABI directly via `ctypes` (mirrors exactly how production Python code loads
+the library - see `rclone_kit/native/abi.py` for the authoritative signatures) to mount a local
+directory, read a file through it, list it, and unmount it. This is the same verification method
+used for the Windows WinFsp toolchain (see the Wave H design doc's mount addendum).
+
+### 5. Build, stage, verify, and smoke-test the actual wheel end to end
+
+```bash
+MSYS_NO_PATHCONV=1 docker exec \
+  -e PATH=/usr/local/go/bin:/opt/rh/devtoolset-10/root/usr/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+  -e UV_PROJECT_ENVIRONMENT=/tmp/venv-linux \
+  -w /work rclone-kit-linux-build bash -c "
+  uv run --python 3.13 python scripts/build_distribution.py --target linux-amd64 --out-dir /tmp/dist_linux
+"
+```
+
+`UV_PROJECT_ENVIRONMENT` points `uv` at a container-local venv path instead of the mounted
+`/work/.venv`, which is a Windows-created venv (via the bind mount) that `uv` cannot safely
+recreate for Linux from inside the container. This is the full pipeline
+`scripts/build_distribution.py` already runs for Windows: builds the native library with
+`--profile production`, stages it into `assets/native/manylinux2014_x86_64/`, builds the wheel,
+runs every `scripts/verify_distribution.py` check (including `auditwheel`-equivalent glibc/mount
+checks), installs it into a clean venv with no dev dependencies, and smoke-tests it - confirming the
+bundled library resolves, initializes, and reports real `BuildInfo`, with the same network-isolated
+smoke test used for Windows.
+
+Confirm official manylinux compatibility with `auditwheel` itself:
+
+```bash
+docker exec rclone-kit-linux-build bash -c "
+  auditwheel show /tmp/dist_linux/rclone_kit-1.0.0-py3-none-manylinux2014_x86_64.whl
+"
+```
+
+Verified result: `auditwheel` reports the wheel is consistent with the even stricter
+`manylinux_2_5_x86_64` tag and "requires no external shared libraries" - comfortably inside the
+declared `manylinux2014_x86_64` policy.
+
 ### Known quirk: spurious `vcs.modified=true`/`-dirty` on Windows
 
 On this machine (`core.autocrlf=true`), `go build -buildvcs=true`'s own

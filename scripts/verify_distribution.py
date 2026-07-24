@@ -41,6 +41,7 @@ from rclone_kit.runtime.native_platform import (
     NativeTarget,
     resolve_native_target,
 )
+from rclone_kit.runtime.platform import OperatingSystem
 
 _WHEEL_GLOB_PATTERN = "*.whl"
 _SDIST_GLOB_PATTERN = "*.tar.gz"
@@ -409,15 +410,26 @@ def check_bundled_library_hash(wheel_path: Path, members: tuple[str, ...]) -> li
 def check_bundled_library_has_mount_support(
     wheel_path: Path, members: tuple[str, ...]
 ) -> list[str]:
-    """Fail unless the shipped `native-manifest.json` records the `cmount`
-    build tag.
+    """Fail unless the shipped native library was built with real mount
+    support.
 
     `mount()`/`mount_s3()` are public API with no CLI fallback; a wheel built
-    without WinFsp/FUSE mount support compiled in would silently regress
-    that surface for every installer.
+    without mount support compiled in would silently regress that surface
+    for every installer. What "compiled in" means is platform-specific:
+
+    - Windows only has `cmd/cmount` (WinFsp/cgofuse), gated behind the
+      `cmount` Go build tag - the manifest must record it.
+    - Linux's `cmd/mount` (bazil.org/fuse) is imported unconditionally with
+      no build tag of its own and is always tried first by
+      `mountlib.ResolveMountMethod` - verified empirically inside a
+      `manylinux2014_x86_64` container with no extra build-time package at
+      all - so every Linux build already has mount support; there is
+      nothing to check in the manifest for it.
     """
     native_target = _expected_native_target_for_wheel(wheel_path)
     if native_target is None:
+        return []
+    if native_target.operating_system != OperatingSystem.WINDOWS:
         return []
     manifest = _read_native_manifest(wheel_path, native_target, members)
     if manifest is None:

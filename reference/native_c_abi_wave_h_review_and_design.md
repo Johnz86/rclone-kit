@@ -233,3 +233,39 @@ overrides, the `vfs_disk_space_total_size` → `CacheMaxSize` bug-for-bug mappin
 own `native-manifest.json` records the `cmount` build tag) cover a real drive-letter mount/read,
 a read-write round trip under `vfs_cache_mode="off"`, `other_args`/`cache_dir` rejection, dispose
 idempotency, and `close()` disposing an un-disposed handle, for both `mount()` and `mount_s3()`.
+
+### 6.6 Linux mount addendum: `cmd/mount` needs no build-time toolchain at all
+
+While proving the native-library wheel-packaging pipeline for Linux (see the CLI-removal
+packaging effort's own plan), the bridge's `imports.go` only imported `cmd/cmount` - the
+WinFsp/cgofuse implementation this document's earlier sections cover, which also compiles for
+Linux (its own build tag includes `linux && cgo`), but only when `-tags cmount` is passed, and its
+Linux cgo path is a real wrapper around system `libfuse`, needing `fuse-devel`/`pkg-config fuse` at
+build time. Before assuming that dependency was required, `native/rclone/cmd/mount/mount.go` was
+read directly: its build tag is simply `//go:build linux`, it imports `bazil.org/fuse` (a pure-Go
+FUSE client with no cgo directives at all), and its own `init()` calls `mountlib.AddRc("mount",
+mount)` - registering under the exact same `mount/mount` RC surface `cmd/cmount` also uses.
+`mountlib.ResolveMountMethod`'s own priority list tries `"mount"` before `"cmount"`, so once
+`cmd/mount` is registered, it is always used first on Linux.
+
+Verified empirically, not assumed, inside a real `quay.io/pypa/manylinux2014_x86_64` container with
+no `fuse-devel`/`pkg-config fuse` package installed at all: `go build -buildmode=c-shared
+./librclone/rclonekit` (no `-tags cmount`, no special `CPATH`) compiled cleanly once `cmd/mount` was
+added to `imports.go` alongside `cmd/cmount`; `ldd` on the resulting `.so` showed no `libfuse.so`
+dependency whatsoever (only `libpthread`/`libresolv`/`libc`); and a real `mount/mount` RC call
+against a local directory, driven through the actual C ABI (`RcloneKitInitialize`/`RcloneKitRPC`)
+exactly as production Python code uses it, mounted a real directory, read a file through it, listed
+it via `mount/listmounts`, and unmounted it via `mount/unmount` - all successfully. The build did
+fail once for an unrelated, expected reason: the container had no `fusermount3` binary on PATH at
+first, since `bazil.org/fuse` shells out to it for the FUSE kernel handshake even under
+`CAP_SYS_ADMIN`; installing the `fuse3` package (a runtime-only dependency, not a build-time one)
+resolved it. This mirrors WinFsp's own split exactly: nothing extra is needed on the Linux build
+host to *compile* mount support, only a small system package (`fuse`/`fuse3`) needs to be present on
+the *end-user* machine for `mount()`/`mount_s3()` to actually work at runtime.
+
+Consequently, `--profile production` on Linux does not need `-tags cmount` at all - `cmd/mount`'s
+unconditional registration already gives every Linux build (development or production) real mount
+support, with no extra build dependency and no runtime `libfuse.so` linkage
+(`scripts/native/build.py`'s `_build_tags()` now only adds `cmount` for Windows targets, and
+`scripts/verify_distribution.py`'s `check_bundled_library_has_mount_support` treats every Linux
+wheel as mount-capable unconditionally rather than checking for a build tag Linux never needs).
