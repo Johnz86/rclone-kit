@@ -16,8 +16,9 @@ class LibraryNotFoundError(NativeError):
     """Raised when no usable native library path could be resolved.
 
     `path` is `None` when no candidate was even attempted (no explicit path,
-    no environment override, and no packaged wheel asset available yet);
-    otherwise it is the specific candidate path that did not exist.
+    no environment override, and no packaged wheel asset present in the
+    installed package); otherwise it is the specific candidate path that did
+    not exist.
     """
 
     def __init__(self, path: Path | None) -> None:
@@ -25,10 +26,28 @@ class LibraryNotFoundError(NativeError):
         if path is None:
             super().__init__(
                 "No native library path was given, RCLONE_KIT_LIBRARY is unset, and no "
-                "packaged wheel asset is available yet."
+                "packaged wheel asset was found for this platform."
             )
         else:
             super().__init__(f"Native library not found: {path}")
+
+
+class LibraryVerificationError(NativeError):
+    """Raised when a packaged wheel asset's SHA-256 digest disagrees with its
+    sibling `native-manifest.json`'s recorded digest.
+
+    A mismatch here means the installed package is corrupted or was tampered
+    with after being built; the library is never loaded in that case.
+    """
+
+    def __init__(self, path: Path, expected_digest: str, actual_digest: str) -> None:
+        self.path = path
+        self.expected_digest = expected_digest
+        self.actual_digest = actual_digest
+        super().__init__(
+            f"SHA-256 mismatch for packaged native library {path}: "
+            f"expected {expected_digest}, got {actual_digest}"
+        )
 
 
 class AbiVersionMismatchError(NativeError):

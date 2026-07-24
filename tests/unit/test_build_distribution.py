@@ -13,7 +13,10 @@ from pathlib import Path
 import pytest
 
 import build_distribution
-from rclone_kit.runtime.platform import LINUX_AMD64_ARTIFACT, WINDOWS_AMD64_ARTIFACT
+from rclone_kit.runtime.native_platform import (
+    LINUX_AMD64_NATIVE_TARGET,
+    WINDOWS_AMD64_NATIVE_TARGET,
+)
 
 _EXPECTED_TARGET_CHOICES = ("windows-amd64", "linux-amd64")
 
@@ -22,41 +25,46 @@ def test_target_choices_lists_every_certified_target() -> None:
     assert build_distribution._target_choices() == _EXPECTED_TARGET_CHOICES
 
 
-def test_resolve_target_artifact_returns_windows_artifact() -> None:
-    assert build_distribution._resolve_target_artifact("windows-amd64") == WINDOWS_AMD64_ARTIFACT
+def test_resolve_target_native_target_returns_windows_target() -> None:
+    assert (
+        build_distribution._resolve_target_native_target("windows-amd64")
+        == WINDOWS_AMD64_NATIVE_TARGET
+    )
 
 
-def test_resolve_target_artifact_returns_linux_artifact() -> None:
-    assert build_distribution._resolve_target_artifact("linux-amd64") == LINUX_AMD64_ARTIFACT
+def test_resolve_target_native_target_returns_linux_target() -> None:
+    assert (
+        build_distribution._resolve_target_native_target("linux-amd64") == LINUX_AMD64_NATIVE_TARGET
+    )
 
 
-def test_resolve_target_artifact_raises_on_malformed_target() -> None:
+def test_resolve_target_native_target_raises_on_malformed_target() -> None:
     with pytest.raises(build_distribution.BuildDistributionError, match="Malformed"):
-        build_distribution._resolve_target_artifact("windowsamd64")
+        build_distribution._resolve_target_native_target("windowsamd64")
 
 
-def test_resolve_target_artifact_raises_on_unsupported_target() -> None:
+def test_resolve_target_native_target_raises_on_unsupported_target() -> None:
     with pytest.raises(build_distribution.BuildDistributionError, match="Unsupported"):
-        build_distribution._resolve_target_artifact("windows-arm64")
+        build_distribution._resolve_target_native_target("windows-arm64")
 
 
 def test_require_running_on_target_platform_passes_when_matching(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        build_distribution, "resolve_artifact_for_running_platform", lambda: WINDOWS_AMD64_ARTIFACT
+        build_distribution, "_resolve_running_native_target", lambda: WINDOWS_AMD64_NATIVE_TARGET
     )
-    build_distribution._require_running_on_target_platform(WINDOWS_AMD64_ARTIFACT)
+    build_distribution._require_running_on_target_platform(WINDOWS_AMD64_NATIVE_TARGET)
 
 
 def test_require_running_on_target_platform_raises_when_mismatched(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        build_distribution, "resolve_artifact_for_running_platform", lambda: LINUX_AMD64_ARTIFACT
+        build_distribution, "_resolve_running_native_target", lambda: LINUX_AMD64_NATIVE_TARGET
     )
     with pytest.raises(build_distribution.BuildDistributionError, match="does not cross-compile"):
-        build_distribution._require_running_on_target_platform(WINDOWS_AMD64_ARTIFACT)
+        build_distribution._require_running_on_target_platform(WINDOWS_AMD64_NATIVE_TARGET)
 
 
 def test_prepare_output_directory_creates_missing_directory(tmp_path: Path) -> None:
@@ -191,3 +199,39 @@ def test_built_wheel_is_frozen_dataclass() -> None:
 
     assert built_wheel.path == Path("dist/x.whl")
     assert built_wheel.sha256_digest == "0" * 64
+
+
+def test_stage_native_bundle_copies_package_data_and_excludes_diagnostics(
+    tmp_path: Path,
+) -> None:
+    native_build_dir = tmp_path / "native-build"
+    native_build_dir.mkdir()
+    (native_build_dir / WINDOWS_AMD64_NATIVE_TARGET.library_filename).write_bytes(b"lib")
+    (native_build_dir / "native-manifest.json").write_text("{}", encoding="utf-8")
+    (native_build_dir / "SHA256SUMS").write_text("", encoding="utf-8")
+    (native_build_dir / "RCLONE_LICENSE").write_text("", encoding="utf-8")
+    (native_build_dir / "rclonekit_abi.h").write_text("", encoding="utf-8")
+    (native_build_dir / WINDOWS_AMD64_NATIVE_TARGET.executable_filename).write_bytes(b"exe")
+    (native_build_dir / "smoke-results.json").write_text("{}", encoding="utf-8")
+    source_tree = tmp_path / "source"
+    source_tree.mkdir()
+
+    build_distribution._stage_native_bundle_into_source_tree(
+        WINDOWS_AMD64_NATIVE_TARGET, native_build_dir, source_tree
+    )
+
+    staged_dir = (
+        source_tree
+        / "src"
+        / "rclone_kit"
+        / "assets"
+        / "native"
+        / WINDOWS_AMD64_NATIVE_TARGET.wheel_platform_tag
+    )
+    assert (staged_dir / WINDOWS_AMD64_NATIVE_TARGET.library_filename).is_file()
+    assert (staged_dir / "native-manifest.json").is_file()
+    assert (staged_dir / "SHA256SUMS").is_file()
+    assert (staged_dir / "RCLONE_LICENSE").is_file()
+    assert (staged_dir / "rclonekit_abi.h").is_file()
+    assert not (staged_dir / WINDOWS_AMD64_NATIVE_TARGET.executable_filename).exists()
+    assert not (staged_dir / "smoke-results.json").exists()

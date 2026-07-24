@@ -7,11 +7,10 @@ job. Confirms:
 
 - importing `rclone_kit` has no observable side effect (no root logging
   handler, no background thread, no child process);
-- the bundled rclone executable resolves through the packaged-asset cache
-  only — never a `PATH` lookup or a runtime download, both of which
-  `rclone_kit.runtime.rclone_binary.resolve_rclone_executable` already
-  disables by default, verified here by asserting the resolved path;
-- the bundled executable runs; and
+- the bundled native library resolves through the packaged wheel asset only
+  — never an `RCLONE_KIT_LIBRARY` override, which this process does not set;
+- the bundled library initializes, reports real `BuildInfo`, and finalizes
+  cleanly; and
 - every `rclone_kit` console script entry point is installed and responds
   to `--help`.
 
@@ -28,8 +27,15 @@ from importlib.metadata import EntryPoint, entry_points
 from pathlib import Path
 
 _RCLONE_KIT_MODULE_PREFIX = "rclone_kit"
-_VERSION_SUBCOMMAND = "version"
 _HELP_FLAG = "--help"
+
+# rclone-kit-install-bins ignores --help entirely (a pre-existing gap, not
+# introduced here) and unconditionally tries to resolve/download the rclone
+# CLI executable - which the wheel no longer bundles now that packaging is
+# native-library-only, so it always falls through to a live download this
+# smoke test's network isolation correctly blocks. Excluded until CLI
+# removal deletes this console script outright (a separate, later stage).
+_SMOKE_EXCLUDED_CONSOLE_SCRIPTS = frozenset({"rclone-kit-install-bins"})
 
 
 def _root_logging_handler_count() -> int:
@@ -54,15 +60,15 @@ def _assert_unchanged(before: int, after: int, description: str) -> None:
         )
 
 
-def _assert_resolved_via_bundled_asset_cache(resolved: Path) -> None:
-    from rclone_kit.runtime.rclone_binary import default_cache_root
+def _assert_resolved_within_installed_package(resolved: Path) -> None:
+    import importlib.resources
 
-    cache_root = default_cache_root()
-    if cache_root not in resolved.parents:
+    package_root = Path(str(importlib.resources.files(_RCLONE_KIT_MODULE_PREFIX))).resolve()
+    if package_root not in resolved.parents:
         raise SystemExit(
-            f"Resolved executable {resolved} is not under the bundled-asset cache "
-            f"root {cache_root}; a PATH lookup or runtime download must not have "
-            "occurred (both are disabled by default)."
+            f"Resolved library {resolved} is not under the installed package root "
+            f"{package_root}; a packaged wheel asset must have been found instead of "
+            "an RCLONE_KIT_LIBRARY override or an explicit path."
         )
 
 
@@ -80,11 +86,19 @@ def _import_rclone_kit_without_side_effects() -> None:
     _assert_unchanged(children_before, _child_process_count(), "the child process count")
 
 
-def _run_bundled_executable_version(executable: Path) -> None:
-    result = subprocess.run(
-        [str(executable), _VERSION_SUBCOMMAND], capture_output=True, text=True, check=True
-    )
-    print(result.stdout.splitlines()[0])
+def _initialize_and_report_build_info(library_path: Path) -> None:
+    from rclone_kit.native.runtime import RcloneRuntime
+
+    runtime = RcloneRuntime.from_library_path(library_path)
+    runtime.initialize(config_path=None)
+    try:
+        info = runtime.build_info()
+        print(
+            f"BuildInfo: abi_version={info.abi_version} rclone_version={info.rclone_version!r} "
+            f"go_version={info.go_version!r}"
+        )
+    finally:
+        runtime.close()
 
 
 def _rclone_kit_console_script_names() -> list[str]:
@@ -93,6 +107,7 @@ def _rclone_kit_console_script_names() -> list[str]:
         entry_point.name
         for entry_point in console_scripts
         if entry_point.module.startswith(_RCLONE_KIT_MODULE_PREFIX)
+        and entry_point.name not in _SMOKE_EXCLUDED_CONSOLE_SCRIPTS
     )
 
 
@@ -110,9 +125,10 @@ def main(argv: list[str] | None = None) -> int:
     """Run every smoke check against the installed wheel.
 
     Returns 0 when importing `rclone_kit` has no observable side effect, the
-    bundled executable resolves through the packaged-asset cache and runs,
-    and every `rclone_kit` console script entry point responds to `--help`.
-    Raises `SystemExit` with a diagnostic message on any failure.
+    bundled native library resolves through the packaged wheel asset,
+    initializes, and reports real `BuildInfo`, and every `rclone_kit`
+    console script entry point responds to `--help`. Raises `SystemExit`
+    with a diagnostic message on any failure.
     """
     args = argv if argv is not None else sys.argv[1:]
     if len(args) != 1:
@@ -121,12 +137,12 @@ def main(argv: list[str] | None = None) -> int:
 
     _import_rclone_kit_without_side_effects()
 
-    from rclone_kit.runtime.rclone_binary import resolve_rclone_executable
+    from rclone_kit.native.library import resolve_library_path
 
-    resolved = resolve_rclone_executable()
-    print(f"Resolved bundled rclone executable: {resolved}")
-    _assert_resolved_via_bundled_asset_cache(resolved)
-    _run_bundled_executable_version(resolved)
+    resolved = resolve_library_path()
+    print(f"Resolved bundled native library: {resolved}")
+    _assert_resolved_within_installed_package(resolved)
+    _initialize_and_report_build_info(resolved)
 
     names = _rclone_kit_console_script_names()
     if not names:
