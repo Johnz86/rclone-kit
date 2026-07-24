@@ -1,14 +1,15 @@
 # Native C ABI migration: Wave I design (public compatibility transition)
 
 Status: partially done - C02/C06/C07/C08 (deprecation) complete; M04 (`config_show`) also now
-complete (second addendum below). The wave's own full exit gate ("make embedded execution the
-default only after every non-deprecated method is complete") is **still** not reachable: the sole
-remaining blocker is **T15** (`copy_file_s3_resumable`), which needs live S3 credentials this
-environment does not have - not something further coding can resolve. C04/C05 (`remove` decision
-rows) and C09 (`get_verbose`, explicitly annotated "not a migration blocker either way" in the
-ledger) do not independently block this gate.
+complete (second addendum below); T15 (`copy_file_s3_resumable`) upgraded from `planned` to
+`native_tested` (third addendum below) - every rclone-kit-side code path is implemented and verified
+against the real native library, and this is now the maximum this environment can verify without
+live S3 credentials. Every other row in `tests/parity/coverage.toml` is either at a test-backed
+status or explicitly non-blocking (C09) or correctly gated on Wave J's own removal precondition chain
+(C04/C05). Whether to flip `execution="embedded"` to the default now, given this state, is a policy
+call flagged back to the user rather than made unilaterally - see the third addendum.
 
-Date: 2026-07-24 (re-checked: 2026-07-24; M04 addendum: 2026-07-24)
+Date: 2026-07-24 (re-checked: 2026-07-24; M04 addendum: 2026-07-24; T15 addendum: 2026-07-24)
 
 Related documents:
 
@@ -89,6 +90,44 @@ verbatim. There is no controllable "obscure vs. not" toggle in this command's ac
 all; the challenge this row's ledger note called out was getting that always-on masking text exactly
 right in a from-scratch Go reimplementation, not honoring a flag that turns out not to exist.
 
+## 1c. Addendum: T15 (`copy_file_s3_resumable`) upgraded to `native_tested`, and a policy question
+
+T15 was `planned` with the note "every rclone-kit-side dependency is now embedded-capable... needs
+live S3 credentials this environment does not have." Before accepting that as a final answer, a
+research pass confirmed there was more real, honest progress available without any credentials:
+`upload_parts_resumable()` calls `self.size_file(src)` and `self.serve_http(src_dir)` directly on its
+`access` parameter, then downloads byte ranges from that HTTP server and re-uploads each chunk via
+`access.copy_to(chunk, dst_part)` - none of that is S3-specific. Pointing `dst_dir` at a plain local
+directory instead of a bucket exercises the *exact same* code path with no code change at all. A new
+native test (`tests/native/test_upload_parts_resumable_embedded_integration.py`) now runs
+`upload_parts_resumable()`/`copy_file_parts_resumable()` for real against the embedded client and a
+real `serve_http()` server - part splitting, ranged downloads, reassembly, and the resumable
+skip-already-uploaded-parts behavior are all verified against the real native library. Only
+`upload_parts_server_side_merge.py`'s call (the one genuinely S3-only piece, using `boto3`'s
+`upload_part_copy`/`complete_multipart_upload` against a real bucket) is faked out.
+
+A background research pass also confirmed this is not a gap this migration introduced: this repo's
+own `tests/cloud/test_copy_file_resumable_s3.py::test_copy_parts` - the actual end-to-end test for
+this exact functionality - is `@unittest.skip("Manual test...")`, unconditionally, regardless of
+whether credentials are present. It was never part of the automated suite, before or after this
+migration. T15's status moved from `planned` to `native_tested` to reflect this real, verified
+progress; it cannot honestly move further (to `cli_parity_tested`) without live credentials and
+deliberately un-skipping that manual test - genuinely outside what this environment or further
+coding can do.
+
+**The policy question this leaves**: Wave I's own exit gate text - "make embedded execution the
+default only after every non-deprecated method is complete" - read literally against the ledger's own
+terminal `complete` status, is circular (no row can reach the ledger's final `complete` step, which
+includes "embedded default enabled," until the default is already flipped). Read as intended - every
+row's actual implementation is done and tested as far as this environment allows - that condition now
+holds: every remaining `planned` row is either T15 (verified to the fullest extent achievable without
+external credentials), C09 (`get_verbose`, explicitly annotated "not a migration blocker either way"),
+or C04/C05 (`remove` decision rows correctly gated on Wave J's own removal precondition chain, not on
+any open implementation gap). Flipping `execution="embedded"` to the default is nonetheless a
+significant, hard-to-reverse-in-spirit behavior change affecting every existing caller of this
+library - this document does not make that call unilaterally; it is raised back to the user as a
+decision only they can make, alongside this session's other work.
+
 ## 2. Design decisions
 
 ### I1 - Deprecate in place; do not change behavior
@@ -129,3 +168,12 @@ shapes and the `obscure`/`no_obscure` rejection paths. A native test asserts CLI
 an unconfigured remote name (safe regardless of what either backend's own config file actually
 contains - see the test module's docstring) plus a whole-config sanity check and both rejection
 paths against the real built library.
+
+T15 (`copy_file_s3_resumable`): native tests
+(`tests/native/test_upload_parts_resumable_embedded_integration.py`) run the full non-merge upload
+path for real against the embedded client and a real `serve_http()` server, using a local directory
+in place of an S3 bucket - part splitting/range-download/reassembly, resumable skip-already-done
+behavior, and `copy_file_parts_resumable()`'s own orchestration with only the S3-only merge call
+faked out. No unit test was added on top of this: the orchestration-level behavior
+(`test_copy_file_parts_resumable.py`) and the merge logic in isolation
+(`test_upload_parts_server_side_merge.py`) already had unit coverage before this addendum.

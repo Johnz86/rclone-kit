@@ -510,11 +510,11 @@ id = "T15"
 method = "copy_file_s3_resumable"
 decision = "composite_rc"
 owner_module = "rclone_kit.client"
-status = "planned"
-parity_test = ""
-windows = false
+status = "native_tested"
+parity_test = "tests/native/test_upload_parts_resumable_embedded_integration.py::test_copy_file_parts_resumable_uploads_for_real_under_embedded_execution"
+windows = true
 linux = false
-notes = "Wave G's blocker (upload_parts_resumable()'s self.serve_http(src_dir) dependency) is now resolved by Wave H's serve_http() port - re-checked after Wave H landed, not left stale. Every rclone-kit-side dependency (access.copy_to, self.size_file, self.serve_http) is now embedded-capable. The one remaining gap is unrelated to CLI-vs-embedded execution: upload_parts_server_side_merge.py's merge step uses a real boto3 s3_client (upload_part_copy/complete_multipart_upload) regardless of execution mode, so exercising it at all - under either backend - needs live S3 credentials this environment does not have, the same pre-existing constraint every other S3-multipart test in this repo already has. Status stays planned pending that live verification, not because of any known embedded-specific gap."
+notes = "Wave G's blocker (upload_parts_resumable()'s self.serve_http(src_dir) dependency) is now resolved by Wave H's serve_http() port - re-checked after Wave H landed, not left stale. Every rclone-kit-side dependency (access.copy_to, self.size_file, self.serve_http) is now embedded-capable, and is now proven so: a new native test runs upload_parts_resumable()/copy_file_parts_resumable() for real against the embedded client and a real serve_http() HTTP server, using a local directory as dst_dir (the size_file/serve_http/range-download/copy_to chain is not S3-specific) to confirm correct part splitting, range downloads, reassembly, and resumable skip-already-uploaded-parts behavior, with only upload_parts_server_side_merge.py's call faked out. That remaining gap is unrelated to CLI-vs-embedded execution: it uses a real boto3 s3_client (upload_part_copy/complete_multipart_upload) regardless of execution mode, so exercising it at all - under either backend - needs live S3 credentials this environment does not have. Investigation (via a research agent) confirmed this was never automatically testable even before this migration: this repo's own tests/cloud/test_copy_file_resumable_s3.py::test_copy_parts is unconditionally @unittest.skip'd as a manual-only test regardless of credential availability. Status stays below cli_parity_tested pending that manual, credentialed verification - a pre-existing, permanent constraint this migration did not introduce and cannot close through further coding."
 
 [[row]]
 id = "F01"

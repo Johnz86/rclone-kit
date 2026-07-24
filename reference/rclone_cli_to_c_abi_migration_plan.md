@@ -749,18 +749,19 @@ CLI mode and collect failures before final removal.
 
 Wave I is partially done, following the normative design in
 [`native_c_abi_wave_i_review_and_design.md`](native_c_abi_wave_i_review_and_design.md): C02/C06–C08
-(deprecation) are complete, and M04 (`config_show`) was completed in a later addendum once Wave H's
-mount work freed up the rest of this wave's investigation. This wave's own exit gate - "make embedded
-execution the default only after every non-deprecated method is complete" - is **still not**
-reachable: the sole remaining row in `tests/parity/coverage.toml` blocking it is **T15**
-(`copy_file_s3_resumable`) - every rclone-kit-side dependency is now embedded-capable since Wave H's
-`serve_http()` port, but its merge step uses a real `boto3` S3 client regardless of execution mode, so
-exercising it at all needs live S3 credentials this environment does not have - the same pre-existing
-constraint every other S3-multipart test already has, not an embedded-specific gap, and not something
-further coding can resolve. No default was flipped and no CLI-only code was removed; D01–D11/D19–D21
-(this plan's own internal/distribution-removal ledger, including C04/C05's own `remove` rows) stay as
-they were, since every one of their gates is tied to T15 (transitively, every internal caller)
-reaching `complete` first, which has not happened.
+(deprecation) are complete, M04 (`config_show`) was completed in a later addendum once Wave H's
+mount work freed up the rest of this wave's investigation, and T15 (`copy_file_s3_resumable`) was
+upgraded from `planned` to `native_tested` in a third addendum - every rclone-kit-side code path is
+now proven against the real native library, the most this environment can verify without live S3
+credentials. No row in `tests/parity/coverage.toml` still represents an open implementation gap:
+C09 (`get_verbose`) is explicitly annotated "not a migration blocker either way," and C04/C05
+(`remove` decision rows) are correctly gated on Wave J's own removal precondition chain, not on any
+unfinished code. This wave's own exit gate - "make embedded execution the default only after every
+non-deprecated method is complete" - reads literally as circular against the ledger's own terminal
+`complete` status (see the third addendum for why), but read as intended, the underlying condition
+now holds. Flipping the default is nonetheless a significant, hard-to-reverse-in-spirit behavior
+change, so it was raised back to the user as a policy decision rather than made unilaterally; no
+default was flipped and no CLI-only code was removed in this pass.
 
 - **M04** (`config_show`): `config show`/`config show <remote>` had no RC equivalent (`config/dump`/
   `config/get` exist but return JSON, not this command's plain-text output). Added a new Go RC method,
@@ -771,6 +772,14 @@ reaching `complete` first, which has not happened.
   create`/`config update` do), so `fetch_config_show()`'s CLI-mode flag pass-through for them already
   crashes against a real build - not fixed here (out of migration scope), but not silently replicated
   either: the embedded path raises `UnsupportedEmbeddedOperationError` for either flag instead.
+- **T15** (`copy_file_s3_resumable`): `upload_parts_resumable()` calls `self.size_file(src)`/
+  `self.serve_http(src_dir)` directly on its `access` parameter, then range-downloads from that server
+  and re-uploads each chunk via `access.copy_to(chunk, dst_part)` - none of that is S3-specific.
+  Pointing `dst_dir` at a plain local directory exercises the exact same code path with no code
+  change, so a new native test now runs the full upload/reassembly/resume flow for real against the
+  embedded client, with only the S3-only merge call faked out. A research pass confirmed this repo's
+  own end-to-end test for the merge step was already an unconditional manual-only skip before this
+  migration - not a gap this migration introduced or can close through more coding.
 
 - **C06/C07/C08** (`webgui`/`launch_server`/`remote_control`) now emit `DeprecationWarning` on every
   call, with behavior completely unchanged - each is CLI-only with no planned embedded port (web GUI
@@ -796,16 +805,14 @@ install it with the Python package.
 Wave J is blocked and was not started - see
 [`native_c_abi_wave_j_review_and_design.md`](native_c_abi_wave_j_review_and_design.md). Every one of
 D02/D06/D07/D16-D18's own removal gates requires CLI compatibility mode to already be removed from
-the supported release, which requires Wave I's exit gate (embedded made the default), which -
-re-checked after Wave H's mount addendum resolved R01/R02 and M04 was separately completed - now
-requires only T15 (`copy_file_s3_resumable`'s live-S3-credential verification) to reach `complete`;
-the FUSE/WinFsp toolchain gate that previously sat in front of this chain is gone, and so is the Go
-bridge work M04 needed. Removing the executable resolver/wheel assets now would still break every
-`execution="cli"` deployment - still this library's default - for no compensating benefit, since
-embedded execution cannot yet reach full parity. This is a documented, verified blocker, not an
-oversight: nothing further can responsibly be designed or built for this wave until that (now much
-shorter) precondition chain is satisfied - and the one link left in it is an environment/credential
-gap, not an implementation gap.
+the supported release, which requires Wave I's exit gate (embedded made the default). Re-checked
+after Wave H's mount addendum resolved R01/R02, M04 was completed, and T15 was upgraded to
+`native_tested`: every implementation-level precondition this chain named is now closed. What is left
+is the policy decision raised in Wave I's own third addendum (whether to actually flip the default,
+given this state) and the release-process step after it ("publish one compatibility release... and
+collect failures before final removal") - neither of which this document decides. Removing the
+executable resolver/wheel assets now would still break every `execution="cli"` deployment - still
+this library's default - for no compensating benefit until that default actually changes.
 
 ## Per-row implementation checklist
 
