@@ -700,10 +700,24 @@ with rclone.mount_s3(
 
 Mounts are operational infrastructure: provision disk for the VFS cache,
 monitor its utilization, and run mount-specific smoke tests on the target OS.
-`mount()`/`mount_s3()` are CLI-only for now - embedded execution has no mount
-support yet (it needs a production build with FUSE/WinFsp wired in, which does
-not exist yet; calling either under `execution="embedded"` raises
-`UnsupportedEmbeddedOperationError`).
+
+Under `execution="embedded"`, `mount()`/`mount_s3()` dispatch to rclone's own
+`mount/mount` RC method and return a `MountHandle` instead of the CLI
+backend's subprocess-owning `Mount` - both expose the same `mount_path`,
+idempotent `.dispose()`, and context-manager close used above, so the
+examples above work unchanged under either execution mode. This requires the
+native library to have been built with `scripts/native/build.py --profile
+production` (Windows: WinFsp's SDK installed and on the build machine's
+`CPATH`; verified against Windows only so far - Linux FUSE was not exercised
+by this port). A `--profile development` build (this project's default) has
+no real mount implementation compiled in at all, and calling `mount()`/
+`mount_s3()` against one raises a plain `RcCallError`, not a confusing crash.
+
+`cache_dir` has no embedded equivalent and raises
+`UnsupportedEmbeddedOperationError` if given under `execution="embedded"`:
+rclone's `--cache-dir` sets a process-global cache location at CLI process
+startup, not a per-mount RC option, so there is no way to honor a per-call
+override of it over RC at all.
 
 `serve_webdav()` returns a long-lived handle. Bind it to a private interface,
 require credentials, and scope it:

@@ -586,23 +586,25 @@ notes = "Delegates to the associated client's read_text() instead of the private
 id = "R01"
 method = "mount"
 decision = "direct_rc"
-owner_module = "rclone_kit.client"
-status = "planned"
-parity_test = ""
-windows = false
+owner_module = "rclone_kit.operations.mount_ops_embedded"
+status = "cli_parity_tested"
+parity_test = "tests/native/test_mount_ops_embedded_integration.py::test_mount_reads_a_real_file"
+windows = true
 linux = false
-notes = "Blocked on a production build toolchain gap, not attempted this wave: mount/mount is wired (cmd/mountlib registered, R05) and correctly errors ('mount option specified is not registered, or is invalid') rather than crashing, since no platform mount implementation (cmd/mount for FUSE, cmd/cmount for WinFsp) is compiled in - scripts/native/build.py --profile only implements 'development' (no-mount build tags) today. Porting this method needs that toolchain to exist first."
+failure_contract_complete = true
+notes = "Wave H addendum. Unblocked by adding scripts/native/build.py --profile production (-tags cmount, CPATH pointing at the installed WinFsp SDK's fuse headers) - verified empirically end-to-end (real drive-letter mount, read, write, unmount) both via a standalone build and the actual C-shared library loaded through ctypes. mount/mount's vfsOpt/mountOpt parameters are JSON objects keyed by Go struct field names (e.g. 'CacheMode', 'ReadOnly'), NOT this project's usual underscored config: tags - a different convention from every other RC call ported so far. Returns a MountHandle (mount_path/idempotent dispose), not a reuse of the CLI-subprocess-coupled Mount class. cache_dir has no RC equivalent (rclone's --cache-dir sets process-global state via config.SetCacheDir at CLI startup, not a per-mount RC option) so it raises UnsupportedEmbeddedOperationError like other_args."
 
 [[row]]
 id = "R02"
 method = "mount_s3"
 decision = "composite_rc"
-owner_module = "rclone_kit.client"
-status = "planned"
-parity_test = ""
-windows = false
+owner_module = "rclone_kit.operations.mount_ops_embedded"
+status = "cli_parity_tested"
+parity_test = "tests/native/test_mount_ops_embedded_integration.py::test_mount_s3_reads_a_real_file"
+windows = true
 linux = false
-notes = "Depends on R01; blocked for the same reason."
+failure_contract_complete = true
+notes = "Wave H addendum. Builds vfsOpt/mountOpt/flat-config fields directly instead of launch_s3_mount's --flag value strings, since embedded execution has no other_args list to append them to. Preserves launch_s3_mount's exact flag-to-field mapping bug-for-bug: vfs_disk_space_total_size sets vfsOpt.CacheMaxSize (the --vfs-cache-max-size flag), not the similarly-named vfsOpt.DiskSpaceTotalSize field, so CLI and embedded stay semantically identical for the same parameters. modtime_strategy is split across two option structs depending on its value: USE_SERVER_MODTIME is a global _config option, NO_MODTIME is a vfsOpt field."
 
 [[row]]
 id = "R03"
@@ -634,7 +636,7 @@ method = "server listing/cleanup"
 decision = "direct_rc"
 owner_module = "rclone_kit.client"
 status = "cli_parity_tested"
-parity_test = "tests/native/test_serve_ops_embedded_integration.py::test_close_disposes_serve_handles_the_caller_never_disposed"
+parity_test = "tests/native/test_mount_ops_embedded_integration.py::test_close_disposes_mount_handles_the_caller_never_disposed"
 windows = true
 linux = false
-notes = "Wave H. Rclone tracks every ServeHandle it starts (self._serve_handles) and disposes each in close() (idempotent, so a handle the caller already disposed directly is a no-op) - mirroring _JobMonitor.shutdown()'s established Wave D pattern. mount/listmounts and mount/unmountall are wired (cmd/mountlib registered) and verified empirically (listmounts returns an empty list, unmountall succeeds trivially) but have nothing to reconcile without R01/R02's actual mount support, so no public API was added for them yet."
+notes = "Wave H, extended in the mount addendum. Rclone tracks every ServeHandle and every MountHandle it starts (self._serve_handles, self._mount_handles) and disposes each in close() (idempotent, so a handle the caller already disposed directly is a no-op) - mirroring _JobMonitor.shutdown()'s established Wave D pattern. mount/listmounts and mount/unmountall are wired (cmd/mountlib registered) and verified empirically but still have no public API of their own (MountHandle only needs mount/unmount for the mounts it itself started)."

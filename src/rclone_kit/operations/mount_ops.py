@@ -8,6 +8,7 @@ from rclone_kit.command_flags import FLAG_TRANSFERS, FLAG_VFS_CACHE_MODE
 from rclone_kit.convert import convert_to_str
 from rclone_kit.dir import Dir
 from rclone_kit.mount import Mount
+from rclone_kit.mount_handle import MountHandle
 from rclone_kit.mount_util import clean_mount, ensure_mount_supported, prepare_mount
 from rclone_kit.remote import Remote
 from rclone_kit.types import ModTimeStrategy
@@ -30,7 +31,7 @@ class MountAccess(Protocol):
         cache_dir_delete_on_exit: bool | None = None,
         log: Path | None = None,
         other_args: list[str] | None = None,
-    ) -> Mount: ...
+    ) -> Mount | MountHandle: ...
 
 
 def launch_mount(
@@ -130,7 +131,7 @@ def launch_s3_mount(
     vfs_fast_fingerprint: bool = True,
     vfs_refresh: bool = True,
     other_args: list[str] | None = None,
-) -> Mount:
+) -> Mount | MountHandle:
     """Mount a remote or directory to a local path with S3-tuned VFS defaults."""
     other_args = other_args or []
     if modtime_strategy is not None:

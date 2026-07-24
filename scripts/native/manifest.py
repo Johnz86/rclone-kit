@@ -135,7 +135,17 @@ def build_manifest(
     toolchain: ToolchainProvenance,
     target: NativeTarget,
     outputs: tuple[OutputFile, ...],
+    go_build_tags: tuple[str, ...] | None = None,
 ) -> NativeBuildManifest:
+    """Build the manifest for one completed native build.
+
+    `go_build_tags` records the tags this *specific build* actually used
+    (e.g. `("cmount",)` for a `--profile production` build) - it is not
+    read from `target.go_build_tags`, which only describes the platform,
+    not which profile produced this particular set of outputs. Defaults to
+    `target.go_build_tags` (empty) when not given, for callers that only
+    ever build one profile.
+    """
     return NativeBuildManifest(
         schema=_MANIFEST_SCHEMA_VERSION,
         rclone_kit_version=rclone_kit_version,
@@ -146,7 +156,7 @@ def build_manifest(
         target_os=target.operating_system.value,
         target_arch=target.architecture.value,
         wheel_platform_tag=target.wheel_platform_tag,
-        go_build_tags=target.go_build_tags,
+        go_build_tags=go_build_tags if go_build_tags is not None else target.go_build_tags,
         outputs=outputs,
     )
 

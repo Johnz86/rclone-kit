@@ -9,11 +9,16 @@ section, which this script implements. This is the single command a
 developer or CI job runs; no other script or manual shell sequence is the
 source of truth for a native build.
 
-Only the `development` profile (no mount build tags) is implemented; the
-`production` profile requires WinFsp/FUSE toolchain wiring that has not been
-added yet. Only `windows-amd64`, built on a Windows amd64 host, is
-implemented; the Linux target must be built inside a pinned manylinux
-container that does not exist yet.
+The `development` profile builds with no mount support (`-tags cmount` is not
+passed). The `production` profile additionally passes `-tags cmount` and
+requires the WinFsp SDK (headers only, at build time) to be installed on the
+Windows build host - it does not need to be installed on end-user machines
+for anything except actually calling `mount()`/`mount_s3()`, which also needs
+the separate WinFsp runtime/driver installed and running (see
+`native_c_abi_wave_h_review_and_design.md`'s mount addendum for how this was
+verified against a real mount). Only `windows-amd64`, built on a Windows
+amd64 host, is implemented; the Linux target must be built inside a pinned
+manylinux container that does not exist yet.
 
 Usage:
     uv run python scripts/native/build.py --target windows-amd64
@@ -58,7 +63,17 @@ _FOCUSED_GO_TEST_PACKAGES = ("./lib/oauthutil", "./fs/config", "./librclone/..."
 _BRIDGE_PACKAGE = "./librclone/rclonekit"
 
 _DEVELOPMENT_PROFILE = "development"
-_SUPPORTED_PROFILES = (_DEVELOPMENT_PROFILE,)
+_PRODUCTION_PROFILE = "production"
+_SUPPORTED_PROFILES = (_DEVELOPMENT_PROFILE, _PRODUCTION_PROFILE)
+_MOUNT_BUILD_TAG = "cmount"
+
+# Both Program Files locations are checked because WinFsp's own installer
+# offers either, matching upstream rclone's own Windows CI convention
+# (native/rclone/.github/workflows/build.yml sets CPATH to both).
+_WINFSP_FUSE_INCLUDE_CANDIDATES = (
+    Path(r"C:\Program Files\WinFsp\inc\fuse"),
+    Path(r"C:\Program Files (x86)\WinFsp\inc\fuse"),
+)
 
 
 class NativeBuildError(Exception):
@@ -136,10 +151,39 @@ def _require_submodule_present() -> None:
         )
 
 
-def _build_env(cc_path: str) -> dict[str, str]:
+def _require_winfsp_fuse_include_dir() -> Path:
+    """Locate the installed WinFsp SDK's `inc/fuse` directory (headers
+    only - no `.lib`/LDFLAGS linking is needed; cgofuse's Windows support
+    loads the WinFsp runtime DLL dynamically, confirmed empirically by
+    building and running a real mount, not assumed).
+    """
+    for candidate in _WINFSP_FUSE_INCLUDE_CANDIDATES:
+        if candidate.is_dir():
+            return candidate
+    raise NativeBuildError(
+        "No installed WinFsp SDK found (checked: "
+        f"{', '.join(str(c) for c in _WINFSP_FUSE_INCLUDE_CANDIDATES)}). "
+        "The --profile production build needs the WinFsp SDK's headers at build "
+        "time; install WinFsp (including its developer/SDK component) from "
+        "https://winfsp.dev/ first."
+    )
+
+
+def _build_env(cc_path: str, *, mount_tags: bool) -> dict[str, str]:
     env = os.environ.copy()
     env["CGO_ENABLED"] = "1"
     env["CC"] = cc_path
+    if mount_tags:
+        fuse_include_dir = _require_winfsp_fuse_include_dir()
+        # CPATH is a plain gcc/clang search-path env var (not Go-specific):
+        # matches upstream rclone's own Windows CI convention for the same
+        # cmount build (native/rclone/.github/workflows/build.yml).
+        existing_cpath = env.get("CPATH", "")
+        env["CPATH"] = (
+            f"{fuse_include_dir}{os.pathsep}{existing_cpath}"
+            if existing_cpath
+            else str(fuse_include_dir)
+        )
     return env
 
 
@@ -152,16 +196,38 @@ def _run_focused_go_tests(go_executable: str, env: dict[str, str]) -> None:
     )
 
 
-def _build_executable(go_executable: str, env: dict[str, str], output_path: Path) -> None:
+def _build_tags(mount_tags: bool) -> tuple[str, ...]:
+    return (_MOUNT_BUILD_TAG,) if mount_tags else ()
+
+
+def _tags_args(mount_tags: bool) -> list[str]:
+    tags = _build_tags(mount_tags)
+    return ["-tags", ",".join(tags)] if tags else []
+
+
+def _build_executable(
+    go_executable: str, env: dict[str, str], output_path: Path, *, mount_tags: bool
+) -> None:
     subprocess.run(
-        [go_executable, "build", "-trimpath", "-buildvcs=true", "-o", str(output_path), "."],
+        [
+            go_executable,
+            "build",
+            "-trimpath",
+            "-buildvcs=true",
+            *_tags_args(mount_tags),
+            "-o",
+            str(output_path),
+            ".",
+        ],
         cwd=_SUBMODULE_DIR,
         env=env,
         check=True,
     )
 
 
-def _build_library(go_executable: str, env: dict[str, str], output_path: Path) -> None:
+def _build_library(
+    go_executable: str, env: dict[str, str], output_path: Path, *, mount_tags: bool
+) -> None:
     subprocess.run(
         [
             go_executable,
@@ -169,6 +235,7 @@ def _build_library(go_executable: str, env: dict[str, str], output_path: Path) -
             "-trimpath",
             "-buildvcs=true",
             "-buildmode=c-shared",
+            *_tags_args(mount_tags),
             "-o",
             str(output_path),
             _BRIDGE_PACKAGE,
@@ -191,9 +258,9 @@ def build_native_target(
     """
     if profile not in _SUPPORTED_PROFILES:
         raise NativeBuildError(
-            f"Unsupported --profile {profile!r}; only {_SUPPORTED_PROFILES!r} is "
-            "implemented (mount/cmount toolchain wiring is not ready yet)."
+            f"Unsupported --profile {profile!r}; expected one of {_SUPPORTED_PROFILES!r}."
         )
+    mount_tags = profile == _PRODUCTION_PROFILE
     _require_submodule_present()
     _require_running_on_target_platform(target)
 
@@ -201,15 +268,15 @@ def build_native_target(
     go_executable = _require_go_executable()
     _require_go_version_matches(go_executable, toolchain)
     cc_path = _windows_cc(toolchain)
-    env = _build_env(cc_path)
+    env = _build_env(cc_path, mount_tags=mount_tags)
 
     out_dir.mkdir(parents=True, exist_ok=True)
     executable_path = out_dir / target.executable_filename
     library_path = out_dir / target.library_filename
 
     _run_focused_go_tests(go_executable, env)
-    _build_executable(go_executable, env, executable_path)
-    _build_library(go_executable, env, library_path)
+    _build_executable(go_executable, env, executable_path, mount_tags=mount_tags)
+    _build_library(go_executable, env, library_path, mount_tags=mount_tags)
 
     shutil.copyfile(_ABI_HEADER_SOURCE, out_dir / _ABI_HEADER_OUTPUT_NAME)
     shutil.copyfile(_RCLONE_LICENSE_SOURCE, out_dir / _LICENSE_OUTPUT_NAME)
@@ -238,6 +305,7 @@ def build_native_target(
         toolchain=toolchain_info,
         target=target,
         outputs=outputs,
+        go_build_tags=_build_tags(mount_tags),
     )
     native_manifest.write_manifest(built_manifest, out_dir / _MANIFEST_OUTPUT_NAME)
     native_manifest.write_sha256sums(outputs, out_dir / _SHA256SUMS_OUTPUT_NAME)
@@ -254,7 +322,11 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         "--profile",
         default=_DEVELOPMENT_PROFILE,
         choices=_SUPPORTED_PROFILES,
-        help="Build profile (only 'development'/no-mount is implemented).",
+        help=(
+            "Build profile: 'development' (no mount support) or 'production' "
+            "(adds mount()/mount_s3() support via -tags cmount; needs the WinFsp SDK "
+            "installed at build time)."
+        ),
     )
     parser.add_argument(
         "--out-dir",

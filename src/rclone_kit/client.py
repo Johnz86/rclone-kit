@@ -36,6 +36,7 @@ from rclone_kit.fs.filesystem import FSPath, RemoteFS
 from rclone_kit.http_server import HttpServer
 from rclone_kit.job import JobHandle, _JobMonitor
 from rclone_kit.mount import Mount
+from rclone_kit.mount_handle import MountHandle
 from rclone_kit.native.build_info import NativeBuildInfo
 from rclone_kit.native.library import resolve_library_path
 from rclone_kit.native.runtime import RcloneRuntime
@@ -73,6 +74,7 @@ from rclone_kit.operations.listing_ops_embedded import (
     stream_diff_embedded,
 )
 from rclone_kit.operations.mount_ops import launch_mount, launch_s3_mount
+from rclone_kit.operations.mount_ops_embedded import fetch_mount_embedded, fetch_s3_mount_embedded
 from rclone_kit.operations.serve_ops import launch_http_server, launch_webdav_server
 from rclone_kit.operations.serve_ops_embedded import (
     fetch_serve_http_embedded,
@@ -104,6 +106,7 @@ from rclone_kit.rc.client import RcClient
 from rclone_kit.rc.fs_spec import encode_fs_spec
 from rclone_kit.rc.jobs import RcloneRcJobClient
 from rclone_kit.rc.list_stream import RcloneRcListStreamClient
+from rclone_kit.rc.mount import RcloneRcMountClient
 from rclone_kit.rc.serve import RcloneRcServeClient
 from rclone_kit.remote import Remote
 from rclone_kit.rpath import RPath
@@ -129,6 +132,7 @@ from rclone_kit.util import (
 )
 
 if TYPE_CHECKING:
+    from rclone_kit.rc.mount import RcMountClient
     from rclone_kit.rc.serve import RcServeClient
     from rclone_kit.s3.api import S3Client
     from rclone_kit.s3.types import S3Credentials
@@ -273,6 +277,8 @@ class Rclone:
         self._job_monitor: _JobMonitor | None = None
         self._serve_client: RcServeClient | None = None
         self._serve_handles: set[ServeHandle] = set()
+        self._mount_client: RcMountClient | None = None
+        self._mount_handles: set[MountHandle] = set()
 
         if execution == "embedded":
             if backend is not None or rclone_exe is not None:
@@ -337,8 +343,9 @@ class Rclone:
         `OperationShutdownError` and leaves the runtime open, rather than
         reporting a false close, if a job cannot be confirmed settled
         within the shutdown deadline. Also stops every `serve/start`
-        instance this client started but never explicitly disposed
-        (Wave H design, R05: "runtime tracks only resources it owns").
+        instance and unmounts every `mount/mount` instance this client
+        started but never explicitly disposed (Wave H design, R05:
+        "runtime tracks only resources it owns").
 
         Only closes the embedded runtime itself if this client created it;
         an injected `runtime` outlives this client, matching
@@ -346,6 +353,8 @@ class Rclone:
         """
         for handle in list(self._serve_handles):
             handle.dispose()
+        for mount_handle in list(self._mount_handles):
+            mount_handle.dispose()
         if self._job_monitor is not None:
             all_settled = self._job_monitor.shutdown(
                 deadline_seconds=_JOB_SHUTDOWN_DEADLINE_SECONDS
@@ -877,6 +886,18 @@ class Rclone:
         self._serve_handles.add(handle)
         return handle
 
+    def _ensure_mount_client(self) -> RcMountClient:
+        if self._mount_client is None:
+            assert self._rc_client is not None
+            self._mount_client = RcloneRcMountClient(self._rc_client)
+        return self._mount_client
+
+    def _track_mount_handle(self, handle: MountHandle) -> MountHandle:
+        """Track `handle` so `close()` disposes it if the caller never
+        does, mirroring `_track_serve_handle`'s R05 rationale."""
+        self._mount_handles.add(handle)
+        return handle
+
     def start_copy(
         self,
         src: Dir | Remote | str,
@@ -1233,7 +1254,7 @@ class Rclone:
         cache_dir_delete_on_exit: bool | None = None,
         log: Path | None = None,
         other_args: list[str] | None = None,
-    ) -> Mount:
+    ) -> Mount | MountHandle:
         """Mount a remote or directory to a local path.
 
         Args:
@@ -1241,14 +1262,35 @@ class Rclone:
             outdir: Local path to mount to
 
         Returns:
-            CompletedProcess from the mount command execution
+            A `Mount` under `execution="cli"`, or a `MountHandle` under
+            `execution="embedded"` (Wave H design, R01) - both expose
+            `.mount_path`/`.dispose()`-or-`.close()`/context-manager close,
+            but otherwise have different surfaces, since a `Mount` has no
+            embedded equivalent to fall back to.
 
         Raises:
             subprocess.CalledProcessError: If the mount operation fails
             MountPrerequisiteError: If the current platform lacks the
                 operating-system mount facility rclone's `mount` subcommand
                 requires (WinFsp on Windows, FUSE on Linux)
+            UnsupportedEmbeddedOperationError: if `other_args` or
+                `cache_dir` is given (embedded backend)
         """
+        if self._rc_client is not None:
+            if other_args:
+                raise UnsupportedEmbeddedOperationError("mount (other_args)")
+            if cache_dir is not None:
+                raise UnsupportedEmbeddedOperationError("mount (cache_dir)")
+            handle = fetch_mount_embedded(
+                self._ensure_mount_client(),
+                convert_to_str(src),
+                outdir,
+                allow_writes=allow_writes,
+                transfers=transfers,
+                use_links=use_links,
+                vfs_cache_mode=vfs_cache_mode,
+            )
+            return self._track_mount_handle(handle)
         return launch_mount(
             self._backend,
             src,
@@ -1280,13 +1322,38 @@ class Rclone:
         vfs_fast_fingerprint: bool = True,
         vfs_refresh: bool = True,
         other_args: list[str] | None = None,
-    ) -> Mount:
-        """Mount a remote or directory to a local path.
+    ) -> Mount | MountHandle:
+        """Mount a remote or directory to a local path with S3-tuned VFS
+        defaults.
 
         Args:
             src: Remote or directory to mount
             outdir: Local path to mount to
+
+        Raises:
+            UnsupportedEmbeddedOperationError: if `other_args` is nonempty
+                (embedded backend)
         """
+        if self._rc_client is not None:
+            if other_args:
+                raise UnsupportedEmbeddedOperationError("mount_s3 (other_args)")
+            handle = fetch_s3_mount_embedded(
+                self._ensure_mount_client(),
+                url,
+                outdir,
+                allow_writes=allow_writes,
+                vfs_cache_mode=vfs_cache_mode,
+                dir_cache_time=dir_cache_time,
+                attribute_timeout=attribute_timeout,
+                vfs_disk_space_total_size=vfs_disk_space_total_size,
+                transfers=transfers,
+                modtime_strategy=modtime_strategy,
+                vfs_read_chunk_streams=vfs_read_chunk_streams,
+                vfs_read_chunk_size=vfs_read_chunk_size,
+                vfs_fast_fingerprint=vfs_fast_fingerprint,
+                vfs_refresh=vfs_refresh,
+            )
+            return self._track_mount_handle(handle)
         return launch_s3_mount(
             self,
             url,

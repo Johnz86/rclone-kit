@@ -8,6 +8,7 @@ runtime shares the one session-scoped `native_runtime` fixture below instead
 of each initializing its own.
 """
 
+import json
 import platform as _platform
 from collections.abc import Iterator
 from pathlib import Path
@@ -19,6 +20,7 @@ from rclone_kit.runtime.exceptions import UnsupportedPlatformError
 from rclone_kit.runtime.native_platform import resolve_native_target
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+_MOUNT_BUILD_TAG = "cmount"
 
 
 def _built_target_dir() -> Path | None:
@@ -41,6 +43,27 @@ EXECUTABLE_PATH: Path | None = _TARGET_DIR / "rclone.exe" if _TARGET_DIR else No
 
 NATIVE_LIBRARY_AVAILABLE = LIBRARY_PATH is not None and LIBRARY_PATH.is_file()
 NATIVE_EXECUTABLE_AVAILABLE = EXECUTABLE_PATH is not None and EXECUTABLE_PATH.is_file()
+
+
+def _built_with_mount_support() -> bool:
+    """Whether the currently built target was produced with `--profile
+    production` (`-tags cmount`): `mount/mount` only has a real WinFsp/FUSE
+    implementation registered in that profile - see
+    `native_c_abi_wave_h_review_and_design.md`'s mount addendum. Checked
+    via the build's own manifest rather than assumed, since
+    `build/native/<target>/` may hold either profile's output depending on
+    which `scripts/native/build.py` invocation produced it last.
+    """
+    if _TARGET_DIR is None:
+        return False
+    manifest_path = _TARGET_DIR / "native-manifest.json"
+    if not manifest_path.is_file():
+        return False
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    return _MOUNT_BUILD_TAG in manifest.get("go_build_tags", [])
+
+
+NATIVE_MOUNT_AVAILABLE = NATIVE_EXECUTABLE_AVAILABLE and _built_with_mount_support()
 
 
 @pytest.fixture(scope="session")

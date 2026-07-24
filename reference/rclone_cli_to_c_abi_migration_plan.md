@@ -693,10 +693,16 @@ Ledger: R01–R05, D12–D13.
 Implement typed handles and runtime-owned cleanup. Add explicit serve imports in the Go bridge and
 the required Windows cmount/Linux FUSE production build profiles. Run privileged platform tests.
 
-Wave H is partially done, following the normative design in
+Wave H is now complete, following the normative design in
 [`native_c_abi_wave_h_review_and_design.md`](native_c_abi_wave_h_review_and_design.md): R03/R04/R05
-are complete; R01/R02 (`mount()`/`mount_s3()`) are genuinely blocked on the Windows cmount/Linux FUSE
-production build toolchain this section itself already calls out as needed, not attempted.
+were completed first; R01/R02 (`mount()`/`mount_s3()`) were initially deferred as genuinely blocked
+on the Windows cmount/Linux FUSE production build toolchain this section itself called out as
+needed, then completed in a mount addendum once that toolchain gap was explicitly authorized and
+closed (a new `scripts/native/build.py --profile production`, `cmd/cmount` wired into the bridge,
+`rc/mount.py`/`MountHandle`/`mount_ops_embedded.py`) - see the design doc's section 6 for the full
+account, including the `vfsOpt`/`mountOpt` parameter-naming distinction discovered along the way and
+one deliberately preserved CLI bug (`vfs_disk_space_total_size` mapping to `CacheMaxSize`, not the
+similarly-named `DiskSpaceTotalSize`).
 
 - **R03/R04 (`serve_webdav`/`serve_http`)**: verified empirically, before writing any Python code,
   that `cmd/serve/http`/`cmd/serve/webdav` need no platform driver (unlike mount) - both import
@@ -713,21 +719,20 @@ production build toolchain this section itself already calls out as needed, not 
   `ServeHandle` in place of a `Process`. A pre-existing "via NFS" docstring/error-message bug on
   `serve_webdav()` (this method serves WebDAV, not NFS) was fixed while touching this code, per this
   row's own ledger note.
-- **R05 (server listing/cleanup)**: `Rclone` now tracks every `ServeHandle` it starts and disposes
-  each (idempotently) in `close()`, mirroring `_JobMonitor.shutdown()`'s established Wave D pattern -
-  "the runtime tracks only resources it owns." `cmd/mountlib` (the `mount/*` RC method registry, with
-  no dependency on `cmd`, FUSE, or WinFsp) was also registered and verified empirically:
-  `mount/listmounts` returns an empty list and `mount/unmountall` succeeds trivially with nothing
-  registered to unmount, while `mount/mount` itself correctly fails ("mount option specified is not
-  registered, or is invalid") rather than crashing or silently no-opping - but with no actual mount
-  support yet, there is nothing for a mount-listing API to reconcile, so no public surface was added
-  for it this wave.
-- **R01/R02 (`mount`/`mount_s3`)**: not completed, and not silently skipped either - confirmed via
-  the same empirical `mount/mount` call above that the RC method is already wired and fails honestly.
-  Actually porting these needs a real platform mount implementation (`cmd/mount`/FUSE on Linux,
-  `cmd/cmount`/WinFsp on Windows) compiled into a production build profile that does not exist yet
-  (`scripts/native/build.py --profile` only implements `development`, no-mount, today) - a distinct,
-  substantial toolchain undertaking from this wave's RC-wiring work.
+- **R05 (server listing/cleanup)**: `Rclone` tracks every `ServeHandle` and every `MountHandle` it
+  starts and disposes each (idempotently) in `close()`, mirroring `_JobMonitor.shutdown()`'s
+  established Wave D pattern - "the runtime tracks only resources it owns."
+- **R01/R02 (`mount`/`mount_s3`)**: completed in the mount addendum. `scripts/native/build.py` gained
+  a `--profile production` (Go build tag `cmount`, `CPATH` pointed at the installed WinFsp SDK's
+  headers, no static linking needed - `cgofuse` resolves `winfsp-x64.dll` dynamically at runtime).
+  `mount()`/`mount_s3()` dispatch to a new `rc/mount.py` boundary and `MountHandle` (mirroring
+  `rc/serve.py`/`ServeHandle`, not a retrofit of the CLI-subprocess-coupled `Mount` class). `mount/
+  mount`'s `vfsOpt`/`mountOpt` parameters turned out to use a different convention from every other
+  RC call so far - JSON objects keyed by Go struct field names, not this project's usual underscored
+  `config:` tags - documented in the design doc's section 6.2. `mount_s3()`'s embedded path
+  deliberately preserves one CLI naming quirk bug-for-bug (`vfs_disk_space_total_size` maps to
+  `vfsOpt.CacheMaxSize`, not the similarly-named `vfsOpt.DiskSpaceTotalSize`) so CLI and embedded stay
+  semantically identical rather than diverging by "fixing" a latent bug mid-migration.
 
 ### Wave I — public compatibility transition
 
@@ -740,11 +745,18 @@ CLI mode and collect failures before final removal.
 Wave I is partially done, following the normative design in
 [`native_c_abi_wave_i_review_and_design.md`](native_c_abi_wave_i_review_and_design.md): C02/C06–C08
 (deprecation) are complete. This wave's own exit gate - "make embedded execution the default only
-after every non-deprecated method is complete" - is **not** reachable yet, since `mount()`/
-`mount_s3()` (Wave H, R01/R02) remain genuinely blocked on FUSE/WinFsp production build toolchain
-work that does not exist yet. No default was flipped and no CLI-only code was removed; D01–D11/
-D19–D21 (this plan's own internal/distribution-removal ledger) stay as they were, since every one of
-their gates is tied to other rows reaching `complete` first, which has not happened.
+after every non-deprecated method is complete" - is **still not** reachable, re-checked after Wave
+H's mount addendum landed: `mount()`/`mount_s3()` (R01/R02) are no longer the blocker, but two
+unrelated rows in `tests/parity/coverage.toml` remain `planned`: **M04** (`config_show`, needs a
+focused Go bridge extension for exact legacy obscure/no-obscure text behavior - genuine new Go work,
+not attempted here) and **T15** (`copy_file_s3_resumable`, every rclone-kit-side dependency is now
+embedded-capable since Wave H's `serve_http()` port, but its merge step uses a real `boto3` S3 client
+regardless of execution mode, so exercising it at all needs live S3 credentials this environment does
+not have - the same pre-existing constraint every other S3-multipart test already has, not an
+embedded-specific gap). No default was flipped and no CLI-only code was removed; D01–D11/D19–D21
+(this plan's own internal/distribution-removal ledger, including C04/C05's own `remove` rows) stay as
+they were, since every one of their gates is tied to M04/T15 (transitively, every internal caller)
+reaching `complete` first, which has not happened.
 
 - **C06/C07/C08** (`webgui`/`launch_server`/`remote_control`) now emit `DeprecationWarning` on every
   call, with behavior completely unchanged - each is CLI-only with no planned embedded port (web GUI
@@ -770,13 +782,15 @@ install it with the Python package.
 Wave J is blocked and was not started - see
 [`native_c_abi_wave_j_review_and_design.md`](native_c_abi_wave_j_review_and_design.md). Every one of
 D02/D06/D07/D16-D18's own removal gates requires CLI compatibility mode to already be removed from
-the supported release, which requires Wave I's exit gate (embedded made the default), which requires
-Wave H's R01/R02 (`mount`/`mount_s3`) to be ported, which requires FUSE/WinFsp production build
-toolchain work that does not exist yet. Removing the executable resolver/wheel assets now would break
-every `execution="cli"` deployment - still this library's default - for no compensating benefit,
-since embedded execution cannot yet reach parity. This is a documented, verified blocker, not an
-oversight: nothing further can responsibly be designed or built for this wave until that precondition
-chain is satisfied.
+the supported release, which requires Wave I's exit gate (embedded made the default), which -
+re-checked after Wave H's mount addendum resolved R01/R02 - now requires only M04
+(`config_show`'s Go bridge extension) and T15 (`copy_file_s3_resumable`'s live-S3-credential
+verification) to reach `complete`; the FUSE/WinFsp toolchain gate that previously sat in front of
+this chain is gone. Removing the executable resolver/wheel assets now would still break every
+`execution="cli"` deployment - still this library's default - for no compensating benefit, since
+embedded execution cannot yet reach full parity. This is a documented, verified blocker, not an
+oversight: nothing further can responsibly be designed or built for this wave until that (now
+shorter) precondition chain is satisfied.
 
 ## Per-row implementation checklist
 
