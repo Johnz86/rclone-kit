@@ -12,9 +12,10 @@ long-running services.
 - Windows amd64;
 - Linux amd64 using the `manylinux2014_x86_64` platform tag.
 
-Each supported wheel contains a pinned, checksum-verified rclone executable.
-A wheel installation therefore does not need a system rclone installation or
-`PATH` configuration.
+Each supported wheel contains a native `librclone_kit` shared library, loaded
+in-process and verified by checksum against its own manifest at import time.
+A wheel installation therefore does not need a system rclone installation,
+`PATH` configuration, or a subprocess.
 
 Pin the application dependency in production:
 
@@ -36,10 +37,10 @@ The `s3` extra adds direct and multipart S3 support. The `database` extra adds
 SQLite and database inventory support, while `postgres` also installs the
 PostgreSQL driver. `full` installs every optional feature.
 
-The bundled executable is copied into a per-user application cache and
-verified again at runtime. Containers should give their runtime user a
-writable home or cache directory. Avoid running the same image under an
-ephemeral, read-only home unless the cache is prepared elsewhere.
+The bundled library loads directly from the installed package location; there
+is no separate download, cache directory, or install step for it. A writable
+home or temp directory is still needed for `Config`'s per-instance temporary
+config file and, if used, the mount VFS cache - see the production checklist.
 
 ## Configuration
 
@@ -96,11 +97,11 @@ config = Config.from_json(
 rclone = Rclone(config)
 ```
 
-When a `Config` object is used, the library creates a private temporary config
-file for each rclone process and removes it after use. Do not print the
-`Config`, place credentials in source control, or pass secrets through
-`other_args`. Command logging redacts recognized credential flags, but the
-safest production pattern is still a secret-backed config file.
+When a `Config` object is used, the library materializes it to a private
+temporary file at most once per `Config` instance. Do not print the
+`Config` or place credentials in source control. Command logging redacts
+recognized credential flags, but the safest production pattern is still a
+secret-backed config file.
 
 Use rclone's obscured password format when a backend requires it:
 
@@ -350,10 +351,6 @@ result = rclone.copy_to(
 assert result.ok
 ```
 
-Pass only reviewed rclone flags in `other_args`. Values are executed as an
-argument vector with `shell=False`, but flags can still materially change
-rclone behavior.
-
 ### Copy a selected file set
 
 Names are relative to the supplied source root and must not include a remote
@@ -425,30 +422,14 @@ if not result.ok:
     raise RuntimeError(result.stderr)
 ```
 
-## Embedded execution (no `rclone` subprocess)
+## Asynchronous copies, partitioned operations, and result types
 
-Construct a client with `execution="embedded"` to link the bundled native library directly instead of
-launching an `rclone` executable per call:
-
-```python
-from rclone_kit import Rclone
-
-rclone = Rclone(CONFIG_PATH, execution="embedded")
-```
-
-Every ported method keeps its CLI signature and return type: `copy()`, `copy_to()`, `copy_dir()`,
-`copy_remote()`, `purge()`, `cleanup()`, `copy_files()`, and `delete_files()` all still return
-`CompletedProcess` (`size_files()` returns `SizeResult`, unaffected by execution mode either way), and
-`check=True` still raises on failure. Existing CLI-mode code that only inspects `.ok`/`.returncode`
-needs no changes to run embedded. Two differences are deliberate, not oversights:
-
-- an embedded client rejects `other_args`/`args` with `UnsupportedEmbeddedOperationError` instead of
-  silently dropping them - there is no subprocess argument vector to append arbitrary rclone flags to,
-  so an embedded caller relying on a flag not covered by this library's typed parameters must either
-  request that parameter be added or fall back to `execution="cli"`; and
-- a handful of methods (currently `start_copy()`) exist only under `execution="embedded"` and raise
-  `EmbeddedOnlyOperationError` under `execution="cli"`, since they expose an asynchronous job model a
-  blocking subprocess has no equivalent for.
+The client links the bundled native library directly in-process; there is no `rclone` executable and
+no subprocess per call. `copy()`, `copy_to()`, `copy_dir()`, `copy_remote()`, `purge()`, `cleanup()`,
+`copy_files()`, and `delete_files()` all return `CompletedProcess` (`size_files()` returns `SizeResult`),
+and `check=True` still raises on failure - code that only inspects `.ok`/`.returncode` needs no special
+handling. `start_copy()` gives direct access to the underlying asynchronous job model when a caller
+needs more than a blocking call.
 
 ### Real asynchronous control with `start_copy()`
 
@@ -497,12 +478,11 @@ while not handle.done:
 
 ### `copy_files()`/`delete_files()`: partitioned operations under one result
 
-`copy_files()` and `delete_files()` partition their file list exactly like the CLI backend does
-(one job per common directory/remote prefix, so unrelated transfers run concurrently), but under
-embedded execution every partition folds into one `OperationResult` before returning - not one
-per partition. A partial failure never aborts collecting the rest: every partition runs to
-completion first, and only then does `check=True` raise (once, for the aggregate) if any partition
-failed.
+`copy_files()` and `delete_files()` partition their file list by common directory/remote prefix, so
+unrelated transfers run concurrently, but every partition folds into one `OperationResult` before
+returning - not one per partition. A partial failure never aborts collecting the rest: every
+partition runs to completion first, and only then does `check=True` raise (once, for the aggregate)
+if any partition failed.
 
 ```python
 result = rclone.copy_files(source, destination, ["a.txt", "b/c.txt"], check=False)
@@ -511,17 +491,14 @@ if not result[0].ok:
         print(warning.message)  # "<partition src> -> <partition dst>: <error>", one per failure
 ```
 
-`copy_files()` keeps its documented `list[CompletedProcess]` return type for both execution modes;
-under `execution="embedded"` that list always has exactly one element, wrapping the aggregate result
-(`job_ids`/`attempts`/`stats` span every partition). `delete_files()` already returned a single
-`CompletedProcess` under the CLI backend, so its embedded shape is unchanged. A file entry that
-does not exist is not an error in either operation - it is simply not visited during the underlying
-walk - matching each command's own CLI behavior.
+`copy_files()` returns `list[CompletedProcess]` with exactly one element, wrapping the aggregate
+result (`job_ids`/`attempts`/`stats` span every partition). `delete_files()` returns a single
+`CompletedProcess`. A file entry that does not exist is not an error in either operation - it is
+simply not visited during the underlying walk.
 
 ### `ls_stream()`/`copy_bytes()`: bounded-memory streaming and byte ranges
 
-`ls_stream()` keeps its exact CLI signature and return shape - a context manager exposing
-`.files()`/`.files_paged()` - under embedded execution too. Nothing else needs to change:
+`ls_stream()` is a context manager exposing `.files()`/`.files_paged()`:
 
 ```python
 with rclone.ls_stream("archive:training-data", max_depth=-1) as stream:
@@ -529,31 +506,25 @@ with rclone.ls_stream("archive:training-data", max_depth=-1) as stream:
         persist_inventory_page(page)
 ```
 
-Internally, embedded execution pulls items in small batches from a bounded server-side buffer
-instead of parsing a subprocess's stdout - memory stays bounded regardless of how many millions of
-entries the listing has. `save_to_db()` needs no changes either, since it only ever calls
-`ls_stream()`. Always use the context manager (as above): exiting it - including via an exception
-partway through iteration - releases the underlying stream immediately rather than leaving it open
-for the life of the runtime.
+It pulls items in small batches from a bounded server-side buffer, so memory stays bounded regardless
+of how many millions of entries the listing has. `save_to_db()` needs no separate handling either,
+since it only ever calls `ls_stream()`. Always use the context manager (as above): exiting it -
+including via an exception partway through iteration - releases the underlying stream immediately
+rather than leaving it open for the life of the runtime.
 
-`copy_bytes()` also keeps its exact signature and behavior. A request that extends past the end of
-the object is not an error - it copies whatever is available - and `check` is not exposed (matching
-the CLI backend, which always raised through this call): a failure raises `RcloneCommandError`
-regardless of execution mode.
+`copy_bytes()` extends past the end of the object without error - it copies whatever is available.
+`check` is not exposed on it: a failure always raises `RcloneCommandError`.
 
 ### `CompletedProcess` is a compatibility type, not a real process result
 
-`CompletedProcess` predates embedded execution, when every result really did come from a subprocess.
-An embedded-backed result still exposes `.ok` and `.returncode` (`0`/`1`), but never a real command,
+`CompletedProcess` predates the current architecture, when every result came from a parsed subprocess
+invocation. A result still exposes `.ok` and `.returncode` (`0`/`1`), but never a real command,
 stdout, or stderr - `.stdout`, `.stderr`, `.completed`, `.failed()`, `.successes()`, and command-string
-formatting are CLI-only and stay empty for an embedded result. Code that logs `result.stderr` on
-failure works under `execution="cli"` but silently loses that detail under `execution="embedded"`;
+formatting are always empty. Code that logs `result.stderr` on failure silently loses that detail;
 prefer `.ok` plus a typed exception (`OperationFailedError.result.error`, surfaced through
-`RcloneCommandError` for `copy_to()`/`read_bytes()`/`write_bytes()`) for diagnostics that must work in
-both modes.
+`RcloneCommandError` for `copy_to()`/`read_bytes()`/`write_bytes()`) for diagnostics.
 
-`CompletedProcess` is planned for removal in the embedded-first major release (the release after
-`rclone-kit` 1.x that drops CLI/subprocess execution as the default), at which point every currently
+`CompletedProcess` is planned for removal in a future major release, at which point every currently
 `CompletedProcess`-returning method returns `OperationResult` directly. Code written against `.ok` and
 `.returncode` needs no change at that point; code depending on `.stdout`/`.stderr`/`.completed` needs to
 move to the typed exception hierarchy before then.
@@ -654,13 +625,11 @@ with rclone.serve_http("archive:models") as server:
 ```
 
 The `Range` end is exclusive. The server context manager shuts down the
-process even if a download raises. Bind to the automatically selected
+server even if a download raises. Bind to the automatically selected
 localhost port unless another process must reach the endpoint. If a fixed
 address is required, restrict it with host firewall and deployment network
-policy. `serve_http()` works the same way under `execution="embedded"` - the
-`HttpServer` facade it returns is identical either way, since it always talks
-to the running server over real HTTP regardless of which execution mode
-started it.
+policy. The returned `HttpServer` always talks to the running server over
+real HTTP.
 
 ## Mounts and WebDAV
 
@@ -671,15 +640,12 @@ unmounting and optional cache cleanup happen on every exit path:
 from pathlib import Path
 
 mount_path = Path("/mnt/archive")
-cache_path = Path("/var/cache/my-service/rclone-vfs")
 
 with rclone.mount(
     src="archive:datasets",
     outdir=mount_path,
     allow_writes=False,
     vfs_cache_mode="full",
-    cache_dir=cache_path,
-    cache_dir_delete_on_exit=False,
     transfers=32,
 ) as mounted:
     consume_files(mounted.mount_path)
@@ -701,23 +667,21 @@ with rclone.mount_s3(
 Mounts are operational infrastructure: provision disk for the VFS cache,
 monitor its utilization, and run mount-specific smoke tests on the target OS.
 
-Under `execution="embedded"`, `mount()`/`mount_s3()` dispatch to rclone's own
-`mount/mount` RC method and return a `MountHandle` instead of the CLI
-backend's subprocess-owning `Mount` - both expose the same `mount_path`,
-idempotent `.dispose()`, and context-manager close used above, so the
-examples above work unchanged under either execution mode. This requires the
-native library to have been built with `scripts/native/build.py --profile
+`mount()`/`mount_s3()` dispatch to rclone's own `mount/mount` RC method and
+return a `MountHandle`, whose `mount_path`, idempotent `.dispose()`, and
+context-manager close are used the same way above. This requires the native
+library to have been built with `scripts/native/build.py --profile
 production` (Windows: WinFsp's SDK installed and on the build machine's
-`CPATH`; verified against Windows only so far - Linux FUSE was not exercised
-by this port). A `--profile development` build (this project's default) has
-no real mount implementation compiled in at all, and calling `mount()`/
-`mount_s3()` against one raises a plain `RcCallError`, not a confusing crash.
-
-`cache_dir` has no embedded equivalent and raises
-`UnsupportedEmbeddedOperationError` if given under `execution="embedded"`:
-rclone's `--cache-dir` sets a process-global cache location at CLI process
-startup, not a per-mount RC option, so there is no way to honor a per-call
-override of it over RC at all.
+`CPATH`; Linux: needs no build-time FUSE headers, only the `fuse3`/`fuse`
+runtime package on the machine that actually mounts - see
+`native/README.md`). Verified against a real mount on Windows; Linux mount
+support compiles in the same way but has not yet been exercised end-to-end
+against a real mount in this repo. A
+`--profile development` build (this project's default) has no real mount
+implementation compiled in at all, and calling `mount()`/`mount_s3()`
+against one raises a plain `RcCallError`, not a confusing crash. The VFS
+cache directory itself is not caller-configurable through this API; rclone
+manages it at its own default location.
 
 `serve_webdav()` returns a long-lived handle. Bind it to a private interface,
 require credentials, and scope it:
@@ -732,11 +696,8 @@ with rclone.serve_webdav(
     run_consumer()
 ```
 
-The handle is a `Process` under `execution="cli"` or a `ServeHandle` under
-`execution="embedded"` - both support the context manager and `.dispose()`,
-but only `Process` exposes subprocess-specific attributes like `.poll()`;
-write code that only depends on the shared surface if it must run under both
-execution modes.
+The handle is a `ServeHandle`, supporting the context manager and idempotent
+`.dispose()`.
 
 ## S3-optimized operations
 
@@ -816,39 +777,12 @@ Pass the root-most path that should become one inventory table. The client
 streams the listing in pages rather than loading it all in memory. Keep
 database URLs out of logs because they may contain credentials.
 
-## Remote control processes
+## Build identification
 
-`launch_server()`/`remote_control()`/`webgui()` are deprecated and CLI-only - each now emits a
-`DeprecationWarning` but keeps working exactly as before. An `execution="embedded"` client already
-provides direct in-process RC access, so `launch_server()`/`remote_control()`'s reason for existing
-(driving a *separate*, externally-addressed `rclone rcd`) has no embedded equivalent planned; a
-standalone RC HTTP client for that specific use case is planned to replace them, but does not exist
-yet. Use rclone remote control only on a trusted network interface, and supply authentication
-whenever the endpoint is reachable outside the process:
-
-```python
-with rclone.launch_server(
-    addr="127.0.0.1:5572",
-    user="worker",
-    password=rc_password,
-) as server_process:
-    response = rclone.remote_control(
-        addr="127.0.0.1:5572",
-        user="worker",
-        password=rc_password,
-        capture=True,
-        other_args=["core/version"],
-    )
-    if not response.ok:
-        raise RuntimeError(response.stderr)
-```
-
-The `Process` context terminates the server and its child process tree.
-
-`upgrade_rclone()` is likewise deprecated and CLI-only (it downloads/installs a verified `rclone`
-executable, which `execution="embedded"` never needs - the native library ships with the package).
-Query `Rclone.native_build_info()` on an embedded client instead for the equivalent "which rclone
-build am I actually running" information:
+There is no separate `rclone` executable to check the version of - the client already has direct
+in-process RC access, and the native library ships with the package. Query `Rclone.native_build_info()`
+for "which rclone build am I actually running" information (useful in health checks and support
+diagnostics):
 
 ```python
 info = rclone.native_build_info()
@@ -877,15 +811,12 @@ LogSettings.enable_upload_parts_logging(True)
 
 Verbose command logging is useful during rollout but can be noisy. The
 library redacts recognized credential arguments; the application remains
-responsible for not logging config contents, database URLs, or arbitrary
-`other_args`.
+responsible for not logging config contents or database URLs.
 
 Handle the typed library errors at the boundary where retry or alert policy
 is decided:
 
 ```python
-import subprocess
-
 from rclone_kit.exceptions import HttpFetchError, RcloneKitError
 from rclone_kit.optional_dependency import MissingOptionalDependencyError
 
@@ -898,8 +829,6 @@ except HttpFetchError as error:
     # Network or remote HTTP error: apply the job's bounded retry policy.
     schedule_retry(error)
 except RcloneKitError as error:
-    mark_job_failed(error)
-except subprocess.CalledProcessError as error:
     mark_job_failed(error)
 ```
 
@@ -918,7 +847,6 @@ rclone-kit-save-to-db --config /run/secrets/rclone.conf \
   --db sqlite:///inventory.db archive:dataset
 rclone-kit-copylarge-s3 --config /run/secrets/rclone.conf \
   source:exports/full.tar archive:exports/full.tar
-rclone-kit-install-bins
 ```
 
 Run each command with `--help` before automation. Prefer the Python API when
@@ -931,12 +859,13 @@ Before rollout:
 
 - pin the `rclone-kit` version and the required extras;
 - deploy on a certified OS and architecture with Python 3.13 or newer;
-- provide a writable per-user cache and enough VFS or temporary disk space;
+- provide a writable home or temp directory for `Config`'s temporary config
+  file, and enough VFS or temporary disk space if mounting;
 - mount `rclone.conf` read-only from secret storage;
 - validate required remotes and a representative read during startup;
 - set explicit transfer, checker, partition-worker, and HTTP thread limits;
-- use context managers for `FilesStream`, `RemoteFS`, `HttpServer`, `Mount`,
-  and `Process`;
+- use context managers for `FilesStream`, `RemoteFS`, `HttpServer`,
+  `MountHandle`, and `ServeHandle`;
 - make source data immutable during multipart and verification workflows;
 - copy and verify before any purge or delete;
 - bound retries at both rclone and job-queue layers to avoid retry storms;

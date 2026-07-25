@@ -17,8 +17,12 @@ The authoritative configuration remains in the code:
   backend, and quality-tool configuration.
 - `.python-version` pins the Python patch release used by maintainers and CI.
 - `uv.lock` pins the resolved development environment.
-- `src/rclone_kit/runtime/platform.py` defines the supported platforms, rclone
-  version, download URLs, hashes, executable names, and wheel tags.
+- `src/rclone_kit/runtime/platform.py` defines the supported operating
+  systems and machine architectures; `runtime/native_platform.py` maps them
+  to certified `NativeTarget`s (wheel platform tag, library/executable
+  filenames).
+- `native/toolchain.toml` pins the rclone fork commit/branch, the Go
+  version, and the Windows/Linux compiler toolchains a native build uses.
 - `.github/workflows/ci.yml` defines the required CI graph.
 - `docs/release_process.md` defines release recording and publication.
 
@@ -35,16 +39,13 @@ Application / console script
 Rclone client (rclone_kit/client.py)
         |
         v
-focused operation modules
+focused operation modules (rclone_kit/operations/*_embedded.py)
         |
         v
-RcloneBackend protocol
+RcClient / RcloneRuntime (rclone_kit/rc/, rclone_kit/native/runtime.py)
         |
         v
-CliRcloneBackend + Process / rclone_execute
-        |
-        v
-verified rclone executable + temporary rclone config
+librclone_kit shared library (ctypes, in-process)
         |
         v
 local or remote storage
@@ -53,34 +54,39 @@ local or remote storage
 ### Public API and operations
 
 `rclone_kit.Rclone` is the stable public client. It exposes listing, copying,
-deletion, remote-control, HTTP serving, mounting, filesystem, database, and
-S3 operations. `rclone_kit.__init__` only re-exports this class and the
-curated domain values.
+deletion, HTTP serving, mounting, filesystem, database, and S3 operations.
+`rclone_kit.__init__` only re-exports this class and the curated domain
+values.
 
-The client owns a private `RcloneBackend` structural dependency and delegates
-command-oriented behavior to focused operation modules. Tests provide
-recording backends without subclassing a production class. Domain values use
-small access protocols for the convenience methods that still retain a client
+The client owns one `RcloneRuntime` (the initialized native library handle)
+and an `RcClient` built on top of it, and delegates command-oriented behavior
+to focused operation modules under `operations/`. Tests provide fake RC
+clients without subclassing a production class. Domain values use small
+access protocols for the convenience methods that still retain a client
 reference.
 
 ### Execution and configuration
 
-`CliRcloneBackend` is the adapter between operations and subprocess management.
-Short-lived commands use `rclone_execute`; long-lived commands use `Process`.
-Operations build immutable command tuples; the CLI backend converts them to
-argument lists at the subprocess boundary, which runs with `shell=False`.
+`RcClient` (`rclone_kit/rc/client.py`) is the adapter between operations and
+the native library: every operation issues one or more RC calls
+(`rc/list`-shaped methods, e.g. `sync/copy`, `operations/stat`) directly
+in-process through `ctypes`, never a subprocess. Long-lived resources
+(`JobHandle`, `MountHandle`, `ServeHandle`) wrap an RC job or handle rather
+than a child process.
 
-When a `Config` object is supplied, its text is written to a process-private
-temporary directory. The config file is created with owner-only permissions
-where the operating system enforces them, and cleanup is idempotent. Logged
-command lines pass through `format_command`, which redacts password, token,
-secret, authentication, and access/private-key values.
+When a `Config` object is supplied, its text is materialized to a
+process-private temporary file at most once per `Config` instance and passed
+to `RcloneRuntime.initialize()` as the config path. The config file is
+created with owner-only permissions where the operating system enforces
+them, and cleanup is idempotent (process-exit, via `atexit`).
 
-Configuration discovery uses this order:
+Configuration discovery (`config_discovery.py:find_conf_file_embedded()`)
+uses this order:
 
 1. an explicit path;
 2. `RCLONE_CONFIG`; and
-3. `rclone config paths`.
+3. a `config/paths` RC call against a throwaway, uninitialized-config
+   `RcloneRuntime`.
 
 Failure to perform discovery raises `ConfigDiscoveryError`; a successful
 search that finds no existing config returns `None`.
@@ -90,45 +96,50 @@ search that finds no existing config returns `None`.
 - `file.py`, `dir.py`, `remote.py`, `rpath.py`, and `types.py` hold the
   existing domain values.
 - `fs/` provides local and remote filesystem adapters and `FSPath`.
-- `http_server.py`, `mount.py`, and `process.py` own long-lived resources and
-  provide context-manager APIs.
+- `http_server.py`, `mount_handle.py`, `serve_handle.py`, and `job.py` own
+  long-lived resources and provide context-manager APIs.
 - `s3/` contains optional S3 operations and multipart upload strategies.
 - `db/` contains optional database persistence.
 - `cmd/` contains the installed console-script adapters.
-- `runtime/` owns platform selection, verified downloads, safe extraction,
-  hashing, permissions, caching, and executable resolution.
+- `runtime/` owns operating-system/architecture selection
+  (`platform.py`/`native_platform.py`) and hashing; `native/` owns native
+  library resolution (`library.py`), the `ctypes` runtime binding
+  (`runtime.py`), and build-info reporting (`build_info.py`).
 
 S3 and database dependencies are optional and imported lazily. Missing
 packages raise `MissingOptionalDependencyError` with the extra to install.
 Importing `rclone_kit` itself must not require optional extras, configure the
 root logger, start a thread, or spawn a process.
 
-## Bundled rclone lifecycle
+## Bundled native library lifecycle
 
 The installed wheel is self-contained for its certified platform. The
-executable passes through independent build-time and runtime checks:
+`librclone_kit` shared library passes through independent build-time and
+runtime checks - see `native/README.md` for the full toolchain detail this
+section summarizes:
 
-1. `runtime/platform.py` selects one immutable `RcloneArtifact`.
-2. `prepare_rclone_artifact.py` downloads or reuses the pinned release
-   archive and verifies the archive SHA-256.
-3. Safe extraction reads only the expected archive member.
-4. The extracted executable is checked against a separate,
-   repository-controlled executable SHA-256.
-5. The executable, adjacent `.sha256` manifest, and rclone license are staged
-   into an isolated source-tree copy.
-6. The wheel packages only that platform's staged directory.
-7. Distribution verification independently checks the executable against
-   both its manifest and the repository-controlled digest.
-8. At runtime, the bundled executable and manifest are verified and copied
-   into the per-user application cache under an inter-process lock.
-9. Cache replacement is atomic, and executable permission is applied before
-   the cached path is returned.
+1. `scripts/native/build.py` builds `librclone_kit` (`-buildmode=c-shared`)
+   and a diagnostic `rclone` executable from the pinned `native/rclone`
+   submodule commit, using the Go/C toolchain recorded in
+   `native/toolchain.toml`.
+2. The build runs a focused native smoke test (`scripts/native/smoke.py`)
+   directly through `ctypes` and writes `native-manifest.json` (fork commit,
+   toolchain identity, per-output SHA-256 digests) and `SHA256SUMS`.
+3. `scripts/build_distribution.py` stages the library, its manifest, the ABI
+   header, and the rclone license into the wheel's package-data directory
+   (excluding the diagnostic executable and smoke results).
+4. The wheel packages only that platform's staged directory.
+5. `scripts/verify_distribution.py` independently checks the packaged
+   library against its manifest's recorded digest.
+6. At runtime, `native/library.py:resolve_library_path()` resolves the
+   packaged library path and re-verifies its SHA-256 against the same
+   manifest before it is ever loaded - no cache directory, no copy, no
+   subprocess.
 
-`resolve_rclone_executable()` is fail-closed by default: after an explicit
-path, it tries the bundled asset but does not use `PATH` or download unless
-the caller opts in. The older `get_rclone_exe()` application adapter still
-allows `PATH` lookup by default so a source checkout can use an installed
-rclone. Verified download remains opt-in.
+`resolve_library_path()` is fail-closed: an explicit path or the
+`RCLONE_KIT_LIBRARY` environment override is tried first, then the packaged
+wheel asset; anything else raises `LibraryNotFoundError`. A digest mismatch
+raises `LibraryVerificationError` rather than loading an unverified library.
 
 ## Distribution policy
 
@@ -138,9 +149,10 @@ certified target:
 - `py3-none-win_amd64`
 - `py3-none-manylinux2014_x86_64`
 
-The wheel contains a native executable as package data, not a Python
-extension, so it must declare a platform but does not require a CPython ABI
-tag. `Requires-Python >=3.13` remains the Python language-version boundary.
+The wheel contains a native shared library (`librclone_kit.dll`/`.so`) as
+package data, not a Python extension, so it must declare a platform but does
+not require a CPython ABI tag. `Requires-Python >=3.13` remains the Python
+language-version boundary.
 The in-tree `_build_backend.py` customizes the setuptools wheel tag, and
 distribution verification checks the exact result.
 
@@ -154,11 +166,14 @@ entry point is `scripts/build_distribution.py`.
 
 ## Canonical local build
 
-Prepare the locked environment:
+Prepare the locked environment, the `native/rclone` submodule, and the
+native toolchain (Go, plus llvm-mingw on Windows or a manylinux2014
+container on Linux - see `native/README.md` for the exact, verified setup):
 
 ```bash
 uv python install
 uv sync --locked --all-groups
+git submodule update --init native/rclone
 ```
 
 Build on the same operating system and architecture as the requested target:
@@ -175,15 +190,18 @@ The target must match the current host; cross-building is not supported.
 `--out-dir` must be empty or absent so stale artifacts cannot be mixed into
 the build. Omit it to receive a unique temporary output directory.
 
-The first build may access `downloads.rclone.org`. Verified archives are
-cached per user, rclone version, platform, and expected digest. A cache hit
-is hashed again before reuse.
+The native library build accesses no network URL for rclone itself - it
+compiles `librclone_kit` from the pinned `native/rclone` submodule commit
+using the local Go/C toolchain. `scripts/native/verify_submodule_pin.py`
+(run in CI, and available locally) confirms that pinned commit is actually
+fetchable from the configured fork remote.
 
 The canonical command performs one atomic sequence:
 
 1. resolves and validates the requested target;
 2. copies only the wheel build inputs into a temporary source tree;
-3. downloads, verifies, extracts, and stages one rclone artifact;
+3. builds `librclone_kit` from the pinned `native/rclone` submodule and
+   stages the library, its manifest, the ABI header, and the rclone license;
 4. builds exactly one wheel;
 5. runs all distribution-content checks;
 6. creates a clean virtual environment using the pinned Python version;
@@ -203,8 +221,8 @@ empty output directory for the next run.
 `scripts/verify_distribution.py` rejects a wheel unless it has:
 
 - the exact `py3-none-<certified-platform>` tag;
-- exactly the expected platform executable and no foreign executable;
-- matching manifest, executable, and repository-controlled hashes;
+- exactly the expected platform's native library and no foreign platform's;
+- matching manifest and digest hashes for the packaged library;
 - both the project license and bundled rclone license;
 - resolvable console-script targets;
 - a Python requirement that excludes versions below 3.13;
@@ -218,13 +236,14 @@ uv run python scripts/verify_distribution.py dist --require-complete-release-set
 ```
 
 This additionally requires exactly one wheel for every entry in
-`SUPPORTED_ARTIFACTS`, with no duplicate or unrecognized wheel.
+`SUPPORTED_NATIVE_TARGETS`, with no duplicate or unrecognized wheel.
 
 The smoke test verifies the installed package rather than the source tree. It
-checks import-time logging, thread, and child-process counts; resolves the
-bundled executable through the application cache; runs `rclone version`; and
-invokes every installed console script with `--help`. Poisoned proxy settings
-provide best-effort network isolation during this test.
+checks import-time logging, thread, and child-process counts; resolves and
+loads the bundled native library directly; exercises the native ABI through
+`rclone_kit.native`; and invokes every installed console script with
+`--help`. Poisoned proxy settings provide best-effort network isolation
+during this test.
 
 ## CI pipeline
 
@@ -242,11 +261,23 @@ tests-linux ----/
 
 - `quality` installs all dependency groups and optional extras, then checks
   formatting, Ruff, and Pyright.
-- `tests-windows` and `tests-linux` run unit and integration tests with all
-  extras on their native runners.
-- each `wheel-*` job waits for quality and its matching platform tests,
-  restores the verified-archive cache, runs the canonical build command, and
-  uploads only its verified wheel;
+- `tests-windows` and `tests-linux` run `tests/unit` with all extras on
+  their native runners (no native build needed - `tests/unit` uses fake RC
+  bindings, not the real library).
+- each `wheel-*` job waits for quality and its matching platform tests, then:
+  checks out `native/rclone` (`submodules: true`), verifies the pinned
+  commit is fetchable from the fork remote
+  (`scripts/native/verify_submodule_pin.py`), installs the native toolchain
+  (Go/llvm-mingw/WinFsp via `actions/setup-go` + cached downloads on
+  Windows; a `manylinux2014` container driven by `docker run`/`docker exec`
+  on Linux, mirroring `native/README.md`'s manual recipe rather than GHA's
+  `container:` job directive, since that would run JS-based actions inside
+  the container's old glibc), builds the native library
+  (`scripts/native/build.py --profile production`), runs `tests/native`
+  against the real library, runs the canonical build command
+  (`scripts/build_distribution.py`, which builds the library a second time
+  in its own isolated temp dir by design), and uploads only its verified
+  wheel;
 - `release-assembly` downloads both wheels, verifies every wheel again,
   enforces the complete release set, prints SHA-256 digests, and uploads the
   assembled `release-dist` artifact.
@@ -284,17 +315,28 @@ uv run ruff format --check .
 uv run ruff check .
 uv run pyright _build_backend.py src tests scripts
 uv run pytest tests/unit
-uv run pytest tests/integration
+uv run pytest tests/native
 ```
+
+Run `tests/unit` and `tests/native` as **separate** `pytest` invocations, not
+combined: `tests/cloud/conftest.py` and `tests/native/conftest.py` are both
+importable as the bare module name `conftest` (via `pyproject.toml`'s
+`pythonpath` setting), so a combined run can have one sibling's `conftest`
+silently win for both via Python's module cache.
 
 The suites have different purposes:
 
 - `tests/unit` must be deterministic, credential-free, and normally offline.
   It owns command contracts, parsing, security boundaries, runtime artifact
-  behavior, build orchestration, and distribution verification.
-- `tests/integration` resolves and runs a real rclone executable. It may need
-  the verified-download cache or network access when run from a source
-  checkout without rclone on `PATH`.
+  behavior, build orchestration, and distribution verification, using fake
+  RC bindings rather than the real native library.
+- `tests/native` exercises the real, built `librclone_kit` library directly
+  (DLL/SO-backed integration tests). Skips automatically when no built
+  library exists at `build/native/<target>/` - run
+  `scripts/native/build.py --target <target> --profile production` first
+  (see `native/README.md`). This is the current replacement for what used
+  to be a `tests/integration` suite against a real CLI `rclone` executable;
+  that suite and the executable it depended on are both gone.
 - `tests/cloud` is opt-in and mutates real remote storage. Use dedicated test
   credentials and the documented environment variables in `tests/helpers.py`.
   Mount tests additionally require WinFsp on Windows or FUSE and a usable
@@ -398,39 +440,43 @@ commit and follow the authorship and commit-message rules in `code_style.md`.
 
 ### Change a public operation
 
-1. Capture current command vectors, return values, and failure behavior with
-   a unit test using a fake execution boundary.
-2. Put new command construction in a pure helper or focused operation module.
-3. Keep raw subprocess behavior in `CliRcloneBackend`, `Process`, or
-   `rclone_execute`.
-4. Expose the operation through the curated `Rclone` client.
-5. Test empty inputs, explicit `False` options, caller-owned arguments,
-   credential redaction, and subprocess failure.
+1. Capture current RC call parameters, return values, and failure behavior
+   with a unit test using a fake RC client.
+2. Put new RC-call construction in the relevant `operations/*_embedded.py`
+   module.
+3. Expose the operation through the curated `Rclone` client.
+4. Test empty inputs, explicit `False` options, caller-owned arguments,
+   credential redaction, and RC-call failure (`RcCallError`).
 
-### Change runtime artifact handling
+### Change native build/toolchain handling
 
-Keep `runtime/platform.py` as the only artifact catalog. Downloads must be
-pinned, independently hash-verified, safely extracted, and atomically cached.
-Never add an unverified "latest" URL or silently fall back to a downloaded or
-`PATH` executable.
+Keep `native/toolchain.toml` as the single source of truth for the pinned Go
+version, C compiler toolchains, and the `native/rclone` fork commit/branch.
+`scripts/native/build.py` validates the resolved Go version and compiler
+paths against it and fails loudly on a mismatch, rather than silently
+building with the wrong toolchain.
 
-Any change here needs focused unit tests for digest mismatch, unsafe archive
-members, cleanup, permissions, cache replacement, and concurrent
-installation, plus a canonical wheel build on every affected platform.
+Any change here needs a canonical wheel build (and `tests/native`) on every
+affected platform - there is no fake-toolchain unit-test substitute for a
+real native build.
 
 ### Bump rclone or add a platform
 
-1. Update the artifact data and `SUPPORTED_ARTIFACTS` in
-   `runtime/platform.py`.
-2. Obtain the archive digest from the upstream release checksums.
-3. Independently hash the executable extracted from a verified archive.
-4. Add platform normalization and cache/build tests.
-5. Ensure `_build_backend.py` emits the intended exact wheel tag.
-6. Add a native test and wheel job in CI.
-7. Build, verify, smoke-test, and assemble the complete release set.
-8. Update supported-platform documentation and the release record.
+1. Move the `native/rclone` submodule pin to the new upstream commit on the
+   `rclone-kit/integration-v1` branch (rebasing rclone-kit's own patches as
+   needed), update `native/toolchain.toml`'s `rclone_upstream_version`, and
+   push the branch to the fork remote - `scripts/native/verify_submodule_pin.py`
+   (and CI) checks the pin is actually fetchable from there.
+2. For a new platform, add its `NativeTarget` to
+   `runtime/native_platform.py`'s registry (wheel platform tag,
+   library/executable filenames) and its `OperatingSystem`/
+   `MachineArchitecture` mapping in `runtime/platform.py` if new.
+3. Ensure `_build_backend.py` emits the intended exact wheel tag.
+4. Add a `tests/native` run and wheel job in CI for the new target.
+5. Build, verify, smoke-test, and assemble the complete release set.
+6. Update supported-platform documentation and the release record.
 
-Adding a target is not complete when only the download works; installation,
+Adding a target is not complete when only the native build works;
 tagging, runtime resolution, CI ownership, and release-set verification must
 all agree.
 
@@ -648,8 +694,11 @@ deferred families (`S101`, `ANN`, `TRY`, `FBT001`/`FBT002`/`FBT003`,
 `A001`/`A002`, `PLR0913`, `PTH`, `PLR0911`/`PLR0912`/`PLR0915`) and the
 strict-mode rollout itself are still open. Every `subprocess.CompletedProcess`
 return type and construction across `util.py`, `backend.py`, `client.py`,
-`completed_process.py`, and `detail/transfer_ops.py` is
-now parameterized as `CompletedProcess[str]` - true for every call site,
+`completed_process.py`, and `detail/transfer_ops.py` (`backend.py` and the
+`detail/` package no longer exist post-CLI-removal; this measurement is of
+historical interest only, same as the `detail/` -> `operations/` rename
+noted later in this section) was
+parameterized as `CompletedProcess[str]` - true for every call site,
 since every `Popen` invocation already passes `encoding="utf-8"` - instead
 of the bare, effectively `Unknown`-typed generic Pyright previously
 inferred; a strict-mode trial on three already-clean modules
@@ -699,7 +748,8 @@ after all callers have migrated.
 - [ ] Unit tests cover success, failure, cleanup, and platform edge cases.
 - [ ] Optional features still import without their extras installed.
 - [ ] Commands use argument lists and diagnostics redact credentials.
-- [ ] Formatting, Ruff, Pyright, unit tests, and integration tests pass.
+- [ ] Formatting, Ruff, Pyright, and unit tests pass; `tests/native` passes
+      too when a native build is available locally.
 - [ ] A canonical wheel build passes when distribution behavior changed.
 - [ ] Documentation and authoritative constants agree.
 - [ ] No generated executable, secret, cache, or build artifact is tracked.
