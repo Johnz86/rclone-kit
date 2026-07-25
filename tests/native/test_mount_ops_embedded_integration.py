@@ -14,6 +14,7 @@ real drive already in use) for it.
 """
 
 import time
+from collections.abc import Generator
 from pathlib import Path
 
 import pytest
@@ -33,7 +34,7 @@ _UNMOUNT_SETTLE_SECONDS = 1
 
 
 @pytest.fixture(autouse=True)
-def _settle_between_mounts() -> None:
+def _settle_between_mounts() -> Generator[None]:
     """WinFsp needs a moment to fully release a drive letter after
     unmount before it can be reliably reassigned - without this, a test
     mounting right after a prior test's `dispose()` can see its mount

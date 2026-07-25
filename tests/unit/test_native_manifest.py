@@ -121,7 +121,9 @@ def test_write_manifest_round_trips_as_json(tmp_path: Path) -> None:
     assert decoded["outputs"][0]["filename"] == "rclone.exe"
 
 
-def _build_manifest_with(**overrides: object) -> native_manifest.NativeBuildManifest:
+def _build_manifest_with(
+    go_build_tags: tuple[str, ...] | None = None,
+) -> native_manifest.NativeBuildManifest:
     fork = native_manifest.ForkProvenance(
         url="https://example.com/fork.git", commit="abc123", branch="main", worktree_clean=True
     )
@@ -133,17 +135,16 @@ def _build_manifest_with(**overrides: object) -> native_manifest.NativeBuildMani
         c_compiler_path="C:\\cc.exe",
         c_compiler_identity="clang version 22.1.8",
     )
-    kwargs: dict[str, object] = {
-        "rclone_kit_version": "1.0.0",
-        "c_abi_version": 1,
-        "rclone_upstream_version": "1.74.x",
-        "fork": fork,
-        "toolchain": toolchain,
-        "target": WINDOWS_AMD64_NATIVE_TARGET,
-        "outputs": (),
-    }
-    kwargs.update(overrides)
-    return native_manifest.build_manifest(**kwargs)
+    return native_manifest.build_manifest(
+        rclone_kit_version="1.0.0",
+        c_abi_version=1,
+        rclone_upstream_version="1.74.x",
+        fork=fork,
+        toolchain=toolchain,
+        target=WINDOWS_AMD64_NATIVE_TARGET,
+        outputs=(),
+        go_build_tags=go_build_tags,
+    )
 
 
 def test_build_manifest_defaults_go_build_tags_to_target() -> None:
