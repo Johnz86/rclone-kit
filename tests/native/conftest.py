@@ -17,16 +17,21 @@ import pytest
 
 from rclone_kit.native.runtime import RcloneRuntime
 from rclone_kit.runtime.exceptions import UnsupportedPlatformError
-from rclone_kit.runtime.native_platform import resolve_native_target
+from rclone_kit.runtime.native_platform import NativeTarget, resolve_native_target
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 _MOUNT_BUILD_TAG = "cmount"
 
 
-def _built_target_dir() -> Path | None:
+def _resolve_target() -> NativeTarget | None:
     try:
-        target = resolve_native_target(system=_platform.system(), machine=_platform.machine())
+        return resolve_native_target(system=_platform.system(), machine=_platform.machine())
     except UnsupportedPlatformError:
+        return None
+
+
+def _built_target_dir(target: NativeTarget | None) -> Path | None:
+    if target is None:
         return None
     candidate = (
         _REPO_ROOT
@@ -37,12 +42,13 @@ def _built_target_dir() -> Path | None:
     return candidate if candidate.is_dir() else None
 
 
-_TARGET_DIR = _built_target_dir()
-LIBRARY_PATH: Path | None = _TARGET_DIR / "librclone_kit.dll" if _TARGET_DIR else None
-EXECUTABLE_PATH: Path | None = _TARGET_DIR / "rclone.exe" if _TARGET_DIR else None
+_TARGET = _resolve_target()
+_TARGET_DIR = _built_target_dir(_TARGET)
+LIBRARY_PATH: Path | None = (
+    _TARGET_DIR / _TARGET.library_filename if _TARGET_DIR and _TARGET else None
+)
 
 NATIVE_LIBRARY_AVAILABLE = LIBRARY_PATH is not None and LIBRARY_PATH.is_file()
-NATIVE_EXECUTABLE_AVAILABLE = EXECUTABLE_PATH is not None and EXECUTABLE_PATH.is_file()
 
 
 def _built_with_mount_support() -> bool:
@@ -63,7 +69,7 @@ def _built_with_mount_support() -> bool:
     return _MOUNT_BUILD_TAG in manifest.get("go_build_tags", [])
 
 
-NATIVE_MOUNT_AVAILABLE = NATIVE_EXECUTABLE_AVAILABLE and _built_with_mount_support()
+NATIVE_MOUNT_AVAILABLE = NATIVE_LIBRARY_AVAILABLE and _built_with_mount_support()
 
 
 @pytest.fixture(scope="session")
@@ -81,20 +87,7 @@ def native_runtime(tmp_path_factory: pytest.TempPathFactory) -> Iterator[RcloneR
 
 @pytest.fixture
 def embedded(native_runtime: RcloneRuntime):
-    """An `execution="embedded"` client sharing the session's one
-    initialized runtime, for CLI-vs-embedded parity tests.
-    """
+    """An `Rclone` client sharing the session's one initialized runtime."""
     from rclone_kit.client import Rclone
 
-    return Rclone(None, execution="embedded", runtime=native_runtime)
-
-
-@pytest.fixture
-def cli():
-    """The CLI-backed equivalent of `embedded`, built from the exact same
-    fork commit (`build/native/<target>/rclone.exe`).
-    """
-    from rclone_kit.client import Rclone
-
-    assert EXECUTABLE_PATH is not None
-    return Rclone(None, rclone_exe=EXECUTABLE_PATH)
+    return Rclone(None, runtime=native_runtime)
