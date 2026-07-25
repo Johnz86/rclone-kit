@@ -108,6 +108,7 @@ def test_copy_file_parts_resumable_uploads_for_real_under_embedded_execution(
     """`copy_file_s3_resumable()`'s full orchestration (`copy_file_parts_
     resumable`), with only the S3-only merge step faked out - the upload
     half runs for real against the embedded client."""
+    pytest.importorskip("boto3")
     merge_calls: list[str] = []
     monkeypatch.setattr(
         "rclone_kit.s3.multipart.upload_parts_server_side_merge.s3_server_side_multi_part_merge",
