@@ -229,6 +229,7 @@ markers = [
     "network: requires non-loopback network access",
     "live_s3: exercises the real implementation against a real S3/Ceph remote via rclone-test.conf; run explicitly with `pytest -m live_s3`",
     "live_gdrive: exercises the real implementation against a real Google Drive remote via rclone-gdrive.conf; run explicitly with `pytest -m live_gdrive`",
+    "live_gdrive_authorization: drives Rclone.authorize() against a real Google Drive account, blocking on a human approving access in a browser; run explicitly with `pytest -m live_gdrive_authorization`",
 ]
 
 [project.scripts]

@@ -2,6 +2,17 @@
 
 import logging
 
+from rclone_kit.authorization import (
+    AuthorizationManager,
+    AuthorizationRequest,
+    AuthorizationResult,
+    AuthorizationSession,
+    AuthorizationStatus,
+    RelayRequest,
+    RelayResponse,
+    RemoteConflictPolicy,
+    Secret,
+)
 from rclone_kit.client import Rclone
 from rclone_kit.config import Config, Parsed, Section
 from rclone_kit.diff import DiffItem, DiffOption, DiffType
@@ -38,6 +49,11 @@ logging.getLogger(__name__).addHandler(logging.NullHandler())
 
 __all__ = [
     "ActiveTransfer",
+    "AuthorizationManager",
+    "AuthorizationRequest",
+    "AuthorizationResult",
+    "AuthorizationSession",
+    "AuthorizationStatus",
     "Config",
     "DiffItem",
     "DiffOption",
@@ -70,8 +86,12 @@ __all__ = [
     "Rclone",
     "RcloneRuntime",
     "RealFS",
+    "RelayRequest",
+    "RelayResponse",
     "Remote",
+    "RemoteConflictPolicy",
     "RemoteFS",
+    "Secret",
     "Section",
     "ServeHandle",
     "SizeResult",

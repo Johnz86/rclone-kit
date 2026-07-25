@@ -205,6 +205,32 @@ boundary, not just independent configuration - is not achievable in-process
 at all; it requires separate OS processes, each with its own single call to
 `shared_runtime()`.
 
+## Authorizing a remote through rclone's own OAuth flow
+
+`Rclone.authorize(...)` drives rclone's non-interactive `config/create`/
+`config/update` OAuth state machine and returns an `AuthorizationSession`;
+see `docs/rclone_authorization_design.md` for the full design (session
+lifecycle, the public callback relay, security requirements). Two points
+follow directly from this section's runtime-sharing model and are easy to
+miss:
+
+- **The session queue is per `RcloneRuntime`, not per `Rclone` client.**
+  `AuthorizationManager.for_runtime()` resolves to the same manager for
+  every client sharing a runtime (mirroring `shared_runtime()`'s own
+  "construct exactly once, share everywhere" pattern), because rclone's own
+  OAuth flow state is a process-wide Go global - at most one authorization
+  may be driving it at a time, across every client on that runtime, not just
+  within one client.
+- **A client's `self.config` snapshot does not update itself.** Same
+  caveat as above: a remote an authorization session creates or updates is
+  written straight into the runtime's one shared config file the moment it
+  succeeds, but an existing `Rclone` instance's own `self.config` snapshot
+  (backing `is_s3()`, `get_s3_credentials()`, `encode_fs_spec()`) was
+  captured at that instance's construction time and will not see it. If you
+  need those methods to see a remote a session just authorized, construct a
+  fresh `Rclone(rclone_conf, runtime=shared_runtime())` afterward rather than
+  assuming an existing client picks it up.
+
 ## Paths and result objects
 
 Remote paths use rclone syntax:

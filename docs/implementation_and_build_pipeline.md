@@ -373,28 +373,50 @@ The suites have different purposes:
     uv run pytest tests/live/gdrive -m live_gdrive
     ```
 
-  Both suites' `pytest_collection_modifyitems` deselect their tests unless
-  the caller passes the matching `-m live_s3`/`-m live_gdrive`, so a bare
-  `pytest` run (which would otherwise sweep both directories in via
-  `testpaths`) collects zero tests from either. Once a suite's marker is
-  explicitly requested, it hard-stops the session with `pytest.exit()` if
-  its own config file is missing, rather than letting every test fail
-  individually. All writes and deletes are scoped to a dedicated bucket
-  (`rclone-kit-live-test`, S3) or folder (`rclone-kit-live-test`, Drive);
-  nothing else on either remote is ever touched.
+  - `tests/live/gdrive_authorization` covers `Rclone.authorize()` itself -
+    the process of *becoming* configured, not operations against an
+    already-configured remote like `tests/live/gdrive` covers. It needs no
+    config file and no Google Cloud Console setup (it uses rclone's own
+    built-in shared client_id, the same as plain interactive `rclone config
+    create`), but does need a native library built locally
+    (`uv run python scripts/native/build.py`) and, unlike every other suite
+    here, a real human present: it blocks mid-run waiting for someone to
+    approve access in a real browser, so it can never be scripted further
+    without violating the provider's terms of service. Uses its own remote
+    name (`gdrive-authtest`) and config file (`rclone-gdrive-authtest.conf`)
+    so it never touches `tests/live/gdrive`'s remote or file. Run it
+    explicitly with:
+
+    ```bash
+    uv run pytest tests/live/gdrive_authorization -m live_gdrive_authorization
+    ```
+
+  Every suite's `pytest_collection_modifyitems` deselects its own tests
+  unless the caller passes its matching `-m live_s3`/`-m live_gdrive`/
+  `-m live_gdrive_authorization`, so a bare `pytest` run (which would
+  otherwise sweep every directory in via `testpaths`) collects zero tests
+  from any of them. Once a suite's marker is explicitly requested, it
+  hard-stops the session with `pytest.exit()` if its own prerequisite
+  (config file, or - `gdrive_authorization` only - a built native library)
+  is missing, rather than letting every test fail individually. All writes
+  and deletes are scoped to a dedicated bucket (`rclone-kit-live-test`, S3)
+  or folder (`rclone-kit-live-test`, Drive); nothing else on either remote
+  is ever touched, and `gdrive_authorization`'s own remote/config are
+  entirely separate from `tests/live/gdrive`'s to begin with.
 
   Each suite's `conftest.py` module is literally named `conftest`, same as
-  its sibling's - test files must reach shared constants through the
+  its siblings' - test files must reach shared constants through the
   `live_remote_name`/`live_test_root`/`live_test_bucket` fixtures each
   `conftest.py` defines, never through `from conftest import ...`. A plain
   Python import resolves through the process-wide `sys.modules["conftest"]`
   cache rather than pytest's own per-directory conftest resolution, so once
-  both suites are loaded in the same session - which a bare `pytest` run
-  does for collection alone, even when both end up deselected - whichever
-  sibling's `conftest.py` happened to import first silently wins for both
-  (confirmed live: it swapped `LIVE_REMOTE` between the two suites before
-  the fixture-based fix). This constraint carries forward to every future
-  provider added under `tests/live/`.
+  multiple suites are loaded in the same session - which a bare `pytest`
+  run does for collection alone, even when all end up deselected -
+  whichever sibling's `conftest.py` happened to import first silently wins
+  for all of them (confirmed live: it swapped `LIVE_REMOTE` between the s3
+  and gdrive suites before the fixture-based fix). This constraint carries
+  forward to every future provider (or new suite for an existing one) added
+  under `tests/live/`.
 
   Live-testing Drive surfaced two real gaps in the generic (non-S3) listing
   path, both rooted in the same fact: `ls()` on a nonexistent leaf path

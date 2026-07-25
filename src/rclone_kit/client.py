@@ -5,11 +5,18 @@ from __future__ import annotations
 import logging
 import uuid
 from collections.abc import Generator
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING, Self
 
+from rclone_kit.authorization import (
+    AuthorizationManager,
+    AuthorizationRequest,
+    AuthorizationSession,
+    RemoteConflictPolicy,
+    Secret,
+)
 from rclone_kit.config import Config
 from rclone_kit.convert import convert_to_filestr_list, convert_to_str
 from rclone_kit.diff import DiffItem, DiffOption
@@ -92,10 +99,14 @@ from rclone_kit.types import (
 from rclone_kit.util import get_check, get_verbose, make_temp_config_file, to_path
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from rclone_kit.rc.mount import RcMountClient
     from rclone_kit.rc.serve import RcServeClient
     from rclone_kit.s3.api import S3Client
     from rclone_kit.s3.types import S3Credentials
+
+_DEFAULT_AUTHORIZATION_EXPIRES_IN = timedelta(minutes=10)
 
 logger = logging.getLogger(__name__)
 
@@ -163,6 +174,7 @@ class Rclone:
         self._mount_client: RcMountClient | None = None
         self._mount_handles: set[MountHandle] = set()
         self._file_streams: set[EmbeddedFilesStream] = set()
+        self._authorization_sessions: set[AuthorizationSession] = set()
 
         self.config = _to_rclone_conf(rclone_conf)
         self._client_id = uuid.uuid4()
@@ -201,10 +213,10 @@ class Rclone:
         `OperationShutdownError` and leaves the runtime open, rather than
         reporting a false close, if a job cannot be confirmed settled
         within the shutdown deadline. Also stops every `serve/start`
-        instance, unmounts every `mount/mount` instance, and closes every
-        `ls_stream()` cursor this client started but never explicitly
-        disposed (Wave H design, R05: "runtime tracks only resources it
-        owns").
+        instance, unmounts every `mount/mount` instance, closes every
+        `ls_stream()` cursor, and cancels every authorization session this
+        client started but never explicitly disposed (Wave H design, R05:
+        "runtime tracks only resources it owns").
 
         Only closes the embedded runtime itself if this client created it;
         an injected `runtime` outlives this client, matching
@@ -216,6 +228,8 @@ class Rclone:
             mount_handle.dispose()
         for stream in list(self._file_streams):
             stream.close()
+        for session in list(self._authorization_sessions):
+            session.close()
         if self._job_monitor is not None:
             all_settled = self._job_monitor.shutdown(
                 deadline_seconds=_JOB_SHUTDOWN_DEADLINE_SECONDS
@@ -559,6 +573,63 @@ class Rclone:
         self._mount_handles.add(handle)
         handle._on_dispose = lambda: self._mount_handles.discard(handle)
         return handle
+
+    def authorize(
+        self,
+        remote_name: str,
+        backend: str,
+        public_callback_url: str | None = None,
+        backend_options: Mapping[str, str] | None = None,
+        client_id: str | None = None,
+        client_secret: Secret | None = None,
+        on_conflict: RemoteConflictPolicy = RemoteConflictPolicy.REJECT,
+        expires_in: timedelta = _DEFAULT_AUTHORIZATION_EXPIRES_IN,
+        private_listen_addr: str | None = None,
+    ) -> AuthorizationSession:
+        """Start authorizing a remote through rclone's own OAuth flow.
+
+        A thin wrapper: resolves the `AuthorizationManager` shared by
+        every `Rclone` client on this client's runtime
+        (`AuthorizationManager.for_runtime`), so at most one authorization
+        session across every client sharing that runtime is ever driving
+        rclone's OAuth step at a time - see
+        `docs/rclone_authorization_design.md`. The returned session is
+        tracked the same way `mount()`/`serve_webdav()` track their
+        handles: `close()` cancels it if this client disposes without the
+        caller resolving it first.
+
+        Leave `public_callback_url` (and `client_id`/`client_secret`)
+        unset for the common local case - a script or CLI tool running on
+        the same machine as the browser that completes consent - which
+        works the same way plain interactive `rclone config create` does,
+        no provider application registration required; see
+        `AuthorizationRequest`'s docstring for why the two are linked.
+        Only a relay deployment (a web service driving auth on behalf of a
+        browser elsewhere) needs `public_callback_url`.
+        """
+        assert self._embedded_runtime is not None
+        manager = AuthorizationManager.for_runtime(self._embedded_runtime)
+        request = AuthorizationRequest(
+            remote_name=remote_name,
+            backend=backend,
+            public_callback_url=public_callback_url,
+            backend_options=backend_options or {},
+            client_id=client_id,
+            client_secret=client_secret,
+            on_conflict=on_conflict,
+            expires_in=expires_in,
+            private_listen_addr=private_listen_addr,
+        )
+        session = manager.start(request, owner=str(self._client_id))
+        return self._track_authorization_session(session)
+
+    def _track_authorization_session(self, session: AuthorizationSession) -> AuthorizationSession:
+        """Track `session` so `close()` cancels it if the caller never
+        disposes it, mirroring `_track_serve_handle`'s R05 rationale and
+        its `_on_dispose` untracking."""
+        self._authorization_sessions.add(session)
+        session._on_dispose = lambda: self._authorization_sessions.discard(session)
+        return session
 
     def _track_file_stream(self, stream: EmbeddedFilesStream) -> EmbeddedFilesStream:
         """Track `stream` so `close()` closes it if the caller never does,

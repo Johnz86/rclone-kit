@@ -2,11 +2,35 @@
 
 ## Status
 
-Proposal, not implemented. This document defines how `rclone-kit` should
-offer remote authorization while keeping OAuth implementation inside rclone.
+Implemented, including live-provider verification against a real Google
+Drive account in local-direct mode (all 4 phases of the delivery plan
+below). A real reverse-proxy-shaped relay deployment against a
+caller-owned provider client is not verified by this repository's own test
+suite - see Phase 4's own notes. `src/rclone_kit/authorization/` and
+`src/rclone_kit/rc/auth.py` implement this design; see
+`reference/post_migration_followup_tracking.md`'s "No OAuth/authorization
+workflow" entry for a pointer to the test coverage. This document remains
+the design reference for the implementation, not just a historical proposal.
+It replaces the previous version of itself, which was written against the
+CLI-subprocess architecture
+(`rclone_exe`, one spawned `rclone authorize`/`rclone rcd` process per
+session, `format_command` redaction) that `native-c-abi-migration` has since
+removed entirely (see commit `1588107`, "Remove CLI-subprocess backend;
+execute exclusively through the embedded runtime"). That architecture no
+longer exists: `rclone-kit` now runs rclone in-process, once, through a
+native library loaded via `ctypes` and dispatched with typed RC calls
+(`RcloneRuntime`/`RcClient`, `src/rclone_kit/native/runtime.py`,
+`src/rclone_kit/rc/client.py`). Every design decision below was re-derived
+against that reality and the actual vendored Go source in `native/rclone/`,
+not against the old proposal's assumptions.
 
-The required upstream or downstream rclone change is described separately in
-the [upstream change brief](../reference/rclone_remote_oauth_upstream_change.md).
+The upstream contribution brief, [../reference/rclone_remote_oauth_upstream_change.md](../reference/rclone_remote_oauth_upstream_change.md),
+is a separate document about getting the listener/redirect-URL separation
+accepted into upstream rclone. It is still worth pursuing but is no longer a
+blocking dependency for this feature: the local fork (`native/rclone/`)
+already carries the capability this design needs (see "What changed since
+the previous design" below). Treat that brief as a future upstreaming
+project, not as a precondition for implementing this document.
 
 ## Objective
 
@@ -27,89 +51,397 @@ remain responsible for:
 - refreshing the token during later storage operations.
 
 `rclone-kit` should wrap that behavior. It should not implement a second OAuth
-client stack or become a hosted authorization service.
+client stack or become a hosted authorization service. This objective is
+unchanged from the previous design - what changed is entirely how
+`rclone-kit` can execute rclone to satisfy it.
+
+## What changed since the previous design
+
+The previous design was built around spawning an isolated `rclone`
+*process* per pending authorization: its own config file, its own OAuth
+listener port, its own lifetime, cleaned up independently of every other
+session. None of that is available anymore, and several things that used to
+be hard are now either solved already or no longer meaningful. This section
+records what was actually found by reading the current source, since it
+drives every decision after it.
+
+### There is no process to isolate a session in
+
+`Rclone` no longer spawns `rclone` as a subprocess for anything - not for
+authorization, not for transfers, not for anything else. It loads one native
+shared library per process via `RcloneRuntime.from_library_path()` and calls
+into it through a small C ABI (`initialize()`, `rpc()`, `finalize()`). The
+ABI enforces, and `native/rclone/librclone/rclonekit/bridge/bridge.go:81-108`
+confirms, that `Initialize` can only ever succeed once per loaded library
+instance; a second call returns `StatusAlreadyInitialized`
+(`NativeAlreadyInitializedError`). `docs/production_usage.md`'s "Runtime
+lifecycle and multi-client processes" section already documents the
+consequence for the rest of the library: a process that wants several
+`Rclone` clients must share one `RcloneRuntime` (via `shared_runtime()`),
+because a second, independently initialized runtime is never possible
+in-process - only a separate OS process gives that.
+
+The old design's decision 1 ("run one isolated rclone process per pending
+authorization") depended on exactly the capability that no longer exists.
+There is nothing left to spawn per session; every authorization this
+process ever runs shares the one native library load the process already
+has.
+
+### rclone's own OAuth state is a process-wide global, not a per-session value
+
+This is the fact that shapes the rest of this document. Reading
+`native/rclone/lib/oauthutil/oauthutil.go` directly:
+
+```go
+var (
+	oauthCancelFn context.CancelFunc
+	oauthCancelMu sync.Mutex
+	oauthURL      string
+)
+```
+
+`configSetup()` (the function that starts the local OAuth webserver and
+blocks waiting for the browser callback) sets `oauthCancelFn`/`oauthURL`
+under `oauthCancelMu` when it starts, and clears them in a `defer` when it
+returns - and it does this **unconditionally**, without checking whether a
+flow is already running:
+
+```go
+oauthCancelMu.Lock()
+oauthCancelFn = cancel
+oauthURL = authURL
+oauthCancelMu.Unlock()
+```
+
+`config/oauthstatus` and `config/oauthstop` (added upstream by PR #9466,
+already present in the vendored checkout at
+`native/rclone/lib/oauthutil/oauthutil.go:824-882`) read and cancel exactly
+this one global pair. There is no session identifier anywhere in this state.
+If two authorization flows were ever driven concurrently in the same
+process, the second `configSetup()` call would silently overwrite the
+first's `oauthCancelFn`/`oauthURL` - the first flow's `config/oauthstatus`
+would then report the second flow's URL, and `config/oauthstop` would cancel
+the second flow's context, not the first's. This is a real correctness bug
+in the vendored code if triggered, not a hypothetical - and it is not
+something `rclone-kit` can fix from Python (it is exactly the "current
+rclone status is process-global" limitation the previous design's Proposal B
+already flagged in the abstract, now confirmed concretely).
+
+The conclusion is unavoidable: **`rclone-kit` must never let a second
+authorization flow reach rclone's blocking OAuth step while one is already
+active in the same process.** This is not a design preference to weigh
+against throughput; it is a hard safety requirement, enforced entirely on
+the Python side by a strict single-flight serializer (see "Central
+architectural constraint" below). It also has to be scoped to the *process*
+(really: the one loaded native library), not to a `Rclone` client or an
+`AuthorizationManager` instance someone forgot to share - two `Rclone`
+clients built via `shared_runtime()` are two Python wrappers around the same
+one Go OAuth global state.
+
+### The listener/redirect separation this design needs already exists in the fork
+
+The previous design's largest piece of "required rclone capability" work -
+separate `--oauth-listen-addr`/`--oauth-redirect-url` flags, a capability
+probe, a temporary patched-binary delivery plan spanning phases 1-4 - is
+already done. `native/rclone/fs/config.go:695-696` has:
+
+```go
+OAuthListenAddress string `config:"oauth_listen_addr"`  // Private address for the OAuth callback listener, overriding the default loopback address
+OAuthRedirectURL   string `config:"oauth_redirect_url"` // Public OAuth redirect URI to advertise to the provider, overriding the listener address
+```
+
+and `overrideOAuthRedirect`/`oauthListenAddress` in `oauthutil.go` apply them
+per-flow through `fs.GetConfig(ctx)`, matching the upstream brief's
+"configuration local to the flow, not a package-level mutation" requirement.
+The `:0`-port-reporting race the old design flagged as a known limitation is
+also already fixed: `authServer.BoundAddress()` reports the OS-selected
+address, exercised directly by
+`TestAuthServerBoundAddressResolvesPortZero` in
+`native/rclone/lib/oauthutil/oauthutil_test.go`. There is no capability
+probe to write and no `UnsupportedAuthorizationBinaryError` to raise for a
+missing flag - the binary this repository already builds in CI has the
+feature, unconditionally.
+
+This removes the previous design's entire "Required rclone capability" /
+"Temporary patched rclone binary" apparatus, and phases 1 and 4 of its
+delivery plan, from `rclone-kit`'s critical path. The upstream contribution
+described in `reference/rclone_remote_oauth_upstream_change.md` is still
+worth pursuing on its own timeline, but nothing in this document depends on
+it landing.
+
+### `_config` is a real per-call override, confirmed in the RC dispatch layer
+
+`native/rclone/fs/rc/context.go` decodes a request's `_config` key into a
+copy of the ambient `fs.ConfigInfo` scoped to that one call, then deletes
+the key before the method handler ever sees it - this is generic RC
+plumbing, not something specific to transfer methods. `rclone-kit` already
+relies on exactly this for transfer tuning
+(`operations/transfer_options.py:encode_transfer_options_config`, keyed by
+Go struct field name - e.g. `"Checkers"`, `"Transfers"`). The same mechanism
+applies to `config/create`/`config/update`: passing
+`_config: {"OAuthListenAddress": ..., "OAuthRedirectURL": ...}` on the RC
+call that reaches rclone's OAuth step scopes the override to that call
+without touching any other client's config on the shared runtime. No native
+change was needed for this either.
+
+### There is exactly one rclone config, and it is not disposable
+
+The previous design's "Configuration ownership" section assumed a
+session-private config file, created for the pending authorization, read
+back once, then destroyed - explicitly *not* the caller's live config. That
+model has no equivalent anymore. `RcloneRuntime.initialize(config_path=...)`
+binds one config path for the runtime's entire lifetime; `config/setpath` can
+retarget it, but doing so would repoint every other `Rclone` client sharing
+that runtime at a different file mid-flight, which is far more dangerous
+than useful. `fs/config/config.go`'s `updateRemote()` - reached by both
+`config/create` and `config/update` - calls `SaveConfig()`
+unconditionally, so any RC-driven remote creation persists straight into
+whatever file the runtime already has open.
+
+This is not a gap to work around; it is the same conclusion
+`docs/production_usage.md` already reached for the rest of the library:
+*"Model different logical tenants as different remotes within that one
+shared config (registered dynamically via `config/create`/`config/update` RC
+calls if needed), not as separate runtimes."* Authorization's job is to
+populate that one shared, already-live config safely - not to fabricate an
+isolated one that no longer has anywhere to come from. See "Configuration
+ownership" below for what this means concretely (name-collision protection,
+where the returned `Config` value comes from, the interaction with
+`Rclone.config` snapshots).
+
+### No subprocess means most of the old secret-exposure surface is gone
+
+The previous design spent significant space on redacting positional
+`rclone authorize` arguments from process listings and command logs,
+because a client secret or an encoded config blob passed as a CLI argument
+is visible to anything that can read `/proc` or `Get-Process`. None of that
+applies anymore: every value crosses the boundary as a JSON RC parameter
+over the native ABI (`RcloneRuntime.call(method: str, params: dict)`),
+never as an OS-visible `argv`. The remaining secret-handling work is
+ordinary - do not log full RC params/responses, do not embed them in
+exception messages - and is scoped entirely to code this design adds, not to
+an existing `format_command`-style redactor.
+
+## Central architectural constraint: one authorization flow, one at a time, per process
+
+Restated plainly, because it drives nearly every other decision:
+
+> At most one authorization may be past its initial (fast, local)
+> `config/create`/`config/update` call and into rclone's blocking OAuth step
+> at any moment, for the lifetime of one loaded native library. Every other
+> pending authorization in that same process must wait.
+
+This is enforced entirely in Python, by a manager that is shared by every
+`Rclone` client built against the same `RcloneRuntime` - not one manager per
+client. `RcloneRuntime.call()` itself does not serialize concurrent RPC
+dispatch (see its own docstring: the Go bridge only briefly holds a mutex to
+check `initialized`, then delegates to upstream `librclone.RPC`, which is
+safe to call concurrently) - that concurrency is exactly what lets a status
+watcher poll `config/oauthstatus` on one goroutine while the flow's own
+driving call blocks on another. The manager's serialization is a Python-side
+policy layered on top of that native concurrency, not a workaround for a
+missing one.
+
+Two `Rclone` clients constructed via `shared_runtime()` in the same process
+therefore must not each build their own `AuthorizationManager` - they must
+resolve to the same one, or the single-flight guarantee is only as strong as
+whichever caller remembered to share it. See "Session routing and
+concurrency" for how the manager is obtained to make this automatic rather
+than a documentation-only requirement.
+
+Real cross-tenant isolation - not sharing OAuth globals, config, or even
+this queue between two authorizations - still requires separate OS
+processes, exactly as `docs/production_usage.md` already says for every
+other kind of isolation this library can't provide in-process. A deployment
+that genuinely needs concurrent authorizations should run more than one
+`rclone-kit` process (each with its own `shared_runtime()`), not ask this
+manager to fake concurrency it cannot safely provide.
+
+## The `config/create` non-interactive OAuth state machine
+
+This is new, concrete content the previous design didn't have (it described
+Proposal B's state-machine driver only in the abstract). Driving OAuth
+through RC without a terminal requires walking a specific sequence of
+states, read directly from `native/rclone/lib/oauthutil/oauthutil.go`'s
+`ConfigOAuth` and `native/rclone/fs/backend_config.go`'s `BackendConfig`.
+
+`BackendConfig` loops calling the backend's config step function, following
+each `ConfigGoto` automatically, and only returns to the RC caller when a
+step needs an answer (`ConfigInput`/`ConfigConfirm`, i.e. `out.Option !=
+nil`), signals a terminal error, or finishes (`out.State == ""`). For a
+fresh OAuth-backed remote (Google Drive, first target) with no existing
+token, the sequence is:
+
+```text
+                     ┌─────────────────────────────────────┐
+call 1               │ config/create name type parameters   │
+(fast, local)        │   opt={nonInteractive: true}         │
+                     └──────────────────┬────────────────────┘
+                                        │  loops internally:
+                                        │  *oauth -> *oauth-confirm (no
+                                        │  existing token -> ConfigGoto,
+                                        │  no question)
+                                        ▼
+                     *oauth-islocal: ConfigConfirm
+                     "Use web browser to automatically
+                      authenticate rclone with remote?"
+                     -> returned to caller as {state, option}
+
+call 2               config/create name type {}
+(BLOCKS until          opt={nonInteractive: true, continue: true,
+OAuth completes,               state: <state from call 1>,
+fails, or is                   result: "true"}
+cancelled)           ┌──────────────────┬────────────────────┐
+                     │  *oauth-islocal(true) -> *oauth-do:      │
+                     │  calls configSetup() INLINE - binds the  │
+                     │  webserver, sets oauthCancelFn/oauthURL, │
+                     │  blocks on the browser callback, then    │
+                     │  calls configExchange() -> *oauth-done   │
+                     └──────────────────┬────────────────────┘
+                                        ▼
+                     terminal ConfigOut{State: ""} - remote is
+                     now saved (SaveConfig()) with its token
+```
+
+Reconnecting an existing remote (a token already present) inserts one more
+question before `*oauth-islocal`: `*oauth-confirm`'s "Token already
+configured - replace it?", which must also be answered `true` to proceed.
+`rclone-kit`'s driver only ever needs to answer two possible questions, with
+a fixed policy - it never asks the end user anything through this channel:
+
+| `config_*` question key   | Meaning                                   | Always answered |
+|----------------------------|--------------------------------------------|:---:|
+| `config_refresh_token`     | replace an existing token                 | `"true"` |
+| `config_is_local`          | use the local/embedded webserver (vs. an out-of-band paste-the-code flow for a headless machine with no browser at all) | `"true"` |
+
+`rclone-kit`'s whole value proposition is the local-webserver-plus-relay
+path (`*oauth-islocal` = true); the manual out-of-band paste-a-code path
+(`*oauth-remote`, what the interactive `rclone authorize` companion-machine
+flow uses) is out of scope - it has no browser step for the relay to
+intercept and does not fit a headless-service deployment. If the driver
+encounters any `option` question it does not recognize (a backend with
+extra prompts beyond these two, e.g. a config wizard step that runs before
+the OAuth block), it must raise rather than guess an answer - see
+`AuthorizationUnsupportedPromptError` below.
+
+Two more details confirmed by reading the source, both load-bearing for the
+implementation:
+
+- **`config/oauthstatus`'s `authUrl` is always the internal listener URL**,
+  never the overridden public redirect: `configSetup()` builds it as
+  `"http://" + server.BoundAddress() + "/auth?state=" + state` (line 1002),
+  independent of whatever `OAuthRedirectURL` override applies to the
+  provider-facing request. The relay is what turns this into a
+  publicly-usable URL (see "Relay design"); it is not already public.
+- **`CreateRemote` unconditionally deletes any existing section with the
+  requested name** on the *first* call of a fresh create
+  (`opts.Continue == false`): `fs/config/config.go`'s `CreateRemote()` calls
+  `LoadedData().DeleteSection(name)` before setting the type. Calling
+  `config/create` with a name that collides with an unrelated existing
+  remote silently destroys that remote's configuration. The manager must
+  check name availability before ever calling `config/create` (see
+  "Configuration ownership").
 
 ## Design decisions
 
-The following decisions define the proposal:
-
-1. Run one isolated rclone process per pending authorization.
-2. Give every session its own private config file and OAuth listener port.
-3. Use a stable public callback URL registered with the provider.
-4. Route requests to the correct session using rclone's generated state.
-5. Forward browser requests to rclone without interpreting the authorization
-   code or exchanging it in Python.
-6. Return an `rclone-kit.Config` assembled from rclone's completed result.
-7. Keep web-framework integration outside the core library API.
-8. Accept an explicit rclone executable so a temporary patched binary can be
-   used before the upstream change is released.
-9. Do not persist user tokens in an implicit global store. The calling
-   application decides how completed configuration is stored.
-
-One process per session costs more than multiplexing every user through one
-`rclone rcd`, but it matches rclone's current single-active-OAuth model,
-provides failure isolation, and makes cleanup and ownership unambiguous.
+1. Drive authorization entirely through the existing shared native runtime
+   and its RC dispatch - never spawn an `rclone` process, never load a
+   second native library instance.
+2. Enforce a strict single-flight queue for authorization sessions, shared
+   by every `Rclone` client on one `RcloneRuntime`, because rclone's own
+   OAuth state is a process-wide global (see above). Sessions beyond the
+   one active slot wait in a `QUEUED` state rather than being rejected
+   outright.
+3. Use a stable public callback URL registered with the provider, exactly
+   as the previous design specified; rclone still only ever needs one
+   public redirect URI per deployment (or per provider client), not one per
+   session, since sessions are serialized anyway.
+4. Drive `config/create`/`config/update`'s non-interactive state machine
+   from a small, explicit, tested driver with a fixed answer policy (see
+   above) - never guess an unrecognized prompt.
+5. Scope `oauth_listen_addr`/`oauth_redirect_url` per RC call via `_config`,
+   not by mutating the runtime's ambient config, matching how the fork
+   already implements per-flow overrides.
+6. Route the public callback relay to the one currently-active session
+   using rclone's generated `state` as an untrusted lookup key; rclone
+   remains the authoritative validator.
+7. Forward browser requests to rclone's private listener without
+   interpreting the authorization code or exchanging it in Python.
+8. Treat the shared runtime's live config as authorization's actual target,
+   not an implementation detail to hide - guard against silent
+   remote-name collisions (`CreateRemote`'s `DeleteSection` hazard) instead
+   of pretending isolation that the ABI cannot provide.
+9. Additionally return an `rclone-kit.Config` value scoped to just the
+   created/updated remote (via the existing `config_show(remote=...)`
+   plumbing), so a caller that wants to store or transmit the credential
+   separately from the shared config file still can.
+10. Keep web-framework integration outside the core library API - the relay
+    contract stays framework-neutral.
+11. Do not require an explicit `rclone_exe` or any capability probing - the
+    native library this process already loaded either has
+    `oauth_listen_addr`/`oauth_redirect_url` or it doesn't; probe once
+    against `native_build_info()`/a first harmless RC call if a defensive
+    check is wanted, but do not build a parallel binary-selection story.
 
 ## Architecture
 
 ```text
 Application
     |
-    | start authorization
+    | Rclone.authorize(request)  (or AuthorizationManager.start(request)
+    |                              directly, for a shared-runtime app)
     v
-AuthorizationManager
+AuthorizationManager  (one per RcloneRuntime, shared by every Rclone
+    |                  client built against it)
+    | enqueues an AuthorizationSession; admits it to the single
+    | active slot in FIFO order
+    v
+Session worker (driver thread + status-watcher thread)
     |
-    | creates AuthorizationSession
-    | starts isolated rclone process
+    | drives config/create's non-interactive state machine over the
+    | SAME shared RcClient every other call on this runtime uses
     v
-Private rclone OAuth listener <------ CallbackRelay
-    |                                      ^
-    | provider authorization URL           |
-    v                                      | public callback
-End-user browser ---> OAuth provider ------+
+rclone's private OAuth listener (in-process; bound per _config
+overlay, default 127.0.0.1:53682)  <------ CallbackRelay
+    |                                            ^
+    | provider authorization URL                 |
+    v                                            | public callback
+End-user browser ---> OAuth provider -----------+
     |
-    | rclone exchanges code and emits/stores token
+    | rclone (in-process) exchanges the code and saves the token into
+    | the runtime's one live config file
     v
-AuthorizationResult(Config)
+AuthorizationResult(config, remote_name)
 ```
 
 The public callback relay may run in FastAPI, Django, Flask, an API gateway,
 or another host. The core library supplies framework-neutral request and
-response values and session routing; it does not start a public HTTP server as
-an import side effect.
-
-## Required rclone capability
-
-The manager requires a rclone binary that can independently configure:
-
-- the private OAuth listener address; and
-- the public OAuth redirect URI.
-
-The ideal binary also reports the externally usable authorization URL through
-structured status. Until that is available, a dedicated adapter may parse the
-stable authorization line printed by `rclone authorize`.
-
-The manager should probe the executable for the exact required flags before
-starting a session and raise a specific `UnsupportedAuthorizationBinaryError`
-when they are unavailable. Capability probing is safer than assuming support
-from a version string, especially while downstream builds exist.
-
-The proposal uses these placeholder flag names:
-
-```text
---oauth-listen-addr
---oauth-redirect-url
-```
-
-Implementation must use the names actually accepted upstream or by the
-temporary patch.
+response values and session routing; it does not start a public HTTP server
+as an import side effect, and it does not spawn any process.
 
 ## Public API proposal
 
-The API should be synchronous and thread-safe, consistent with the existing
-library. A web framework can call blocking methods in its worker pool. An
-asynchronous convenience layer can be added later without changing the core
-session model.
+The API is synchronous and thread-safe, consistent with the rest of the
+library. A web framework can call blocking methods in its worker pool.
+
+### Obtaining the manager
+
+```python
+manager = AuthorizationManager.for_runtime(rclone._embedded_runtime)
+# or, equivalently and more commonly:
+rclone = Rclone(CONFIG_PATH, runtime=shared_runtime())
+session = rclone.authorize(request)   # thin convenience wrapper
+```
+
+`AuthorizationManager.for_runtime(runtime)` is lazy and idempotent per
+`RcloneRuntime` instance (a `WeakKeyDictionary[RcloneRuntime,
+AuthorizationManager]`, mirroring `shared_runtime()`'s own "construct
+exactly once, share everywhere" pattern), so any two `Rclone` clients on the
+same runtime always resolve to the same manager without the application
+having to plumb it through by hand. `Rclone.authorize(...)` is a thin
+wrapper that resolves this automatically and tracks the returned session for
+`Rclone.close()`, the same way it already tracks `ServeHandle`/`MountHandle`
+(`_track_serve_handle`/`_track_mount_handle` in `client.py`).
 
 ### Request
 
@@ -122,59 +454,71 @@ class AuthorizationRequest:
     backend_options: Mapping[str, str]
     client_id: str | None = None
     client_secret: Secret | None = None
+    on_conflict: RemoteConflictPolicy = RemoteConflictPolicy.REJECT
     expires_in: timedelta = timedelta(minutes=10)
+    private_listen_addr: str | None = None  # None = rclone's own default
 ```
 
 `backend_options` contains rclone backend configuration, such as a Drive
-scope, but must not contain an already-issued token. Provider application
-credentials may be supplied by the deployment or incorporated into a
-provider-specific configuration profile.
+scope, but must not contain an already-issued token. `on_conflict` controls
+what happens if `remote_name` already exists in the shared config: `REJECT`
+(default; raises `AuthorizationRemoteNameConflictError` before ever calling
+rclone) or `RECONNECT` (drives `config/update` instead of `config/create`,
+answering the extra `config_refresh_token` question - the caller is
+asserting they intend to replace that specific remote's token, not create a
+new one). `private_listen_addr` almost never needs to be set: because
+sessions are serialized, there is no port-collision reason to vary it
+per-session the way the old per-process design needed to; it exists for
+deployments that must bind somewhere other than loopback (e.g. a sidecar
+container network) or want a fixed non-default port for firewalling.
 
-`Secret` in this sketch means a small value type whose `repr` and `str` do not
-expose its content. It does not require a third-party secret-model package.
+`Secret` in this sketch means a small value type whose `repr`/`str` do not
+expose its content; it does not require a third-party secret-model package.
 
 ### Manager and session
 
 ```python
-manager = AuthorizationManager(
-    rclone_exe=patched_rclone,
-    private_listen_host="127.0.0.1",
-)
+manager = AuthorizationManager.for_runtime(shared_runtime())
 
 session = manager.start(
     AuthorizationRequest(
         remote_name="user_drive",
         backend="drive",
-        public_callback_url=(
-            "https://service.example.com/oauth/rclone/callback"
-        ),
+        public_callback_url="https://service.example.com/oauth/rclone/callback",
         backend_options={"scope": "drive"},
         client_id=google_client_id,
         client_secret=Secret(google_client_secret),
     )
 )
 
-send_to_user(session.authorization_url)
+send_to_user(session.authorization_url)  # blocks until QUEUED -> WAITING_FOR_USER,
+                                          # or raises if the session fails/expires first
 result = session.wait(timeout=600)
-rclone = Rclone(result.config)
+print(result.remote_name, result.config)
 ```
 
-`AuthorizationSession` should expose:
+`AuthorizationSession` exposes:
 
 - `id`: an opaque random identifier for diagnostics and application records;
-- `authorization_url`: the public URL to show the user;
-- `expires_at`: an aware UTC timestamp;
+- `authorization_url`: blocks (bounded by `expires_in`) until the session is
+  admitted and rclone reports its URL, then returns the public-facing URL
+  (see "Relay design" for how the internal listener URL becomes this);
+- `expires_at`: an aware UTC timestamp, applying from admission, not from
+  `start()` - a queued session does not burn its consent window while
+  waiting for its turn;
 - `status`: a lifecycle enum;
 - `wait(timeout=None) -> AuthorizationResult`;
 - `cancel() -> None`; and
-- `close() -> None`, with context-manager support.
+- `close() -> None`, with context-manager support - cancels if unfinished,
+  matching `JobHandle.close()`'s shape.
 
-Suggested lifecycle values are:
+Lifecycle values:
 
 ```text
-STARTING
-WAITING_FOR_USER
-COMPLETING
+QUEUED              (waiting for the single active slot)
+STARTING             (admitted; driving the initial config/create call)
+WAITING_FOR_USER      (rclone's local listener is up; authorization_url is set)
+COMPLETING            (browser callback relayed; rclone is exchanging the code)
 SUCCEEDED
 FAILED
 CANCELLED
@@ -182,8 +526,11 @@ EXPIRED
 CLOSED
 ```
 
-Terminal state transitions must be atomic. Repeated cancellation and cleanup
-must be safe.
+`QUEUED` is the one addition versus the previous design's lifecycle, needed
+because sessions can no longer all start immediately in their own process.
+Terminal state transitions must be atomic; repeated cancellation and cleanup
+must be safe; a queued session's `expires_at` deadline must remove it from
+the queue without ever touching rclone.
 
 ### Result
 
@@ -194,19 +541,49 @@ class AuthorizationResult:
     config: Config
 ```
 
-The normal result should not separately expose access and refresh tokens.
-Returning a `Config` keeps the credential inside the rclone abstraction and
-reduces accidental logging. Applications that persist it must treat the
-entire configuration as a secret.
+`config` is built from `rclonekit/configshow`'s existing output
+(`Rclone.config_show(remote=remote_name)` /
+`operations/config_ops.py:fetch_config_show_embedded`), scoped to exactly
+the one remote this session created or updated - not the whole shared
+config file. It is returned as a convenience for callers that want to
+store, encrypt, or transmit that one remote's credential independently; it
+is not the only place the credential now lives, since `config/create`
+already saved it into the runtime's shared config file as a durable side
+effect (see "Configuration ownership"). Applications that persist the
+returned `config` must still treat it as a secret.
 
-The result may also provide a deliberate method for merging the new remote
-into another `Config`. Merge behavior must reject duplicate remote names by
-default rather than silently overwriting credentials.
+### Session worker threads
 
-## Browser relay API
+Each active session is driven by two cooperating threads, not one, because
+of how `configSetup()` blocks (see the state-machine section above):
 
-The relay must not depend on FastAPI request or response types. A narrow
-contract is sufficient:
+- **driver**: issues the sequential RC calls (`config/create`, then one or
+  more `continue` calls answering questions). The call that answers
+  `config_is_local=true` is the one that blocks inside rclone for the whole
+  browser wait - this thread is parked there until the flow finishes,
+  fails, or is cancelled.
+- **status watcher**: started right after the driver dispatches that
+  blocking call, polls `config/oauthstatus` on the same `RcClient` (safe to
+  call concurrently - see "Central architectural constraint") until it
+  observes `status: "running"`, captures `authUrl`, and flips the session to
+  `WAITING_FOR_USER`. It stops polling once the driver thread signals
+  completion, whether or not it ever observed `"running"` (a flow that
+  fails before binding the listener - e.g. a bad `client_id` - never
+  reaches `"running"` at all, and the watcher must not spin forever waiting
+  for a state that isn't coming).
+
+This mirrors `_JobMonitor`'s existing shape (`job.py`) - one background
+worker owns mutation of session state under a condition variable, handles
+read the latest cached snapshot - but a session additionally needs the
+second, short-lived watcher thread because, unlike a job's `job/status`,
+there is no way to learn `config/oauthstatus`'s content from the same call
+that would block waiting for it.
+
+## Relay design
+
+Unaffected by the runtime migration - this part of the previous design was
+already correct at the wire-protocol level, only the process topology
+around it changed. Preserved close to verbatim:
 
 ```python
 @dataclass(frozen=True)
@@ -226,50 +603,52 @@ class RelayResponse:
 response = manager.relay(request)
 ```
 
-The public application should mount two shapes below one registered callback
-base:
+The public application mounts two shapes below one registered callback base:
 
 ```text
 /oauth/rclone/callback/auth?state=...
 /oauth/rclone/callback?state=...&code=...
 ```
 
-The first is the entry URL shown to the user. Rclone redirects it to the
-provider. The second is the provider callback. Provider error query parameters
-use the same second path.
-
-The manager extracts `state` only to find the target session. It forwards the
-raw query unchanged so rclone performs the authoritative state check. The
-public path prefix is removed before forwarding:
+The first is the entry URL shown to the user; rclone's `/auth` handler
+validates state and redirects the browser to the provider. The second is the
+provider callback; rclone's `/` handler validates state and supplies the
+code to the flow blocked in `configSetup()`. Provider error query parameters
+use the same second path. The manager strips the public prefix and forwards
+to the recorded private listener address:
 
 ```text
-public .../callback/auth -> private /auth
-public .../callback      -> private /
+public .../callback/auth -> private http://<listener>/auth
+public .../callback      -> private http://<listener>/
 ```
 
-The target listener address must come only from the manager's internal session
-record, never from a URL or header supplied by the caller. This prevents the
-relay from becoming an SSRF primitive.
+`manager.relay()` extracts `state` only to confirm the request targets the
+one currently-active session (`WAITING_FOR_USER` or `COMPLETING`) and that
+`state` matches what that session's `authorization_url` reported - it never
+selects a target address from anything in the request itself, which is what
+prevents the relay from becoming an SSRF primitive. Because at most one
+session is ever active, this check degenerates to "is there an active
+session, and does its state match" rather than a full session-ID index, but
+it is still enforced explicitly rather than assumed, since a stale or
+forged callback must still be rejected cleanly.
 
 The relay should:
 
-- allow only the methods rclone's temporary listener expects;
+- allow only the methods rclone's temporary listener expects (`GET`);
 - preserve duplicate and escaped query parameters by using the raw query;
 - set a short connection and response timeout;
-- forward the rclone response status and safe response headers;
+- forward rclone's response status and safe response headers;
 - remove hop-by-hop headers;
 - pass the provider `Location` redirect through unchanged;
-- cap response size to the small authorization page expected from rclone;
-- reject unknown, expired, completed, or mismatched sessions; and
+- cap response size to the small authorization page rclone serves;
+- reject requests with no active session, an expired session, an
+  already-completed session, or a mismatched state; and
 - never log codes, tokens, client secrets, or complete callback queries.
 
 The host application remains responsible for public TLS, rate limiting,
 request-size limits, and any user-facing page around the authorization URL.
 
 ### FastAPI integration example
-
-An adapter can be only a few lines and belongs in application code or an
-optional integration module:
 
 ```python
 @app.get("/oauth/rclone/callback")
@@ -288,220 +667,116 @@ def rclone_callback(request: Request) -> Response:
     )
 ```
 
-This example is illustrative. Header conversion must preserve repeated headers
-where the selected framework supports them.
-
-## Execution proposals
-
-### Proposal A: one `rclone authorize` process per session
-
-This is the smallest implementation and the recommended first functional
-spike.
-
-For each request:
-
-1. Allocate a private listener port.
-2. Start `rclone authorize <backend>` with no automatic browser, the private
-   listener, the public redirect URI, and the provider client configuration.
-3. Read merged output incrementally until the public authorization URL is
-   available.
-4. Parse its rclone-generated state and register it to the session.
-5. Return the session to the caller.
-6. Relay `/auth` and the callback to that process's private listener.
-7. Wait for rclone's delimited result:
-
-   ```text
-   Paste the following into your remote machine --->
-   ...
-   <---End paste
-   ```
-
-8. Validate and place the exact rclone-produced token into the requested
-   remote section.
-9. Return `AuthorizationResult` and dispose the process.
-
-Advantages:
-
-- closely matches rclone's existing headless authorization command;
-- one subprocess and no separate RC control server;
-- rclone directly returns the token intended for a remote; and
-- easy isolation and cancellation.
-
-Limitations:
-
-- authorization URL and result discovery depend on command output unless
-  upstream adds structured output;
-- custom client credentials are positional arguments in the existing command
-  and can be visible in the host's process list;
-- backend option blobs are also positional and must be redacted from all
-  diagnostics;
-- a checked-then-released port allocation has a bind race; and
-- the wrapper must assemble the final remote section.
-
-The existing `format_command` redacts sensitive flag values but cannot know
-that positional `rclone authorize` arguments contain a client secret or an
-encoded configuration blob. The authorization runner must supply its own
-command formatter that redacts those positions. This fixes logs but not
-operating-system process-list exposure.
-
-Proposal A is acceptable for a controlled prototype. Proposal B is preferable
-for production deployments that need stronger credential handling and a
-structured control plane.
-
-### Proposal B: one isolated `rclone rcd` process per session
-
-This is the recommended production target after the end-to-end behavior is
-proven.
-
-For each request:
-
-1. Write the incomplete remote and its provider client credentials to an
-   owner-only, process-private rclone config file.
-2. Start an isolated `rclone rcd` bound to loopback with randomly generated RC
-   credentials, a private OAuth listener, and the public redirect URI.
-3. Drive `config/create` or `config/update` with `nonInteractive`, `state`,
-   `continue`, and `result` through the loopback RC API.
-4. When the OAuth step blocks waiting for the browser, query
-   `config/oauthstatus` to obtain the authorization URL.
-5. Register state and return the session.
-6. Relay the browser requests to the separate private OAuth listener.
-7. Continue the non-interactive configuration state machine until rclone
-   completes the remote.
-8. Read the finished process-private config and return it as `Config`.
-9. Call `config/oauthstop` on cancellation when appropriate, then terminate
-   and clean up the process.
-
-The RC control listener and OAuth callback listener are different private
-ports and must be modeled separately.
-
-Advantages:
-
-- structured status and cancellation;
-- rclone builds the whole remote rather than returning only a token;
-- provider credentials can remain in an owner-only config instead of command
-  arguments;
-- configuration questions use rclone's backend state machine; and
-- the result is the exact config rclone created.
-
-Limitations:
-
-- more moving parts and two private listeners;
-- the non-interactive config state machine needs a dedicated tested driver;
-- an OAuth-related RC request may remain blocked while the browser flow is
-  pending and must run in a worker;
-- current rclone status is process-global, which is why every session still
-  needs its own rcd process; and
-- RC authentication and lifecycle add implementation work.
-
-### Proposal C: implement provider OAuth in Python
-
-Do not pursue this as the product design. It would require `rclone-kit` to own
-provider URLs, scopes, PKCE details, token exchanges, response normalization,
-refresh compatibility, and provider-specific maintenance. It would also
-repeat behavior already maintained by rclone.
-
-This approach is useful only as an emergency provider-specific experiment and
-must not be presented as the general rclone authorization wrapper.
+This example is illustrative; header conversion must preserve repeated
+headers where the selected framework supports them.
 
 ## Session routing and concurrency
 
-The manager should maintain two private indexes under one lock:
+The manager holds one FIFO queue and, at most, one active session:
 
 ```text
-session_id -> AuthorizationSessionState
-oauth_state -> session_id
+active: AuthorizationSessionState | None
+pending: deque[AuthorizationSessionState]      # QUEUED, in arrival order
+oauth_state -> active session (only ever one entry, once WAITING_FOR_USER)
 ```
 
-`oauth_state` is learned from the rclone-generated authorization URL. It must
-be removed when the session reaches any terminal state. Session IDs and states
-must never be reused.
+`start()` appends a new session to `pending` and returns immediately; a
+background dispatcher promotes the head of `pending` to `active` whenever
+the slot is free, spawning that session's driver/watcher threads. Enforce a
+configurable cap on `pending`'s length (and, when the host supplies an
+owner key, a per-owner cap) so an application cannot silently accumulate an
+unbounded number of expiring sessions; reject `start()` past the cap before
+ever touching the queue.
 
 Each session owns:
 
-- one rclone process;
-- one temporary config directory;
-- one private OAuth listener address;
-- optionally one private RC listener address;
-- one worker responsible for reading or driving rclone;
+- one driver thread and one status-watcher thread (watcher only exists once
+  active);
+- its recorded private listener address (parsed from
+  `config/oauthstatus`'s `authUrl` once known);
 - one deadline and cancellation signal; and
 - captured diagnostics with secrets removed.
 
-The manager should enforce configurable limits on pending sessions globally
-and, when the host supplies an owner key, per owner. Capacity exhaustion must
-fail before starting another process.
+There is deliberately no per-session process, config directory, or RC
+control listener to track - the old design's largest bookkeeping burden is
+simply gone, because everything a session needs (the shared runtime, the
+shared config, the shared `RcClient`) already exists and is shared safely
+via the queue's single-flight guarantee instead of via OS-level isolation.
 
-Port allocation should retry when rclone reports a bind failure. Once rclone
-can use `:0` and expose the actual selected address, switch to operating-system
-allocation and remove the checked-free-port race.
+`AuthorizationManager.for_runtime()`'s `WeakKeyDictionary` keying on
+`RcloneRuntime` means the manager's lifetime follows the runtime's: it does
+not need its own explicit shutdown hook, but `Rclone.close()` should still
+cancel any sessions *that client* started and is still tracking (mirroring
+`_serve_handles`/`_mount_handles`), even though the manager itself - and any
+other client's sessions on the same shared runtime - outlives that one
+`close()` call.
 
 ## Configuration ownership
 
-Every authorization must begin with an isolated config. It must not modify the
-process-wide config discovered from `RCLONE_CONFIG` unless the caller
-explicitly chooses to merge the successful result.
+Authorization's target is the shared runtime's one live config file - there
+is no session-private config to create and destroy. The flow is:
 
-The recommended result flow is:
+1. before calling `config/create`, check `remote_name` against
+   `config/listremotes` (or `config/get`); if it already exists and
+   `on_conflict` is `REJECT` (the default), raise
+   `AuthorizationRemoteNameConflictError` without ever calling
+   `config/create` - this is what stands in for the old design's "reject
+   duplicate remote names by default," and is strictly necessary here
+   because `CreateRemote` would otherwise silently delete the existing
+   section (see the state-machine section above);
+2. drive `config/create` (or `config/update`, for `RECONNECT`) through the
+   non-interactive state machine; rclone saves the completed remote into
+   the shared config as soon as the OAuth exchange succeeds;
+3. read back exactly that remote via `config_show(remote=remote_name)` and
+   wrap it in the returned `AuthorizationResult.config`;
+4. on failure, cancellation, or expiry *after* the remote section was
+   created but before it holds a valid token, call `config/delete` for
+   `remote_name` to avoid leaving a broken, tokenless section behind -
+   except under `RECONNECT`, where the pre-existing remote must be left as
+   it was before the attempt, not deleted.
 
-1. create an incomplete remote in a session-private config;
-2. let rclone add the token;
-3. read and validate the completed remote;
-4. return a new `Config` value;
-5. destroy the session-private files after the caller has received the value;
-6. let the caller persist, encrypt, or merge the result.
+Every `Rclone` client sharing that runtime sees the new remote the moment
+`SaveConfig()` runs - there is no propagation step. The one caveat, already
+called out as an open item in `reference/post_migration_followup_tracking.md`
+(finding #9, "stale config snapshots"): a client's own `self.config`
+snapshot (backing `is_s3()`, `get_s3_credentials()`, `encode_fs_spec()`) was
+captured at that client's construction time and will not see a remote
+created by a session that ran afterward. A client constructed fresh
+*after* the session completes, from the same config path, will see it
+(`Config(content)` re-reads the file from disk). Document this plainly at
+the call site rather than let it surprise a caller: **if you need
+`is_s3()`/`get_s3_credentials()` to see a just-authorized remote, build a
+new `Rclone` client (same `runtime=`, same config path) after the session
+succeeds** - do not assume an existing client's snapshot updates itself.
 
-If the application stores one config per user, that file or secret record is
-its responsibility. `rclone-kit` should document safe patterns but should not
-silently introduce a database or global credential directory.
+If the application stores one config per user in some other system (a
+database, a secret manager), `AuthorizationResult.config`'s text is what to
+hand it; `rclone-kit` does not introduce that storage itself.
 
 ## Provider application credentials
 
 A provider must accept the configured public redirect URI. In practice this
 usually means the deployment needs its own registered OAuth application for
-each provider or requires callers to supply one.
-
-The deployment model should decide whether:
+each provider, or requires callers to supply one - unchanged from the
+previous design. The deployment model should decide whether:
 
 - one application-owned provider client is shared by all of its users;
 - each tenant supplies a provider client; or
 - each authorization request supplies one.
 
 This is distinct from the end user's resulting access and refresh token.
-Client credentials must be bound to the session configuration and must never
-be returned to the browser.
+Client credentials must be bound to the session's RC parameters
+(`client_id`/`client_secret` in `parameters`, set via rclone's normal
+`config.ConfigClientID`/`config.ConfigClientSecret` keys) and must never be
+returned to the browser.
 
 The first supported and live-tested backend should be Google Drive, but the
 core session and relay implementation must remain backend-neutral. Add other
-backends only after testing their actual rclone authorization behavior.
-
-## Temporary patched rclone binary
-
-The authorization API must accept an explicit `rclone_exe`, using the same
-resolution rules as the rest of the library. This provides three deployment
-modes:
-
-1. an explicitly supplied development build;
-2. a temporary patched build bundled in `rclone-kit`; and
-3. an official rclone build after the upstream release contains the feature.
-
-Before a custom binary becomes the bundled default:
-
-- build it from a maintained fork and recorded commit;
-- include an identifiable downstream version suffix;
-- publish or otherwise retain the corresponding source and patch;
-- record archive and executable hashes for every platform;
-- update `runtime/platform.py` and the distribution-verification fixtures;
-- keep the rclone license adjacent to the binary;
-- run all existing wheel integrity checks; and
-- run authorization-specific end-to-end tests using the packaged executable,
-  not only a binary from the source checkout.
-
-The custom-binary feature probe should run once per resolved executable and
-cache only a non-secret capability result. Do not silently fall back to direct
-Python OAuth when the binary lacks support.
-
-The exit condition is an official rclone release with the required behavior.
-After verifying that release, update the pinned artifact and remove the fork
-patch and downstream version handling.
+backends only after confirming their actual `Config` wizard shape matches
+the two-question policy above - a backend with additional required prompts
+before reaching `*oauth` needs those prompts either pre-answered via
+`parameters` or explicitly added to the driver's known-question table, never
+silently skipped.
 
 ## Security requirements
 
@@ -512,136 +787,178 @@ Treat all of the following as sensitive:
 - provider client secrets;
 - authorization codes;
 - access and refresh tokens;
-- completed `Config` text;
-- encoded rclone authorization blobs;
+- completed `Config` text (from `config_show`);
 - complete callback query strings; and
 - OAuth state values in routine logs.
 
-No exception should embed raw rclone output without passing it through an
-authorization-specific redactor. Debug logs may name the backend, session ID,
-state transition, process ID, and redacted listener address, but not the
-values above.
+No exception should embed a raw RC response or `config_show` output without
+passing it through an authorization-specific redactor first. Debug logs may
+name the backend, session ID, state transition (the config-wizard `state`
+token itself is an opaque continuation identifier, not a secret, but is
+still not useful to log routinely), and lifecycle status, but not the values
+above. Because there is no subprocess, there is no OS-process-list exposure
+class of concern to redact against - every sensitive value only ever
+appears as an in-process JSON RC parameter, never as an argv.
 
 ### Callback integrity
 
 Rclone remains the authoritative state validator. The manager additionally
-uses state as an untrusted lookup key and rejects it unless it maps to a live
-session. A callback must not select its own upstream address.
+uses `state` as an untrusted lookup key and rejects it unless it matches the
+one currently active session. A callback must not select its own upstream
+address - the private listener address is always read from the manager's
+own session record, never from a header or query value supplied by the
+caller.
 
-Consume the route when rclone successfully completes. Expired or replayed
-callbacks must not revive a process or return a previous authorization page.
+Consume the route when rclone successfully completes. Expired, replayed, or
+post-completion callbacks must not revive a session or return a previous
+authorization page.
 
 ### Network isolation
 
-Bind RC control to loopback and protect it with random per-session
-credentials. Bind the OAuth listener to loopback when the relay shares the
-network namespace. If a sidecar requires a non-loopback bind, expose it only
-on the private container network and restrict ingress to the relay.
-
-Public HTTPS terminates outside rclone. Do not publish the private OAuth or RC
-port directly.
+rclone's OAuth listener binds loopback by default
+(`OAuthListenAddress` unset); a non-default `private_listen_addr` is an
+explicit deployment decision and should be documented as exposing a
+short-lived HTTP service that normally belongs on a private network behind
+a trusted relay - identical guidance to the previous design, just no longer
+tied to per-session port allocation. Public HTTPS terminates outside
+rclone entirely; do not publish the private OAuth listener directly.
 
 ### Resource control
 
-Set deadlines for startup, user consent, callback forwarding, rclone
-completion, and process shutdown. Limit concurrent sessions and relay response
-size. Ensure interpreter-exit cleanup terminates every child process and
-removes temporary configs.
+Set deadlines for queueing, startup, user consent, callback forwarding, and
+rclone completion. Limit both the pending-queue depth and relay response
+size. Because there is no child process to clean up, "leaves no rclone
+processes" from the old acceptance criteria simplifies to: a
+closed/expired/cancelled session leaves rclone's OAuth globals cleared
+(verifiable via `config/oauthstatus` reporting `"stopped"`) and, on
+interpreter exit, does not leave the queue's dispatcher thread as the only
+thing keeping the process alive (daemon threads, matching `_JobMonitor`'s
+convention).
 
 ## Error model
 
-Add focused exceptions rather than returning raw subprocess failures:
+Layered on the existing `RcloneKitError`/`OperationError` hierarchy in
+`exceptions.py`, following its established shape (typed fields, a clear
+`__cause__`, no bare strings where a value belongs on the exception):
 
-- `UnsupportedAuthorizationBinaryError`;
-- `AuthorizationStartupError`;
-- `AuthorizationOutputError`;
-- `AuthorizationRelayError`;
-- `AuthorizationRejectedError`;
-- `AuthorizationExpiredError`;
-- `AuthorizationCancelledError`;
-- `AuthorizationProcessError`; and
-- `AuthorizationConfigError`.
+- `AuthorizationError(RcloneKitError)` - base type;
+- `AuthorizationRemoteNameConflictError` - `remote_name` already exists and
+  `on_conflict` was `REJECT`;
+- `AuthorizationUnsupportedPromptError` - the state machine hit a
+  `config_*` question outside the fixed `config_refresh_token`/
+  `config_is_local` policy;
+- `AuthorizationStartError` - the initial `config/create`/`config/update`
+  call failed before any question was reached; carries the underlying
+  `RcCallError`;
+- `AuthorizationRejectedError` - the provider or rclone reported the flow
+  failed (bad code, state mismatch, provider denial);
+- `AuthorizationExpiredError` - `expires_at` elapsed, whether queued or
+  active;
+- `AuthorizationCancelledError` - `cancel()` was called, or the manager
+  force-cancelled an overrun session;
+- `AuthorizationQueueFullError` - `start()` exceeded the pending-queue cap;
+  and
+- `AuthorizationRelayError` - the relay could not reach or parse a response
+  from the private listener.
 
-Exceptions should include the session ID, backend, lifecycle stage, rclone
-return code when applicable, and sanitized diagnostics. Provider error names
-may be preserved, but provider descriptions and query strings must be checked
-before logging or returning them.
+Exceptions should include the session ID, backend, lifecycle stage, and
+sanitized diagnostics. Provider error *names* may be preserved, but provider
+descriptions and query strings must be checked before logging or returning
+them (an OAuth `error_description` parameter is attacker-influenced input,
+same as any other redirect query value).
 
 ## Proposed module boundaries
-
-An initial package layout could be:
 
 ```text
 src/rclone_kit/authorization/
     __init__.py
-    types.py
-    manager.py
-    session.py
-    relay.py
-    process_runner.py
-    output_parser.py
-    exceptions.py
+    types.py          # AuthorizationRequest/Result, RelayRequest/Response,
+                       # lifecycle enum, Secret
+    manager.py         # for_runtime(), queue/single-flight admission
+    session.py          # lifecycle, wait/cancel/close, driver+watcher threads
+    state_driver.py      # the config/create non-interactive state walker
+                          # and its fixed question-answer policy
+    relay.py               # public-request -> private-listener translation
+    exceptions.py            # the AuthorizationError family above
+
+src/rclone_kit/rc/auth.py  # low-level typed RC calls this needs
+                            # (config/create, config/update, config/delete,
+                            # config/listremotes, config/oauthstatus,
+                            # config/oauthstop), mirroring rc/jobs.py's
+                            # RcJobClient shape
 ```
 
-Responsibilities should remain narrow:
+Responsibilities stay narrow, matching the rest of `rclone_kit.rc`/
+`rclone_kit.operations`'s existing split between a thin typed RC boundary
+and the higher-level operation logic built on it:
 
-- `types.py`: immutable requests, results, relay values, statuses, and secret
-  wrappers;
-- `manager.py`: indexes, capacity, session creation, and routing;
-- `session.py`: lifecycle, wait, cancel, result, and cleanup;
-- `relay.py`: safe translation of public requests to the stored private
-  listener;
-- `process_runner.py`: rclone command or RC lifecycle and private config;
-- `output_parser.py`: the isolated compatibility boundary for CLI output; and
-- `exceptions.py`: sanitized public failure types.
+- `state_driver.py` is the one place that knows the `*oauth*` state names
+  and the two-question policy - if a future backend needs a third known
+  question, it is added here, reviewed, and tested, not inferred at
+  runtime;
+- `manager.py` owns the queue, the `WeakKeyDictionary` runtime keying, and
+  nothing about HTTP;
+- `relay.py` owns the public/private request translation and nothing about
+  the state machine;
+- `session.py` is the only place that starts threads.
 
-Do not add authorization methods directly to the large `Rclone` client until
-the session design is stable. Export a small curated surface from
-`rclone_kit.authorization`; later, `Rclone.authorize(...)` can be a thin
-convenience wrapper if there is clear value.
+`Rclone.authorize(remote_name, backend, ...)` on `client.py` should be a
+thin wrapper that resolves `AuthorizationManager.for_runtime(self.
+_embedded_runtime)`, calls `manager.start(...)`, and tracks the returned
+session the same way `mount()`/`serve_webdav()` track their handles - do not
+inline queue or state-machine logic into `client.py` itself.
 
-Importing `rclone_kit` or `rclone_kit.authorization` must not spawn a process,
-bind a port, register signal handlers, or start a thread. Resource creation
-begins only when `AuthorizationManager.start` is called.
+Importing `rclone_kit` or `rclone_kit.authorization` must not spawn a
+thread, register a signal handler, or touch the network. Resource creation
+begins only when `AuthorizationManager.start()` is called.
 
 ## Test strategy
 
 ### Unit tests
 
-Use fake process and transport boundaries to cover:
+Use a fake `RcCallable` (matching the existing `RcCallable`/`RcCapableRuntime`
+protocol split already used throughout `operations/*_embedded.py`'s test
+suite) to cover:
 
-- capability detection;
-- authorization URL parsing and validation;
-- delimited result parsing across arbitrary stream chunk boundaries;
-- redaction of every positional and flag-based secret;
-- all lifecycle transitions and invalid transitions;
-- startup, consent, completion, and shutdown timeouts;
-- idempotent cancel and close;
-- config creation and duplicate-name merge rejection;
-- raw query preservation;
-- safe header filtering;
-- unknown, expired, replayed, and completed state routing;
-- port bind retry; and
-- global and per-owner capacity limits.
+- the state driver's full transition table, including the reconnect
+  (`config_refresh_token`) branch and the unrecognized-question rejection;
+- the `_config` overlay produced for `OAuthListenAddress`/`OAuthRedirectURL`;
+- name-collision detection and `on_conflict` handling before `config/create`
+  is ever called;
+- queue admission order, per-owner and global caps, and queued-session
+  expiry that never touches rclone;
+- all lifecycle transitions and invalid transitions, including the
+  `QUEUED -> EXPIRED` and force-cancel-on-overrun paths;
+- idempotent cancel/close;
+- raw query preservation and safe header filtering in the relay;
+- unknown, expired, replayed, and completed-session routing in the relay;
+  and
+- redaction of every field listed under "Secrets and logs".
 
 ### Offline integration tests
 
-Build a local fake OAuth provider with authorization and token endpoints. The
-test must exercise a real patched rclone process:
+Build a local fake OAuth provider with authorization and token endpoints,
+and exercise the real vendored native library (built for tests exactly as
+`tests/native/conftest.py` already does for the rest of the suite - no
+separate binary needed, since the capability is already in the same build):
 
-1. start a session;
-2. retrieve its public authorization URL;
-3. enter through the relay `/auth` path;
+1. start a session against a real `RcloneRuntime`;
+2. retrieve its public authorization URL through the manager, not by
+   reading `config/oauthstatus` directly;
+3. enter through the relay's `/auth` path;
 4. follow rclone's redirect to the fake provider;
-5. have the provider return a code and state to the public callback;
+5. have the provider return a code and state to the public callback path;
 6. relay the callback to rclone;
 7. assert the token exchange contains the configured redirect URI;
-8. assert rclone, not Python, calls the token endpoint;
-9. obtain the completed `Config`; and
-10. verify all resources are gone.
+8. assert rclone, not Python, calls the provider's token endpoint;
+9. obtain the completed `AuthorizationResult`; and
+10. verify `config/oauthstatus` reports `"stopped"` afterward and the
+    session's threads have exited.
 
-Run the same test with multiple simultaneous sessions and intentionally return
-callbacks in a different order. Cross-routing must fail.
+Then prove serialization itself: start two sessions back to back, assert
+the second stays `QUEUED` (never touches `config/oauthstatus`'s global
+state) until the first settles, and that its own flow only begins after the
+first's globals are confirmed cleared.
 
 ### Failure integration tests
 
@@ -649,80 +966,99 @@ Cover:
 
 - provider denial;
 - state mismatch;
-- unknown state;
-- malformed authorization URL;
-- listener port already occupied;
-- rclone exit before readiness;
-- rclone exit after callback but before result;
-- token endpoint failure;
+- unknown state (relay call with no active session);
+- name collision (`REJECT` and `RECONNECT` both);
+- an unrecognized `config_*` question from a hypothetical extra prompt;
+- listener bind failure on a caller-supplied `private_listen_addr`;
+- rclone-side error before the listener ever binds (bad `client_id`) -
+  confirm the status watcher does not hang waiting for `"running"`;
+- provider token-endpoint failure;
 - callback after expiry;
-- manager shutdown with active sessions; and
-- relay inability to reach the private listener.
+- explicit cancellation of an active session versus a queued one; and
+- manager teardown (process/runtime shutdown) with sessions still queued or
+  active.
 
 ### Live tests
 
-Add an explicitly selected live marker for Google Drive using a dedicated test
-OAuth client and registered callback. Verify that the resulting remote can
-list a controlled folder and refresh an expired or deliberately invalidated
-access token using its refresh token.
+Implemented as `tests/live/gdrive_authorization/` (its own marker,
+`live_gdrive_authorization`, gated the same way as `tests/live/gdrive`/
+`tests/live/s3` - see `docs/implementation_and_build_pipeline.md`'s test
+list). No dedicated test OAuth client turned out to be necessary: rclone's
+own built-in shared client_id works via `Rclone.authorize()`'s local-direct
+mode (no `public_callback_url`), the same fallback plain interactive
+`rclone config create` uses - see `AuthorizationRequest`'s docstring for
+why a relay deployment normally supplies its own client instead. Verifies
+the resulting remote can list a controlled folder and refresh a
+deliberately invalidated access token using its refresh token, exactly the
+previous design's success criterion.
 
-Never run live authorization automatically for untrusted pull requests. Keep
-provider credentials and returned config in CI secret storage and redact test
-artifacts.
-
-### Distribution tests
-
-For a bundled custom binary, verify both supported wheels contain the expected
-patched executable and that runtime resolution selects it. The end-to-end
-authorization smoke test should execute the resolved packaged binary.
+Unlike `tests/live/gdrive`/`tests/live/s3`, this suite cannot run fully
+unattended even when explicitly selected: it blocks mid-run waiting for a
+human to approve access in a real browser, since that step cannot be
+scripted further without violating the provider's terms of service. Never
+run it automatically in CI - it isn't (see the workflow files' job list);
+running it is always a deliberate, manual `pytest -m
+live_gdrive_authorization` invocation. `scripts/verify_gdrive_authorization.py`
+is a non-pytest equivalent for a quicker one-off check outside the test
+suite.
 
 ## Delivery plan
 
-### Phase 1: downstream rclone proof
+The previous design's phases 1 ("downstream rclone proof"), 4 ("packaged
+temporary binary"), and most of 5 ("upstream and migration") are not
+`rclone-kit` delivery work anymore - the capability already ships in the
+binary this repository builds, and upstreaming it is a separate, unblocked
+effort tracked in `reference/rclone_remote_oauth_upstream_change.md`. What
+is left is genuinely new Python work:
 
-1. Implement the clean listener/redirect patch in the reference checkout or a
-   maintained fork.
-2. Add upstream-quality Go tests.
-3. Build a local binary with an identifiable version.
-4. Prove a manual browser flow through a minimal relay.
+### Phase 1: state driver and single-flight manager
 
-### Phase 2: `rclone authorize` prototype
+1. Add `state_driver.py` and its unit tests against a fake `RcCallable`,
+   covering the full transition table above.
+2. Add `AuthorizationManager`/`AuthorizationSession`/the exception family,
+   with the queue but without a relay yet - prove serialization and
+   lifecycle correctness against the real embedded runtime first.
+3. Add name-collision protection and the `Config`-via-`config_show` result
+   path.
 
-1. Add request, result, status, exception, and secret value types.
-2. Add the capability probe and authorization-specific command redaction.
-3. Add a per-session process runner and incremental output parser.
-4. Add the state-indexed relay.
-5. Return a process-private completed `Config`.
-6. Add offline and concurrent integration tests.
+### Phase 2: relay
 
-This phase proves the product boundary quickly and provides useful feedback
-for the upstream contribution.
+1. Add the framework-neutral `RelayRequest`/`RelayResponse` types and
+   `manager.relay()`.
+2. Add the offline fake-provider integration test, including the two-
+   sessions-serialize proof.
+3. Add the FastAPI (or similar) adapter as an illustrative, non-core
+   example.
 
-### Phase 3: isolated RC production path
+### Phase 3: `Rclone` integration and docs
 
-1. Add a private authenticated rcd runner.
-2. Implement the non-interactive config state-machine driver.
-3. Use `config/oauthstatus` and `config/oauthstop` for structured lifecycle.
-4. Keep the CLI runner as a compatibility path until RC coverage is complete.
-5. Compare resulting configs across both paths.
+1. Add `Rclone.authorize(...)` and its `close()`-time tracking, mirroring
+   `_track_serve_handle`/`_track_mount_handle`.
+2. Document the stale-`self.config`-snapshot interaction with authorization
+   in `docs/production_usage.md`, alongside the existing "Runtime lifecycle
+   and multi-client processes" section.
+3. Update `reference/post_migration_followup_tracking.md`'s OAuth item to
+   point at this document as resolved-by-design, pending implementation.
 
-### Phase 4: packaged temporary binary
+### Phase 4: live verification
 
-1. Produce reproducible Windows and Linux artifacts from the downstream fork.
-2. Update pinned artifact metadata, hashes, licenses, and distribution tests.
-3. Document the downstream build prominently in release notes.
-4. Release only after live authorization and normal storage regression tests
-   pass on both platforms.
+Done - `tests/live/gdrive_authorization/`. Reached via local-direct mode
+(no relay, no registered callback needed) rather than a reverse-proxy-shaped
+relay deployment: rclone's shared client_id is only registered for its own
+loopback redirect, so a relay-shaped run would need its own dedicated
+provider client instead (see "Provider application credentials"), which is
+a separate, still-open verification a caller supplying their own
+`client_id`/`client_secret`/`public_callback_url` would need to do for
+their own deployment - not something this repository's own test suite can
+do generically without owning a registered public redirect.
 
-### Phase 5: upstream and migration
-
-1. Coordinate on rclone PR #7635 before opening a replacement.
-2. Submit the clean rclone change with the demonstrated relay use case and
-   test evidence.
-3. Track the accepted commit and first official release containing it.
-4. Replace the patched artifacts with that official release.
-5. Remove downstream-only compatibility code after the minimum supported
-   rclone version contains the feature.
+1. Confirm the live suite lists a real folder and refreshes a deliberately
+   invalidated token through the normal (non-authorization) RC path - done.
+2. A real reverse-proxy-shaped relay deployment against a caller-owned
+   provider client remains unverified by this repository's own test suite;
+   `relay.py`'s unit tests and the offline fake-provider integration test
+   (`tests/native/test_authorization_offline_integration.py`) cover the
+   relay's translation logic, just not against a real provider.
 
 ## Acceptance criteria
 
@@ -730,31 +1066,37 @@ The `rclone-kit` feature is complete when:
 
 1. A caller starts a session without importing a web framework.
 2. The returned URL is usable from a browser on another machine.
-3. The public callback is relayed to a private rclone listener.
-4. Rclone validates state and performs the token exchange.
-5. The caller receives a ready-to-use `Config` without handling token JSON.
-6. Concurrent users cannot receive or overwrite one another's credentials.
-7. Cancellation, expiry, application shutdown, and failures leave no rclone
-   processes, open listeners, or temporary config files.
-8. Logs and exceptions contain no secrets, codes, tokens, blobs, or callback
+3. The public callback is relayed to rclone's private, in-process listener.
+4. Rclone validates state and performs the token exchange itself.
+5. The caller receives a ready-to-use `Config` without handling token JSON,
+   and the shared runtime's live config already has the same remote.
+6. A second authorization requested while one is active is queued, not
+   silently corrupted by rclone's shared OAuth globals - verified by a test
+   that asserts the second session never observes `config/oauthstatus`
+   state belonging to the first.
+7. Cancellation, expiry, application shutdown, and failures leave
+   `config/oauthstatus` reporting `"stopped"` and no daemon threads
+   preventing process exit.
+8. Logs and exceptions contain no secrets, codes, tokens, or callback
    queries.
 9. A real Google Drive remote created by the flow can list data and refresh
-   its token.
-10. The feature works with an explicit patched executable and later with the
-    official upstream binary without changing the public session API.
+   its token through the normal transfer path.
+10. Attempting to authorize a name that collides with an existing,
+    unrelated remote fails before any rclone call is made, rather than
+    silently deleting that remote.
 
 ## Recommendation
 
-Proceed with one process per authorization and implement Proposal A as the
-first end-to-end proof. Keep its parser and command-specific secret handling
-isolated so they can be deleted. Use the result of that proof to validate and
-contribute the narrow rclone listener/redirect change.
+Build this directly against the shared embedded runtime, in Python only, in
+the four phases above - there is no native-capability gap left to close
+first, and no case for a temporary or patched binary. The single hard
+constraint to design around from day one, not retrofit later, is rclone's
+process-wide OAuth globals: get the single-flight queue and its tests right
+before building the relay on top of it, since every other piece of this
+design assumes that guarantee already holds.
 
-For the production path, move to Proposal B: an isolated authenticated rcd per
-session, rclone's non-interactive configuration state machine, and structured
-OAuth status. Keep the relay framework-neutral and state-routed in both paths.
-
-Use a custom rclone binary to unblock delivery only when it is built from the
-same clean patch intended for upstream, fully identified and verified by the
-existing artifact pipeline, and accompanied by an explicit migration plan to
-the first suitable official rclone release.
+Pursue the upstream contribution in
+`reference/rclone_remote_oauth_upstream_change.md` on its own schedule,
+credited against the already-vendored downstream implementation as evidence
+that the approach works, but treat it as independent of this document's
+delivery.

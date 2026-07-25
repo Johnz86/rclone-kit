@@ -22,10 +22,10 @@ removed CLI model" finding in `review_rclone_implementation.md` (finding
 #7) for the review that flagged this.
 
 Item 2's job-lifecycle (finding #4), native-finalization (finding #5),
-Linux-path-modeling (finding #6), and runtime-ownership (finding #2)
-bullets are resolved - see their own paragraphs below for what changed.
-OAuth (finding #3) is still open; stale config snapshots (finding #9) was
-explicitly deferred, not attempted, in this pass.
+Linux-path-modeling (finding #6), runtime-ownership (finding #2), and
+OAuth/authorization (finding #3) bullets are resolved - see their own
+paragraphs below for what changed. Stale config snapshots (finding #9)
+remains unstarted.
 
 ## 1. `CompletedProcess` return-type simplification
 
@@ -110,30 +110,41 @@ touched by this migration and not caused by it:
   loaded config, so a `config/create`/`config/update` call the embedded
   runtime already knows about can be invisible to Python-side S3/credential
   logic until the client is rebuilt.
-- **No OAuth/authorization workflow** (finding #3): the native fork has
-  the underlying listener/redirect separation (`oauth_listen_addr`/
-  `oauth_redirect_url`) but Python has no session API, callback relay,
-  config-create workflow, or polling/cancellation wrapping it yet.
-  `docs/rclone_authorization_design.md` (the existing design for this,
-  "Status: Proposal, not implemented") is now also **stale**: it's built
-  entirely around spawning a separate `rclone authorize`/`rclone rcd`
-  *subprocess* per authorization session (`rclone_exe`, `format_command`,
-  CLI flags) - exactly the execution model this migration removed. Its
-  design decisions, security requirements, and 5-phase delivery plan are
-  still a reasonable reference for scope and risk, but implementing it as
-  written would mean reintroducing subprocess execution for this one
-  feature. A real implementation needs to reconcile it with the embedded
-  runtime first (most plausibly Proposal B's RC-driven `config/create`
-  `nonInteractive`/`state`/`continue` flow, but *driven through the
-  existing shared in-process runtime*, never a second `rclone` process).
-  Explicitly skipped this pass, per user decision - not attempted.
+- **No OAuth/authorization workflow** (finding #3): RESOLVED - implemented
+  against `docs/rclone_authorization_design.md`'s embedded-runtime redesign
+  (the design doc's own prior "Status: Proposal, not implemented" note, and
+  the stale CLI-subprocess version it superseded, are both now history; see
+  that document for the current design). `src/rclone_kit/authorization/`
+  (`types.py`, `state_driver.py`, `session.py`, `manager.py`, `relay.py`,
+  `exceptions.py`) and `src/rclone_kit/rc/auth.py` drive `config/create`/
+  `config/update`'s non-interactive state machine entirely through the
+  existing shared `RcloneRuntime` - never a subprocess, never a second
+  native library load. `AuthorizationManager.for_runtime()` enforces the
+  single-flight queue rclone's process-wide OAuth globals require (see the
+  design doc's "Central architectural constraint"); `Rclone.authorize(...)`
+  is the thin `client.py` entry point, tracked for `close()` like
+  `mount()`/`serve_webdav()`. Covered by unit tests (`tests/unit/
+  test_rc_auth.py`, `test_authorization_*.py`) and by an offline integration
+  test (`tests/native/test_authorization_offline_integration.py`) that
+  drives a real OAuth round trip - a local fake provider, but the real
+  vendored Go state machine, the real blocking `configSetup()` wait, and a
+  real proof that a second session stays queued while the first is active -
+  against the actual built native library. Live-provider verification
+  (Phase 4 of the design doc's delivery plan) is also done, against a real
+  Google Drive account in local-direct mode: `tests/live/
+  gdrive_authorization/` (its own marker, `live_gdrive_authorization`,
+  gated like `tests/live/gdrive`/`tests/live/s3` but additionally blocking
+  on a human approving access in a browser - never run automatically) and
+  `scripts/verify_gdrive_authorization.py` for a quicker manual check
+  outside the test suite. A real reverse-proxy-shaped relay deployment
+  against a caller-owned provider client remains unverified by this
+  repository's own suite - see the design doc's Phase 4 notes.
 
-**Next step**: job lifecycle, native finalization, Linux path-modeling, and
-runtime ownership (findings #4/#5/#6/#2) are done. OAuth (#3) remains open
-and is the largest, riskiest item left - a net-new, security-critical
-subsystem against a stale design doc, not a bug fix - still worth its own
-scoped design session before any implementation starts. Stale config
-snapshots (#9) was explicitly skipped this pass and remains unstarted.
+**Next step**: job lifecycle, native finalization, Linux path-modeling,
+runtime ownership, and OAuth/authorization (findings #4/#5/#6/#2/#3) are
+done. Stale config snapshots (#9) remains unstarted; its interaction with
+authorization is documented in `docs/production_usage.md`'s "Authorizing a
+remote through rclone's own OAuth flow" section as a caveat, not a fix.
 
 ## 3. `release.yaml` cache step is now dead weight
 
