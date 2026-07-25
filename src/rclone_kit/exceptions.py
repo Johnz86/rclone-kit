@@ -91,53 +91,13 @@ class S3MergeError(RcloneKitError):
     """
 
 
-class UnsupportedEmbeddedOperationError(RcloneKitError):
-    """Raised when a method that still requires the CLI backend is called on
-    an `execution="embedded"` `Rclone` client.
-
-    Per the CLI-to-C-ABI migration plan's invariant against silent
-    subprocess fallback: an embedded runtime never launches `rclone.exe`
-    because an operation has not been ported yet, it raises this instead.
-    """
-
-    def __init__(self, method: str) -> None:
-        self.method = method
-        super().__init__(
-            f"Rclone.{method}() is not yet available with execution='embedded'; "
-            "construct this client with execution='cli' to use it."
-        )
-
-
-class EmbeddedOnlyOperationError(RcloneKitError):
-    """Raised when a method that only exists for `execution="embedded"`
-    clients (`start_copy()` and its `JobHandle` family) is called on an
-    `execution="cli"` `Rclone` client.
-
-    The inverse of `UnsupportedEmbeddedOperationError`: that one means "not
-    ported to embedded yet"; this one means "has no CLI/subprocess
-    equivalent at all" - `JobHandle`'s asynchronous job model has no
-    blocking-process analogue to fall back to.
-    """
-
-    def __init__(self, method: str) -> None:
-        self.method = method
-        super().__init__(
-            f"Rclone.{method}() requires execution='embedded'; it has no "
-            "execution='cli' equivalent."
-        )
-
-
 class OperationError(RcloneKitError):
     """Base type for the execution-independent embedded operation errors
     (`JobHandle`/`start_*` family), added by the CLI-to-C-ABI migration's
     Wave D design.
 
-    Unlike `UnsupportedEmbeddedOperationError` (a method isn't ported yet),
-    these are raised by operations that *are* ported, when the operation
-    itself starts, fails, is cancelled, times out, or its job identity/
-    lifecycle cannot be trusted. Deliberately execution-independent: an
-    embedded caller must not need to catch a different exception type than
-    a CLI caller for the same logical failure.
+    Raised by operations when the operation itself starts, fails, is
+    cancelled, times out, or its job identity/lifecycle cannot be trusted.
     """
 
 

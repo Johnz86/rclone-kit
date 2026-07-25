@@ -3,7 +3,7 @@ rows T03-T05: `start_copy()`, `copy()`, `copy_dir()`, `copy_remote()`)
 against the real built native library, including the Phase D4
 `rclonekit/copy` Go endpoint.
 
-Skipped automatically when no built native target exists (run
+Skipped automatically when no built native library exists (run
 `scripts/native/build.py` first).
 """
 
@@ -14,12 +14,11 @@ from pathlib import Path
 
 import pytest
 
-from conftest import NATIVE_EXECUTABLE_AVAILABLE
+from conftest import NATIVE_LIBRARY_AVAILABLE
 from rclone_kit.client import Rclone
 from rclone_kit.exceptions import (
     OperationFailedError,
     OperationTimeoutError,
-    UnsupportedEmbeddedOperationError,
 )
 from rclone_kit.operation import JobState
 from rclone_kit.rc.client import RcClient
@@ -27,8 +26,8 @@ from rclone_kit.rc.jobs import RcloneRcJobClient
 from rclone_kit.remote import Remote
 
 pytestmark = pytest.mark.skipif(
-    not NATIVE_EXECUTABLE_AVAILABLE,
-    reason="No built native executable found; run scripts/native/build.py first.",
+    not NATIVE_LIBRARY_AVAILABLE,
+    reason="No built native library found; run scripts/native/build.py first.",
 )
 
 
@@ -49,25 +48,18 @@ def _tree_contents(root: Path) -> dict[str, bytes]:
     }
 
 
-def test_start_copy_matches_cli_for_a_nested_tree(
-    tmp_path: Path, embedded: Rclone, cli: Rclone
-) -> None:
+def test_start_copy_for_a_nested_tree(tmp_path: Path, embedded: Rclone) -> None:
     embedded_src = tmp_path / "embedded_src"
     embedded_dst = tmp_path / "embedded_dst"
-    cli_src = tmp_path / "cli_src"
-    cli_dst = tmp_path / "cli_dst"
     _make_nested_tree(embedded_src)
-    _make_nested_tree(cli_src)
 
     handle = embedded.start_copy(str(embedded_src), str(embedded_dst))
     result = handle.wait(timeout=15.0)
-    cli.copy_dir(str(cli_src), str(cli_dst))
 
     assert result.ok is True
     assert result.stats is not None
     assert result.stats.total_transfers == 3
-    assert _tree_contents(embedded_dst) == _tree_contents(cli_src)
-    assert _tree_contents(embedded_dst) == _tree_contents(cli_dst)
+    assert _tree_contents(embedded_dst) == _tree_contents(embedded_src)
 
 
 def test_start_copy_handles_an_empty_directory(tmp_path: Path, embedded: Rclone) -> None:
@@ -152,22 +144,15 @@ def test_start_copy_cancel_does_not_crash_and_settles(tmp_path: Path, embedded: 
     assert handle.done
 
 
-def test_copy_matches_cli_and_returns_completed_process(
-    tmp_path: Path, embedded: Rclone, cli: Rclone
-) -> None:
+def test_copy_returns_a_completed_process(tmp_path: Path, embedded: Rclone) -> None:
     embedded_src = tmp_path / "embedded_src"
     embedded_dst = tmp_path / "embedded_dst"
-    cli_src = tmp_path / "cli_src"
-    cli_dst = tmp_path / "cli_dst"
     _make_nested_tree(embedded_src)
-    _make_nested_tree(cli_src)
 
     embedded_result = embedded.copy(str(embedded_src), str(embedded_dst))
-    cli_result = cli.copy(str(cli_src), str(cli_dst))
 
     assert embedded_result.ok is True
-    assert cli_result.ok is True
-    assert _tree_contents(embedded_dst) == _tree_contents(cli_src)
+    assert _tree_contents(embedded_dst) == _tree_contents(embedded_src)
 
 
 def test_copy_dir_never_raises_on_failure(tmp_path: Path, embedded: Rclone) -> None:
@@ -177,15 +162,6 @@ def test_copy_dir_never_raises_on_failure(tmp_path: Path, embedded: Rclone) -> N
     result = embedded.copy_dir(str(missing_src), str(dst))
 
     assert result.ok is False
-
-
-def test_copy_dir_rejects_nonempty_args(tmp_path: Path, embedded: Rclone) -> None:
-    src = tmp_path / "src"
-    dst = tmp_path / "dst"
-    src.mkdir()
-
-    with pytest.raises(UnsupportedEmbeddedOperationError):
-        embedded.copy_dir(str(src), str(dst), args=["--dry-run"])
 
 
 def test_copy_remote_never_raises_for_an_unconfigured_remote(embedded: Rclone) -> None:

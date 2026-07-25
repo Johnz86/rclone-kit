@@ -16,38 +16,35 @@ written for them) and T13 (`copy_bytes()`, backed by the downstream
 `rclonekit/readrange` RC method - see
 `native_c_abi_wave_f_review_and_design.md`).
 
-Skipped automatically when no built native target exists (run
+Skipped automatically when no built native library exists (run
 `scripts/native/build.py` first).
 """
 
 from pathlib import Path
 
 import pytest
-from conftest import NATIVE_EXECUTABLE_AVAILABLE
+from conftest import NATIVE_LIBRARY_AVAILABLE
 
 from rclone_kit.client import Rclone
 from rclone_kit.exceptions import (
     OperationFailedError,
     RcloneCommandError,
-    UnsupportedEmbeddedOperationError,
 )
 
 pytestmark = pytest.mark.skipif(
-    not NATIVE_EXECUTABLE_AVAILABLE,
-    reason="No built native executable found; run scripts/native/build.py first.",
+    not NATIVE_LIBRARY_AVAILABLE,
+    reason="No built native library found; run scripts/native/build.py first.",
 )
 
 
-def test_copy_to_matches_cli_for_a_real_file(tmp_path: Path, embedded: Rclone, cli: Rclone) -> None:
+def test_copy_to_for_a_real_file(tmp_path: Path, embedded: Rclone) -> None:
     src = tmp_path / "src.txt"
     src.write_bytes(b"hello world")
     embedded_dst = tmp_path / "embedded_dst.txt"
-    cli_dst = tmp_path / "cli_dst.txt"
 
     embedded.copy_to(str(src), str(embedded_dst))
-    cli.copy_to(str(src), str(cli_dst))
 
-    assert embedded_dst.read_bytes() == cli_dst.read_bytes() == b"hello world"
+    assert embedded_dst.read_bytes() == b"hello world"
 
 
 def test_copy_to_works_with_bare_relative_basenames(
@@ -111,36 +108,24 @@ def test_read_bytes_and_read_text_work_transitively_through_copy_to(
     assert embedded.read_text(str(src)) == "hello, rclone-kit"
 
 
-def test_write_bytes_matches_cli_transitively_through_copy_to(
-    tmp_path: Path, embedded: Rclone, cli: Rclone
-) -> None:
+def test_write_bytes_transitively_through_copy_to(tmp_path: Path, embedded: Rclone) -> None:
     # T09/T10 (Wave F): write_bytes()/write_text() need no embedded-specific
     # code at all - they already call copy_to(), embedded since Wave D
     # Phase D7. Confirmed empirically (not just inferred from reading the
     # dispatch) before adding any Wave F code for these two rows.
     embedded_dst = tmp_path / "embedded_out.bin"
-    cli_dst = tmp_path / "cli_out.bin"
 
     embedded.write_bytes(b"hello embedded write_bytes", str(embedded_dst))
-    cli.write_bytes(b"hello embedded write_bytes", str(cli_dst))
 
-    assert embedded_dst.read_bytes() == cli_dst.read_bytes() == b"hello embedded write_bytes"
+    assert embedded_dst.read_bytes() == b"hello embedded write_bytes"
 
 
-def test_write_text_matches_cli_transitively_through_write_bytes(
-    tmp_path: Path, embedded: Rclone, cli: Rclone
-) -> None:
+def test_write_text_transitively_through_write_bytes(tmp_path: Path, embedded: Rclone) -> None:
     embedded_dst = tmp_path / "embedded_out.txt"
-    cli_dst = tmp_path / "cli_out.txt"
 
     embedded.write_text("hello embedded write_text", str(embedded_dst))
-    cli.write_text("hello embedded write_text", str(cli_dst))
 
-    assert (
-        embedded_dst.read_text(encoding="utf-8")
-        == cli_dst.read_text(encoding="utf-8")
-        == "hello embedded write_text"
-    )
+    assert embedded_dst.read_text(encoding="utf-8") == "hello embedded write_text"
 
 
 def test_print_works_transitively_through_read_text(
@@ -167,25 +152,16 @@ def test_read_bytes_raises_rclone_command_error_for_a_missing_source(
         embedded.read_bytes(str(missing))
 
 
-def test_purge_matches_cli_for_a_real_directory(
-    tmp_path: Path, embedded: Rclone, cli: Rclone
-) -> None:
+def test_purge_for_a_real_directory(tmp_path: Path, embedded: Rclone) -> None:
     embedded_target = tmp_path / "embedded_target"
-    cli_target = tmp_path / "cli_target"
     embedded_target.mkdir()
-    cli_target.mkdir()
     (embedded_target / "sub").mkdir()
     (embedded_target / "sub" / "a.txt").write_bytes(b"x")
-    (cli_target / "sub").mkdir()
-    (cli_target / "sub" / "a.txt").write_bytes(b"x")
 
     embedded_result = embedded.purge(str(embedded_target))
-    cli_result = cli.purge(str(cli_target))
 
     assert embedded_result.ok is True
-    assert cli_result.ok is True
     assert not embedded_target.exists()
-    assert not cli_target.exists()
 
 
 def test_purge_never_raises_for_a_missing_directory(tmp_path: Path, embedded: Rclone) -> None:
@@ -196,31 +172,23 @@ def test_purge_never_raises_for_a_missing_directory(tmp_path: Path, embedded: Rc
     assert result.ok is False
 
 
-def test_cleanup_matches_cli_shape_for_a_local_path(
-    tmp_path: Path, embedded: Rclone, cli: Rclone
-) -> None:
-    # The local backend doesn't support cleanup; both backends should
-    # report failure the same way (never raising), not crash differently.
+def test_cleanup_never_raises_for_a_local_path(tmp_path: Path, embedded: Rclone) -> None:
+    # The local backend doesn't support cleanup; it should report failure
+    # by returning a non-ok result, not by raising.
     embedded_result = embedded.cleanup(str(tmp_path))
-    cli_result = cli.cleanup(str(tmp_path))
 
     assert embedded_result.ok is False
-    assert cli_result.ok is False
 
 
-def test_copy_bytes_matches_cli_for_an_exact_range(
-    tmp_path: Path, embedded: Rclone, cli: Rclone
-) -> None:
+def test_copy_bytes_for_an_exact_range(tmp_path: Path, embedded: Rclone) -> None:
     src = tmp_path / "src.bin"
     content = bytes(range(256)) * 4
     src.write_bytes(content)
     embedded_out = tmp_path / "embedded_out.bin"
-    cli_out = tmp_path / "cli_out.bin"
 
     embedded.copy_bytes(str(src), offset=10, length=20, outfile=embedded_out)
-    cli.copy_bytes(str(src), offset=10, length=20, outfile=cli_out)
 
-    assert embedded_out.read_bytes() == cli_out.read_bytes() == content[10:30]
+    assert embedded_out.read_bytes() == content[10:30]
 
 
 def test_copy_bytes_zero_length_produces_an_empty_file(tmp_path: Path, embedded: Rclone) -> None:
@@ -275,12 +243,3 @@ def test_copy_bytes_missing_source_raises_rclone_command_error(
 
     with pytest.raises(RcloneCommandError):
         embedded.copy_bytes(str(missing), offset=0, length=10, outfile=out)
-
-
-def test_copy_bytes_rejects_other_args(tmp_path: Path, embedded: Rclone) -> None:
-    src = tmp_path / "src.bin"
-    src.write_bytes(b"hello")
-    out = tmp_path / "out.bin"
-
-    with pytest.raises(UnsupportedEmbeddedOperationError):
-        embedded.copy_bytes(str(src), offset=0, length=5, outfile=out, other_args=["--foo"])

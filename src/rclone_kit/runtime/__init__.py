@@ -1,13 +1,13 @@
-"""Runtime package and resolution for the bundled rclone executable.
+"""Runtime package supporting the embedded native library.
 
 Public surface:
 
-- `rclone_kit.runtime.platform`: the data-driven operating-system,
-  architecture, and `RcloneArtifact` model, plus platform normalization.
-- `rclone_kit.runtime.rclone_binary`: `resolve_rclone_executable`, the sole
-  entry point for locating a usable rclone executable.
-- `rclone_kit.runtime.downloader`: `fetch_verified_archive`, the verified
-  HTTPS downloader for immutable rclone release archives.
+- `rclone_kit.runtime.platform`: the data-driven operating-system and
+  architecture model, plus platform normalization.
+- `rclone_kit.runtime.native_platform`: the certified native (C ABI) build
+  target model, used by the native build/packaging pipeline.
+- `rclone_kit.runtime.hashing`: `sha256_of_file`, used to verify the bundled
+  native library.
 - `rclone_kit.runtime.exceptions`: every exception raised by this package.
 
 Import from the specific submodule rather than this package's namespace to

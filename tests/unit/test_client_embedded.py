@@ -1,31 +1,21 @@
-"""Unit tests for `Rclone(execution="embedded")` construction and its
-dispatch to every currently-ported embedded operation (see
-`tests/parity/coverage.toml` for the authoritative, current row-by-row
-list; as of Wave D this covers C01 and M01-M03/M05/M06/L01/L05/L08/L10-L12/
-T01/T02/T07, plus several transitive rows).
+"""Unit tests for `Rclone` construction and its dispatch to every embedded
+operation.
 
 Uses a fake `NativeBinding` wrapped in a real `RcloneRuntime`, injected
 through the `runtime=` constructor parameter, so these tests exercise
 `Rclone`'s embedded wiring without a built native library on disk. Real
-`ctypes`/DLL behavior and CLI-vs-embedded parity are covered separately by
+`ctypes`/DLL behavior is covered separately by
 `tests/native/test_client_embedded_integration.py`.
 """
 
 import json
-import subprocess
-from pathlib import Path
 
 import pytest
 
 from rclone_kit.client import Rclone
 from rclone_kit.config import Config
-from rclone_kit.exceptions import (
-    EmbeddedOnlyOperationError,
-    OperationFailedError,
-    UnsupportedEmbeddedOperationError,
-)
+from rclone_kit.exceptions import OperationFailedError
 from rclone_kit.native.runtime import RcloneRuntime
-from rclone_kit.process import Process
 from rclone_kit.remote import Remote
 from rclone_kit.serve_handle import ServeHandle
 
@@ -72,35 +62,11 @@ class FakeBinding:
         return (0, b"{}")
 
 
-class FakeBackend:
-    """A real `RcloneBackend`-shaped value, only used to prove that
-    `execution="embedded"` rejects `backend=` before ever calling it.
-    """
-
-    def run(
-        self,
-        command: tuple[str, ...],
-        *,
-        check: bool = False,
-        capture: bool | Path | None = None,
-    ) -> subprocess.CompletedProcess[str]:
-        raise NotImplementedError
-
-    def launch(
-        self,
-        command: tuple[str, ...],
-        *,
-        capture: bool | None = None,
-        log: Path | None = None,
-    ) -> Process:
-        raise NotImplementedError
-
-
 def test_embedded_construction_initializes_runtime_with_default_config_path() -> None:
     binding = FakeBinding()
     runtime = RcloneRuntime(binding)
 
-    rclone = Rclone(None, execution="embedded", runtime=runtime)
+    rclone = Rclone(None, runtime=runtime)
 
     assert runtime.initialized
     assert json.loads(binding.last_initialize_payload) == {"configPath": None}
@@ -113,7 +79,7 @@ def test_embedded_construction_uses_explicit_path_directly(tmp_path) -> None:
     binding = FakeBinding()
     runtime = RcloneRuntime(binding)
 
-    rclone = Rclone(conf_path, execution="embedded", runtime=runtime)
+    rclone = Rclone(conf_path, runtime=runtime)
 
     assert json.loads(binding.last_initialize_payload) == {"configPath": str(conf_path)}
     rclone.close()
@@ -132,7 +98,7 @@ def test_embedded_construction_materializes_config_value_once(tmp_path, monkeypa
     runtime = RcloneRuntime(binding)
     config = Config("[remote]\ntype = memory\n")
 
-    rclone = Rclone(config, execution="embedded", runtime=runtime)
+    rclone = Rclone(config, runtime=runtime)
 
     assert json.loads(binding.last_initialize_payload) == {"configPath": str(materialized_path)}
     assert len(calls) == 1
@@ -143,7 +109,7 @@ def test_obscure_uses_rc_client_when_embedded() -> None:
     binding = FakeBinding()
     binding.next_rpc_response = (200, b'{"obscured": "xyz"}')
     runtime = RcloneRuntime(binding)
-    rclone = Rclone(None, execution="embedded", runtime=runtime)
+    rclone = Rclone(None, runtime=runtime)
 
     result = rclone.obscure("hunter2")
 
@@ -153,36 +119,18 @@ def test_obscure_uses_rc_client_when_embedded() -> None:
     rclone.close()
 
 
-def test_embedded_rejects_backend_kwarg() -> None:
-    with pytest.raises(ValueError, match="CLI-only"):
-        Rclone(None, execution="embedded", backend=FakeBackend())
-
-
-def test_embedded_rejects_rclone_exe(tmp_path) -> None:
-    with pytest.raises(ValueError, match="CLI-only"):
-        Rclone(None, tmp_path / "rclone.exe", execution="embedded")
-
-
 def test_embedded_rejects_runtime_and_library_path_together(tmp_path) -> None:
     binding = FakeBinding()
     runtime = RcloneRuntime(binding)
 
     with pytest.raises(ValueError, match="at most one"):
-        Rclone(None, execution="embedded", runtime=runtime, library_path=tmp_path / "lib.dll")
-
-
-def test_cli_rejects_runtime_kwarg() -> None:
-    binding = FakeBinding()
-    runtime = RcloneRuntime(binding)
-
-    with pytest.raises(ValueError, match="execution='embedded'"):
-        Rclone(None, execution="cli", runtime=runtime)
+        Rclone(None, runtime=runtime, library_path=tmp_path / "lib.dll")
 
 
 def test_close_only_closes_an_owned_runtime() -> None:
     binding = FakeBinding()
     runtime = RcloneRuntime(binding)
-    rclone = Rclone(None, execution="embedded", runtime=runtime)
+    rclone = Rclone(None, runtime=runtime)
 
     rclone.close()
 
@@ -194,7 +142,7 @@ def test_close_only_closes_an_owned_runtime() -> None:
 def test_close_is_idempotent() -> None:
     binding = FakeBinding()
     runtime = RcloneRuntime(binding)
-    rclone = Rclone(None, execution="embedded", runtime=runtime)
+    rclone = Rclone(None, runtime=runtime)
 
     rclone.close()
     rclone.close()
@@ -213,32 +161,10 @@ def test_context_manager_closes_a_runtime_it_created_itself(tmp_path, monkeypatc
         staticmethod(lambda _library_path: RcloneRuntime(binding)),
     )
 
-    with Rclone(None, execution="embedded", library_path=fake_library_path) as rclone:
+    with Rclone(None, library_path=fake_library_path) as rclone:
         assert rclone.obscure("x") == "fake-obscured"
 
     assert binding.finalize_calls == 1
-
-
-def test_run_raises_typed_error_when_backend_is_none() -> None:
-    binding = FakeBinding()
-    runtime = RcloneRuntime(binding)
-    rclone = Rclone(None, execution="embedded", runtime=runtime)
-
-    with pytest.raises(UnsupportedEmbeddedOperationError):
-        rclone._run(["listremotes"])
-
-    rclone.close()
-
-
-def test_launch_process_raises_typed_error_when_backend_is_none() -> None:
-    binding = FakeBinding()
-    runtime = RcloneRuntime(binding)
-    rclone = Rclone(None, execution="embedded", runtime=runtime)
-
-    with pytest.raises(UnsupportedEmbeddedOperationError):
-        rclone._launch_process(["rcd"])
-
-    rclone.close()
 
 
 def test_listremotes_dispatches_to_rc_client_when_embedded() -> None:
@@ -247,7 +173,7 @@ def test_listremotes_dispatches_to_rc_client_when_embedded() -> None:
         200,
         b'{"remotes": ["alpha"]}',
     )
-    rclone = Rclone(None, execution="embedded", runtime=RcloneRuntime(binding))
+    rclone = Rclone(None, runtime=RcloneRuntime(binding))
 
     remotes = rclone.listremotes()
 
@@ -272,7 +198,7 @@ def test_stat_dispatches_to_rc_client_when_embedded() -> None:
             }
         ).encode("utf-8"),
     )
-    rclone = Rclone(None, execution="embedded", runtime=RcloneRuntime(binding))
+    rclone = Rclone(None, runtime=RcloneRuntime(binding))
 
     file = rclone.stat("remote:object.txt")
 
@@ -289,7 +215,7 @@ def test_stat_dispatches_to_rc_client_when_embedded() -> None:
 def test_exists_dispatches_to_rc_client_when_embedded() -> None:
     binding = FakeBinding()
     binding.rpc_responses_by_method[b"operations/stat"] = (200, b'{"item": null}')
-    rclone = Rclone(None, execution="embedded", runtime=RcloneRuntime(binding))
+    rclone = Rclone(None, runtime=RcloneRuntime(binding))
 
     assert rclone.exists("remote:missing.txt") is False
     rclone.close()
@@ -312,7 +238,7 @@ def test_size_file_dispatches_to_rc_client_when_embedded() -> None:
             }
         ).encode("utf-8"),
     )
-    rclone = Rclone(None, execution="embedded", runtime=RcloneRuntime(binding))
+    rclone = Rclone(None, runtime=RcloneRuntime(binding))
 
     assert rclone.size_file("remote:object.txt").as_int() == 42
     rclone.close()
@@ -326,7 +252,7 @@ def test_config_paths_dispatches_to_rc_client_when_embedded() -> None:
             "utf-8"
         ),
     )
-    rclone = Rclone(None, execution="embedded", runtime=RcloneRuntime(binding))
+    rclone = Rclone(None, runtime=RcloneRuntime(binding))
 
     paths = rclone.config_paths()
 
@@ -347,7 +273,7 @@ def test_is_s3_and_get_s3_credentials_work_unmodified_under_embedded_execution()
         "access_key_id = AKIAEXAMPLE\n"
         "secret_access_key = secretexample\n"
     )
-    rclone = Rclone(config, execution="embedded", runtime=RcloneRuntime(binding))
+    rclone = Rclone(config, runtime=RcloneRuntime(binding))
 
     assert rclone.is_s3("myremote:mybucket/key.txt") is True
     creds = rclone.get_s3_credentials("myremote:mybucket/key.txt")
@@ -363,7 +289,7 @@ def test_is_synced_dispatches_to_rc_client_when_embedded() -> None:
         200,
         b'{"success": true, "status": "OK"}',
     )
-    rclone = Rclone(None, execution="embedded", runtime=RcloneRuntime(binding))
+    rclone = Rclone(None, runtime=RcloneRuntime(binding))
 
     assert rclone.is_synced("src:bucket", "dst:bucket") is True
     rclone.close()
@@ -375,7 +301,7 @@ def test_diff_dispatches_to_rc_client_when_embedded() -> None:
         200,
         b'{"combined": ["= a.txt"]}',
     )
-    rclone = Rclone(None, execution="embedded", runtime=RcloneRuntime(binding))
+    rclone = Rclone(None, runtime=RcloneRuntime(binding))
 
     items = list(rclone.diff("src:bucket", "dst:bucket"))
 
@@ -444,7 +370,7 @@ def _set_successful_copy_responses(
 def test_copy_to_dispatches_to_rc_client_when_embedded() -> None:
     binding = FakeBinding()
     _set_successful_job_responses(binding, b"operations/copyfile")
-    rclone = Rclone(None, execution="embedded", runtime=RcloneRuntime(binding))
+    rclone = Rclone(None, runtime=RcloneRuntime(binding))
 
     result = rclone.copy_to("remote:a.txt", "remote:b.txt")
 
@@ -456,7 +382,7 @@ def test_copy_to_dispatches_to_rc_client_when_embedded() -> None:
 def test_copy_to_raises_operation_failed_error_by_default_on_failure() -> None:
     binding = FakeBinding()
     _set_successful_job_responses(binding, b"operations/copyfile", success=False, error="boom")
-    rclone = Rclone(None, execution="embedded", runtime=RcloneRuntime(binding))
+    rclone = Rclone(None, runtime=RcloneRuntime(binding))
 
     with pytest.raises(OperationFailedError):
         rclone.copy_to("remote:a.txt", "remote:b.txt")
@@ -466,7 +392,7 @@ def test_copy_to_raises_operation_failed_error_by_default_on_failure() -> None:
 def test_purge_dispatches_to_rc_client_when_embedded() -> None:
     binding = FakeBinding()
     _set_successful_job_responses(binding, b"operations/purge")
-    rclone = Rclone(None, execution="embedded", runtime=RcloneRuntime(binding))
+    rclone = Rclone(None, runtime=RcloneRuntime(binding))
 
     result = rclone.purge("remote:path/to/dir")
 
@@ -478,7 +404,7 @@ def test_purge_dispatches_to_rc_client_when_embedded() -> None:
 def test_purge_never_raises_on_failure_when_embedded() -> None:
     binding = FakeBinding()
     _set_successful_job_responses(binding, b"operations/purge", success=False, error="boom")
-    rclone = Rclone(None, execution="embedded", runtime=RcloneRuntime(binding))
+    rclone = Rclone(None, runtime=RcloneRuntime(binding))
 
     result = rclone.purge("remote:path/to/dir")
 
@@ -489,7 +415,7 @@ def test_purge_never_raises_on_failure_when_embedded() -> None:
 def test_cleanup_dispatches_to_rc_client_when_embedded() -> None:
     binding = FakeBinding()
     _set_successful_job_responses(binding, b"operations/cleanup")
-    rclone = Rclone(None, execution="embedded", runtime=RcloneRuntime(binding))
+    rclone = Rclone(None, runtime=RcloneRuntime(binding))
 
     result = rclone.cleanup("remote:")
 
@@ -501,7 +427,7 @@ def test_cleanup_dispatches_to_rc_client_when_embedded() -> None:
 def test_cleanup_never_raises_on_failure_when_embedded() -> None:
     binding = FakeBinding()
     _set_successful_job_responses(binding, b"operations/cleanup", success=False, error="boom")
-    rclone = Rclone(None, execution="embedded", runtime=RcloneRuntime(binding))
+    rclone = Rclone(None, runtime=RcloneRuntime(binding))
 
     result = rclone.cleanup("remote:")
 
@@ -512,7 +438,7 @@ def test_cleanup_never_raises_on_failure_when_embedded() -> None:
 def test_start_copy_dispatches_to_rclonekit_copy_and_returns_a_job_handle() -> None:
     binding = FakeBinding()
     _set_successful_copy_responses(binding)
-    rclone = Rclone(None, execution="embedded", runtime=RcloneRuntime(binding))
+    rclone = Rclone(None, runtime=RcloneRuntime(binding))
 
     handle = rclone.start_copy("src:bucket", "dst:bucket")
     result = handle.wait(timeout=5.0)
@@ -522,17 +448,10 @@ def test_start_copy_dispatches_to_rclonekit_copy_and_returns_a_job_handle() -> N
     rclone.close()
 
 
-def test_start_copy_requires_embedded_execution() -> None:
-    rclone = object.__new__(Rclone)
-
-    with pytest.raises(EmbeddedOnlyOperationError):
-        rclone.start_copy("src:", "dst:")
-
-
 def test_copy_dispatches_to_start_copy_with_its_tuned_defaults() -> None:
     binding = FakeBinding()
     _set_successful_copy_responses(binding)
-    rclone = Rclone(None, execution="embedded", runtime=RcloneRuntime(binding))
+    rclone = Rclone(None, runtime=RcloneRuntime(binding))
 
     result = rclone.copy("src:bucket", "dst:bucket")
 
@@ -547,19 +466,10 @@ def test_copy_dispatches_to_start_copy_with_its_tuned_defaults() -> None:
     rclone.close()
 
 
-def test_copy_rejects_other_args_in_embedded_mode() -> None:
-    binding = FakeBinding()
-    rclone = Rclone(None, execution="embedded", runtime=RcloneRuntime(binding))
-
-    with pytest.raises(UnsupportedEmbeddedOperationError):
-        rclone.copy("src:", "dst:", other_args=["--foo"])
-    rclone.close()
-
-
 def test_copy_dir_dispatches_to_start_copy_without_copys_tuned_defaults() -> None:
     binding = FakeBinding()
     _set_successful_copy_responses(binding)
-    rclone = Rclone(None, execution="embedded", runtime=RcloneRuntime(binding))
+    rclone = Rclone(None, runtime=RcloneRuntime(binding))
 
     result = rclone.copy_dir("src:bucket", "dst:bucket")
 
@@ -569,19 +479,10 @@ def test_copy_dir_dispatches_to_start_copy_without_copys_tuned_defaults() -> Non
     rclone.close()
 
 
-def test_copy_dir_rejects_args_in_embedded_mode() -> None:
-    binding = FakeBinding()
-    rclone = Rclone(None, execution="embedded", runtime=RcloneRuntime(binding))
-
-    with pytest.raises(UnsupportedEmbeddedOperationError):
-        rclone.copy_dir("src:", "dst:", args=["--foo"])
-    rclone.close()
-
-
 def test_copy_dir_does_not_raise_on_failure() -> None:
     binding = FakeBinding()
     _set_successful_copy_responses(binding, success=False, error="boom")
-    rclone = Rclone(None, execution="embedded", runtime=RcloneRuntime(binding))
+    rclone = Rclone(None, runtime=RcloneRuntime(binding))
 
     result = rclone.copy_dir("src:bucket", "dst:bucket")
 
@@ -592,20 +493,11 @@ def test_copy_dir_does_not_raise_on_failure() -> None:
 def test_copy_remote_dispatches_to_start_copy() -> None:
     binding = FakeBinding()
     _set_successful_copy_responses(binding)
-    rclone = Rclone(None, execution="embedded", runtime=RcloneRuntime(binding))
+    rclone = Rclone(None, runtime=RcloneRuntime(binding))
 
     result = rclone.copy_remote(Remote("src", rclone), Remote("dst", rclone))
 
     assert result.ok is True
-    rclone.close()
-
-
-def test_copy_remote_rejects_args_in_embedded_mode() -> None:
-    binding = FakeBinding()
-    rclone = Rclone(None, execution="embedded", runtime=RcloneRuntime(binding))
-
-    with pytest.raises(UnsupportedEmbeddedOperationError):
-        rclone.copy_remote(Remote("src", rclone), Remote("dst", rclone), args=["--foo"])
     rclone.close()
 
 
@@ -620,7 +512,7 @@ def _set_serve_responses(binding: FakeBinding, *, serve_id: str = "http-1") -> N
 def test_serve_http_dispatches_to_rc_client_when_embedded() -> None:
     binding = FakeBinding()
     _set_serve_responses(binding)
-    rclone = Rclone(None, execution="embedded", runtime=RcloneRuntime(binding))
+    rclone = Rclone(None, runtime=RcloneRuntime(binding))
 
     server = rclone.serve_http("remote:base")
 
@@ -630,19 +522,10 @@ def test_serve_http_dispatches_to_rc_client_when_embedded() -> None:
     rclone.close()
 
 
-def test_serve_http_rejects_other_args_in_embedded_mode() -> None:
-    binding = FakeBinding()
-    rclone = Rclone(None, execution="embedded", runtime=RcloneRuntime(binding))
-
-    with pytest.raises(UnsupportedEmbeddedOperationError):
-        rclone.serve_http("remote:base", other_args=["--foo"])
-    rclone.close()
-
-
 def test_serve_webdav_dispatches_to_rc_client_when_embedded() -> None:
     binding = FakeBinding()
     _set_serve_responses(binding, serve_id="webdav-1")
-    rclone = Rclone(None, execution="embedded", runtime=RcloneRuntime(binding))
+    rclone = Rclone(None, runtime=RcloneRuntime(binding))
 
     handle = rclone.serve_webdav("remote:base", "alice", "hunter2", addr="127.0.0.1:0")
     assert isinstance(handle, ServeHandle)
@@ -654,19 +537,10 @@ def test_serve_webdav_dispatches_to_rc_client_when_embedded() -> None:
     rclone.close()
 
 
-def test_serve_webdav_rejects_other_args_in_embedded_mode() -> None:
-    binding = FakeBinding()
-    rclone = Rclone(None, execution="embedded", runtime=RcloneRuntime(binding))
-
-    with pytest.raises(UnsupportedEmbeddedOperationError):
-        rclone.serve_webdav("remote:base", "alice", "hunter2", other_args=["--foo"])
-    rclone.close()
-
-
 def test_close_disposes_serve_handles_the_caller_never_disposed() -> None:
     binding = FakeBinding()
     _set_serve_responses(binding)
-    rclone = Rclone(None, execution="embedded", runtime=RcloneRuntime(binding))
+    rclone = Rclone(None, runtime=RcloneRuntime(binding))
 
     handle = rclone.serve_webdav("remote:base", "alice", "hunter2", addr="127.0.0.1:0")
     assert isinstance(handle, ServeHandle)
@@ -681,7 +555,7 @@ def test_close_disposes_serve_handles_the_caller_never_disposed() -> None:
 def test_close_does_not_double_stop_an_already_disposed_serve_handle() -> None:
     binding = FakeBinding()
     _set_serve_responses(binding)
-    rclone = Rclone(None, execution="embedded", runtime=RcloneRuntime(binding))
+    rclone = Rclone(None, runtime=RcloneRuntime(binding))
 
     handle = rclone.serve_webdav("remote:base", "alice", "hunter2", addr="127.0.0.1:0")
     assert isinstance(handle, ServeHandle)

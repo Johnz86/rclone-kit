@@ -182,9 +182,7 @@ def _reject_unsafe_member_path(member_filename: str) -> None:
 def _safe_extract_zip(archive_path: Path, destination: Path) -> None:
     """Extract every member of the zip at `archive_path` into `destination`.
 
-    Validates each member's recorded path before writing anything, applying
-    the same path-traversal invariant as
-    `rclone_kit.runtime.archive_extract.extract_single_member`. Raises
+    Validates each member's recorded path before writing anything. Raises
     `ArchiveMemberUnsafeError` when a member's path is absolute or escapes
     `destination` through a parent-directory segment.
     """

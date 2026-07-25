@@ -20,7 +20,6 @@ import pytest
 from conftest import NATIVE_MOUNT_AVAILABLE
 
 from rclone_kit.client import Rclone
-from rclone_kit.exceptions import UnsupportedEmbeddedOperationError
 from rclone_kit.mount_handle import MountHandle
 
 pytestmark = pytest.mark.skipif(
@@ -72,22 +71,6 @@ def test_mount_allows_writes_when_read_only_cache_off(tmp_path: Path, embedded: 
     assert (src / "new.txt").read_bytes() == b"written through mount"
 
 
-def test_mount_rejects_other_args(tmp_path: Path, embedded: Rclone) -> None:
-    src = tmp_path / "src"
-    src.mkdir()
-
-    with pytest.raises(UnsupportedEmbeddedOperationError):
-        embedded.mount(str(src), Path("*"), other_args=["--allow-other"])
-
-
-def test_mount_rejects_cache_dir(tmp_path: Path, embedded: Rclone) -> None:
-    src = tmp_path / "src"
-    src.mkdir()
-
-    with pytest.raises(UnsupportedEmbeddedOperationError):
-        embedded.mount(str(src), Path("*"), cache_dir=tmp_path / "cache")
-
-
 def test_mount_dispose_is_idempotent(tmp_path: Path, embedded: Rclone) -> None:
     src = tmp_path / "src"
     src.mkdir()
@@ -128,11 +111,3 @@ def test_mount_s3_reads_a_real_file(tmp_path: Path, embedded: Rclone) -> None:
         assert (handle.mount_path / "hello.txt").read_bytes() == b"hello from s3 preset mount"
     finally:
         handle.dispose()
-
-
-def test_mount_s3_rejects_other_args(tmp_path: Path, embedded: Rclone) -> None:
-    src = tmp_path / "src"
-    src.mkdir()
-
-    with pytest.raises(UnsupportedEmbeddedOperationError):
-        embedded.mount_s3(str(src), Path("*"), other_args=["--allow-other"])

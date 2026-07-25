@@ -18,14 +18,14 @@ step has no local equivalent and (per this repo's own existing
 unconditionally-skipped manual test even when live credentials are
 available, unrelated to CLI-vs-embedded execution or this migration.
 
-Skipped automatically when no built native target exists (run
+Skipped automatically when no built native library exists (run
 `scripts/native/build.py` first).
 """
 
 from pathlib import Path
 
 import pytest
-from conftest import NATIVE_EXECUTABLE_AVAILABLE
+from conftest import NATIVE_LIBRARY_AVAILABLE
 
 from rclone_kit.client import Rclone
 from rclone_kit.operations.copy_file_parts_resumable import copy_file_parts_resumable
@@ -33,8 +33,8 @@ from rclone_kit.s3.multipart.upload_parts_resumable import upload_parts_resumabl
 from rclone_kit.types import PartInfo, SizeSuffix
 
 pytestmark = pytest.mark.skipif(
-    not NATIVE_EXECUTABLE_AVAILABLE,
-    reason="No built native executable found; run scripts/native/build.py first.",
+    not NATIVE_LIBRARY_AVAILABLE,
+    reason="No built native library found; run scripts/native/build.py first.",
 )
 
 _PART_SIZE = SizeSuffix("5M")

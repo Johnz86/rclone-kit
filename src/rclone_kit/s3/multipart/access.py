@@ -43,7 +43,6 @@ class MultipartAccess(Protocol):
         self,
         src: str,
         addr: str | None = None,
-        other_args: list[str] | None = None,
     ) -> HttpServer: ...
 
     def exists(self, src: str) -> bool: ...

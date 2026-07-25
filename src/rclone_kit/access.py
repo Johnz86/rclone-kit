@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import subprocess
 from collections.abc import Generator
-from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
@@ -17,13 +15,6 @@ if TYPE_CHECKING:
 
 class DomainAccess(Protocol):
     """Capabilities retained by client-bound ``Dir`` and ``File`` values."""
-
-    def _run(
-        self,
-        cmd: list[str],
-        check: bool = False,
-        capture: bool | Path | None = None,
-    ) -> subprocess.CompletedProcess[str]: ...
 
     def ls(
         self,

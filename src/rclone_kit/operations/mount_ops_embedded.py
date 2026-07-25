@@ -4,18 +4,15 @@ R01 `mount`, R02 `mount_s3`).
 Both start a `mount/mount` instance via `RcMountClient` and wrap the result
 in a `MountHandle`. `mount/mount`'s `vfsOpt`/`mountOpt` parameters are JSON
 objects decoded with standard Go field names (`"CacheMode"`, `"ReadOnly"`,
-...) rather than this project's usual underscored `config:`-tag flat
-params - see `rc/mount.py`'s module docstring - so these functions build
-those objects directly instead of reusing `launch_mount`/`launch_s3_mount`'s
-`--flag value` string-building helpers, which assume a CLI `other_args`
-list to append to.
+...) rather than this project's usual underscored `config:`-tag flat params
+- see `rc/mount.py`'s module docstring - so these functions build those
+objects directly.
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from rclone_kit.exceptions import UnsupportedEmbeddedOperationError
 from rclone_kit.mount_handle import MountHandle
 from rclone_kit.types import ModTimeStrategy
 
@@ -41,22 +38,12 @@ def fetch_mount_embedded(
     transfers: int | None = None,
     use_links: bool | None = None,
     vfs_cache_mode: str | None = None,
-    cache_dir: Path | None = None,
-    other_args: list[str] | None = None,
 ) -> MountHandle:
     """Mount `src` at `outdir` through `mount/mount`.
 
-    Mirrors `launch_mount`'s exact defaults (`allow_writes=False` unless
-    given, `use_links=True` unless given, `vfs_cache_mode="full"` unless
-    given). `cache_dir` has no RC equivalent: rclone's `--cache-dir` sets a
-    process-global cache location via `config.SetCacheDir` at CLI startup,
-    not a per-mount RC option, so - like `other_args` - it raises
-    `UnsupportedEmbeddedOperationError` rather than being silently ignored.
+    Defaults: `allow_writes=False` unless given, `use_links=True` unless
+    given, `vfs_cache_mode="full"` unless given.
     """
-    if other_args:
-        raise UnsupportedEmbeddedOperationError("mount (other_args)")
-    if cache_dir is not None:
-        raise UnsupportedEmbeddedOperationError("mount (cache_dir)")
     allow_writes = False if allow_writes is None else allow_writes
     use_links = True if use_links is None else use_links
     vfs_cache_mode = vfs_cache_mode or "full"
@@ -87,31 +74,18 @@ def fetch_s3_mount_embedded(
     vfs_read_chunk_size: str | None = _S3_VFS_READ_CHUNK_SIZE,
     vfs_fast_fingerprint: bool = True,
     vfs_refresh: bool = True,
-    other_args: list[str] | None = None,
 ) -> MountHandle:
     """Mount `url` at `outdir` with S3-tuned VFS defaults.
 
-    Builds `vfsOpt`/`mountOpt`/flat-config fields directly instead of
-    `launch_s3_mount`'s `--flag value` strings, since embedded execution
-    has no `other_args` list to append them to (a nonempty `other_args`
-    raises `UnsupportedEmbeddedOperationError`, matching every other
-    embedded operation's convention).
-
-    Preserves `launch_s3_mount`'s exact flag-to-field mapping bug-for-bug:
-    `vfs_disk_space_total_size` sets `vfsOpt.CacheMaxSize` (the
-    `--vfs-cache-max-size` flag), not the similarly-named
-    `vfsOpt.DiskSpaceTotalSize` field, matching the CLI backend's own
-    historical (if confusingly named) behavior exactly, so CLI and
-    embedded execution stay semantically identical for the same
-    parameters. `modtime_strategy` is split across two different
-    underlying option structs depending on its value:
+    Builds `vfsOpt`/`mountOpt`/flat-config fields directly.
+    `vfs_disk_space_total_size` sets `vfsOpt.CacheMaxSize` (not the
+    similarly-named `vfsOpt.DiskSpaceTotalSize` field) - a deliberately
+    preserved historical naming quirk. `modtime_strategy` is split across
+    two different underlying option structs depending on its value:
     `USE_SERVER_MODTIME` is a global `_config` option
     (`fs.ConfigInfo.UseServerModTime`), while `NO_MODTIME` is a `vfsOpt`
-    field (`vfscommon.Options.NoModTime`) - despite both being exposed as
-    one CLI flag choice.
+    field (`vfscommon.Options.NoModTime`).
     """
-    if other_args:
-        raise UnsupportedEmbeddedOperationError("mount_s3 (other_args)")
     vfs_opt: dict[str, object] = {
         "ReadOnly": not allow_writes,
         "CacheMode": vfs_cache_mode,

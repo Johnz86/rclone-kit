@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from rclone_kit.config import Config
-from rclone_kit.exceptions import OperationFailedError, UnsupportedEmbeddedOperationError
+from rclone_kit.exceptions import OperationFailedError
 from rclone_kit.job import _JobMonitor
 from rclone_kit.operation import JobState, JobStatus, TransferStats
 from rclone_kit.operations.transfer_ops_embedded import (
@@ -219,22 +219,6 @@ def test_copy_file_to_embedded_wraps_failure_when_check_is_false() -> None:
     assert result.ok is False
 
 
-def test_copy_file_to_embedded_rejects_other_args() -> None:
-    job_client = FakeJobClient()
-
-    with pytest.raises(UnsupportedEmbeddedOperationError):
-        copy_file_to_embedded(
-            _monitor(job_client),
-            _CLIENT_ID,
-            _empty_config(),
-            "remote:a.txt",
-            "remote:b.txt",
-            other_args=["--foo"],
-        )
-
-    assert job_client.starts == []
-
-
 def test_purge_dir_embedded_uses_whole_target_split() -> None:
     job_client = FakeJobClient()
 
@@ -291,22 +275,6 @@ class TestCopyFilesEmbedded:
 
         assert result.ok is True
         assert result.job_ids == ()
-        assert job_client.starts == []
-
-    def test_rejects_other_args_without_starting_any_job(self) -> None:
-        job_client = FakeJobClient()
-
-        with pytest.raises(UnsupportedEmbeddedOperationError):
-            copy_files_embedded(
-                _monitor(job_client),
-                _CLIENT_ID,
-                _empty_config(),
-                "src:",
-                "dst:",
-                ["a.txt"],
-                other_args=["--foo"],
-            )
-
         assert job_client.starts == []
 
     def test_rejects_a_remote_qualified_entry_without_starting_any_job(self) -> None:
@@ -451,20 +419,6 @@ class TestDeleteFilesEmbedded:
         result = delete_files_embedded(_monitor(job_client), _CLIENT_ID, _empty_config(), [])
 
         assert result.ok is True
-        assert job_client.starts == []
-
-    def test_rejects_other_args_without_starting_any_job(self) -> None:
-        job_client = FakeJobClient()
-
-        with pytest.raises(UnsupportedEmbeddedOperationError):
-            delete_files_embedded(
-                _monitor(job_client),
-                _CLIENT_ID,
-                _empty_config(),
-                ["remote:a.txt"],
-                other_args=["--foo"],
-            )
-
         assert job_client.starts == []
 
     def test_single_partition_starts_an_operations_delete_job(self) -> None:

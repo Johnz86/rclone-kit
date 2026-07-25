@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from rclone_kit import Config, Rclone
+from rclone_kit import Rclone
 from rclone_kit.env_file import load_env_file
 from rclone_kit.exceptions import HttpFetchError
 from rclone_kit.http_server import HttpServer, Range
@@ -49,8 +49,8 @@ class RcloneServeHttpTester(unittest.TestCase):
     """Test rclone mount functionality."""
 
     @pytest.fixture(autouse=True)
-    def _inject_do_spaces_config(self, do_spaces_config: Config) -> None:
-        self.config = do_spaces_config
+    def _inject_cloud_rclone(self, cloud_rclone: Rclone) -> None:
+        self.rclone = cloud_rclone
 
     def setUp(self) -> None:
         self.bucket_name = os.getenv("BUCKET_NAME")
@@ -61,7 +61,6 @@ class RcloneServeHttpTester(unittest.TestCase):
             parent.mkdir(parents=True)
 
         os.environ["RCLONE_KIT_VERBOSE"] = "1"
-        self.rclone = Rclone(self.config)
 
     def test_exists(self) -> None:
         """Test mounting a remote bucket."""

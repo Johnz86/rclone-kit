@@ -11,8 +11,7 @@ here instead of only showing up as a slow/flaky parity mismatch.
 Deliberately uses the real DLL (not a fake `RcClient`) - a fake can't prove
 the *production* code path takes no subprocess branch, only that the test's
 own fake wasn't asked to. Skipped automatically when no built native
-library exists (run `scripts/native/build.py` first); does not need the
-`rclone.exe` executable, since it never constructs a `cli` client.
+library exists (run `scripts/native/build.py` first).
 """
 
 from __future__ import annotations
@@ -54,7 +53,7 @@ def test_every_currently_ported_embedded_method_avoids_subprocess(
     native_runtime: RcloneRuntime,
     no_subprocess_allowed: None,
 ) -> None:
-    rclone = Rclone(None, execution="embedded", runtime=native_runtime)
+    rclone = Rclone(None, runtime=native_runtime)
 
     src_dir = tmp_path / "src"
     dst_dir = tmp_path / "dst"

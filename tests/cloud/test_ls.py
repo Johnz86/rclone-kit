@@ -7,7 +7,7 @@ import unittest
 
 import pytest
 
-from rclone_kit import Config, Dir, DirListing, File, Rclone, Remote
+from rclone_kit import Dir, DirListing, File, Rclone, Remote
 from rclone_kit.env_file import load_env_file
 
 load_env_file()
@@ -20,14 +20,14 @@ class RcloneLsTests(unittest.TestCase):
     """Test rclone functionality."""
 
     @pytest.fixture(autouse=True)
-    def _inject_do_spaces_config(self, do_spaces_config: Config) -> None:
-        self.config = do_spaces_config
+    def _inject_cloud_rclone(self, cloud_rclone: Rclone) -> None:
+        self.rclone = cloud_rclone
 
     def setUp(self) -> None:
         os.environ["RCLONE_KIT_VERBOSE"] = "1"
 
     def test_list_remotes(self) -> None:
-        rclone = Rclone(self.config)
+        rclone = self.rclone
 
         remotes: list[Remote] = rclone.listremotes()
         self.assertGreater(len(remotes), 0)
@@ -45,7 +45,7 @@ class RcloneLsTests(unittest.TestCase):
         3. Get both directories and files as proper types
         """
         self.assertIsNotNone(BUCKET_NAME)
-        rclone = Rclone(self.config)
+        rclone = self.rclone
         listing: DirListing = rclone.ls(f"dst:{BUCKET_NAME}", max_depth=-1)
 
         self.assertIsInstance(listing, DirListing)
@@ -63,13 +63,13 @@ class RcloneLsTests(unittest.TestCase):
         print("done")
 
     def test_ls_subdir(self) -> None:
-        rclone = Rclone(self.config)
+        rclone = self.rclone
         path = f"dst:{BUCKET_NAME}/zachs_video"
         listing: DirListing = rclone.ls(path)
         print(listing)
 
     def test_ls_glob_png(self) -> None:
-        rclone = Rclone(self.config)
+        rclone = self.rclone
         path = f"dst:{BUCKET_NAME}/zachs_video"
         listing: DirListing = rclone.ls(path, glob="*.png")
         self.assertGreater(len(listing.files), 0)

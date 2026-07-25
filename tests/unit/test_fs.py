@@ -189,10 +189,8 @@ class FakeRemoteFSAccess:
         self.stat_result: File | None = None
         self.ls_result: DirListing | None = None
 
-    def serve_http(
-        self, src: str, addr: str | None = None, other_args: list[str] | None = None
-    ) -> HttpServer:
-        del addr, other_args
+    def serve_http(self, src: str, addr: str | None = None) -> HttpServer:
+        del addr
         self.serve_http_calls.append(src)
         server = object.__new__(HttpServer)
         server.process = None

@@ -47,7 +47,6 @@ from rclone_kit.convert import convert_to_str
 from rclone_kit.exceptions import (
     OperationCancelledError,
     OperationFailedError,
-    UnsupportedEmbeddedOperationError,
 )
 from rclone_kit.group_files import group_files
 from rclone_kit.operation import OperationResult, OperationWarning, TransferStats
@@ -84,7 +83,6 @@ def copy_file_to_embedded(
     src: File | str,
     dst: File | str,
     check: bool | None = None,
-    other_args: list[str] | None = None,
 ) -> OperationResult:
     """Copy one file from source to destination via `operations/copyfile`.
 
@@ -93,16 +91,12 @@ def copy_file_to_embedded(
     file paths themselves. Each side's resulting `fs` value is then passed
     through `encode_fs_spec`, so a configured S3/B2 remote gets rclone's
     RC config-object form (`_name`/`_root`/`no_check_bucket`) instead of a
-    plain string - matching the CLI backend's `--s3-no-check-bucket`,
-    which has no `_config` equivalent. Every other target is unaffected.
+    plain string.
 
     Raises `OperationFailedError` when `check` resolves `True` (the
     default) and the job fails; otherwise returns an `OperationResult`
-    whose `.ok` reflects success, matching the CLI backend's own `check`
-    semantics.
+    whose `.ok` reflects success.
     """
-    if other_args:
-        raise UnsupportedEmbeddedOperationError("copy_to (other_args)")
     check = get_check(check)
     src_str = src if isinstance(src, str) else str(src.path)
     dst_str = dst if isinstance(dst, str) else str(dst.path)
@@ -296,7 +290,6 @@ def copy_files_embedded(
     timeout: str | None = None,
     max_partition_workers: int | None = None,
     multi_thread_streams: int | None = None,
-    other_args: list[str] | None = None,
 ) -> OperationResult:
     """Copy multiple individual files from `src` to `dst` via partitioned
     `rclonekit/copy` jobs, one per common-prefix group (Wave E design,
@@ -306,17 +299,14 @@ def copy_files_embedded(
     bare `sync/copy`), matching `copy()`'s own historical tuned defaults
     (checkers 1000, transfers 32, low-level retries 10, retries 3) unless
     overridden. `max_partition_workers` bounds how many partition jobs are
-    outstanding (started but not yet waited-on) at once; unlike the CLI
-    backend's `ThreadPoolExecutor`, no Python-side thread pool is needed -
-    an RC job is already concurrent on rclone's side the moment `start()`
-    returns.
+    outstanding (started but not yet waited-on) at once - an RC job is
+    already concurrent on rclone's side the moment `start()` returns, so no
+    Python-side thread pool is needed.
 
     Raises `OperationFailedError`/`OperationCancelledError` only after
     every partition has been collected, never mid-collection, so a partial
     failure never loses a still-running sibling partition's result.
     """
-    if other_args:
-        raise UnsupportedEmbeddedOperationError("copy_files (other_args)")
     check = get_check(check)
     payload: list[str] = (
         files
@@ -397,7 +387,6 @@ def delete_files_embedded(
     check: bool | None = None,
     rmdirs: bool = False,
     max_partition_workers: int | None = None,
-    other_args: list[str] | None = None,
 ) -> OperationResult:
     """Delete multiple individual files via partitioned `operations/delete`
     jobs, one per remote/common-prefix group (Wave E design, decisions
@@ -409,8 +398,6 @@ def delete_files_embedded(
     `rmdirs` call - there is nothing to clean up if delete didn't finish.
     Aggregation and failure-contract semantics match `copy_files_embedded`.
     """
-    if other_args:
-        raise UnsupportedEmbeddedOperationError("delete_files (other_args)")
     check = get_check(check)
     if len(files) == 0:
         return _aggregate_results("delete_files", None, None, [])

@@ -235,4 +235,3 @@ markers = [
 rclone-kit-listfiles = "rclone_kit.cmd.list_files:main"
 rclone-kit-copylarge-s3 = "rclone_kit.cmd.copy_large_s3:main"
 rclone-kit-save-to-db = "rclone_kit.cmd.save_to_db:main"
-rclone-kit-install-bins = "rclone_kit.cmd.install_rclone:main"

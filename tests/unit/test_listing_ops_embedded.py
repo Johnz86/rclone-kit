@@ -16,7 +16,6 @@ import pytest
 from rclone_kit.diff import DiffOption, DiffType
 from rclone_kit.dir import Dir
 from rclone_kit.dir_listing import DirListing
-from rclone_kit.exceptions import UnsupportedEmbeddedOperationError
 from rclone_kit.file import File
 from rclone_kit.operations.config_ops import fetch_config_paths_embedded, fetch_config_show_embedded
 from rclone_kit.operations.listing_ops_embedded import (
@@ -256,27 +255,6 @@ def test_fetch_config_show_embedded_sends_remote() -> None:
     fetch_config_show_embedded(client, remote="myremote")
 
     assert client.calls == [("rclonekit/configshow", {"remote": "myremote"})]
-
-
-def test_fetch_config_show_embedded_rejects_obscure_and_no_obscure_together() -> None:
-    client = FakeRcClient()
-
-    with pytest.raises(ValueError, match="obscure"):
-        fetch_config_show_embedded(client, obscure=True, no_obscure=True)
-
-
-def test_fetch_config_show_embedded_rejects_obscure() -> None:
-    client = FakeRcClient()
-
-    with pytest.raises(UnsupportedEmbeddedOperationError):
-        fetch_config_show_embedded(client, obscure=True)
-
-
-def test_fetch_config_show_embedded_rejects_no_obscure() -> None:
-    client = FakeRcClient()
-
-    with pytest.raises(UnsupportedEmbeddedOperationError):
-        fetch_config_show_embedded(client, no_obscure=True)
 
 
 def test_stat_embedded_windows_drive_path_splits_parent_and_name() -> None:
@@ -551,15 +529,6 @@ def test_stream_diff_embedded_maps_size_checkers_fast_list_and_filter() -> None:
     assert call_params["_filter"] == {"MinSize": "10M", "MaxSize": "1G"}
 
 
-def test_stream_diff_embedded_rejects_other_args() -> None:
-    client = FakeRcClient()
-
-    with pytest.raises(UnsupportedEmbeddedOperationError):
-        list(stream_diff_embedded(client, "src:bucket", "dst:bucket", other_args=["--foo"]))
-
-    assert client.calls == []
-
-
 def test_fetch_size_files_embedded_empty_list_short_circuits() -> None:
     client = FakeRcClient()
 
@@ -629,21 +598,6 @@ def test_fetch_size_files_embedded_fast_list_sets_use_list_r() -> None:
 
     _method, params = client.calls[0]
     assert params["_config"] == {"UseListR": True}
-
-
-def test_fetch_size_files_embedded_rejects_other_args() -> None:
-    client = FakeRcClient()
-
-    with pytest.raises(UnsupportedEmbeddedOperationError):
-        fetch_size_files_embedded(
-            client,
-            access=FakeAccess(),
-            src="remote:",
-            files=["a.txt", "b.txt"],
-            other_args=["--foo"],
-        )
-
-    assert client.calls == []
 
 
 class FakeListStreamClient:

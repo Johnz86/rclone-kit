@@ -7,7 +7,7 @@ import unittest
 
 import pytest
 
-from rclone_kit import Config, Dir, Rclone
+from rclone_kit import Dir, Rclone
 from rclone_kit.env_file import load_env_file
 from rclone_kit.types import Order
 
@@ -21,8 +21,8 @@ class RcloneScanMissingFoldersTests(unittest.TestCase):
     """Test rclone functionality."""
 
     @pytest.fixture(autouse=True)
-    def _inject_do_spaces_config(self, do_spaces_config: Config) -> None:
-        self.config = do_spaces_config
+    def _inject_cloud_rclone(self, cloud_rclone: Rclone) -> None:
+        self.rclone = cloud_rclone
 
     def setUp(self) -> None:
         os.environ["RCLONE_KIT_VERBOSE"] = "1"
@@ -38,7 +38,7 @@ class RcloneScanMissingFoldersTests(unittest.TestCase):
     )
     def test_scan_missing_folders(self) -> None:
         """Test copying a single file to remote storage."""
-        rclone = Rclone(self.config)
+        rclone = self.rclone
         all: list[Dir] = list(
             rclone.scan_missing_folders(
                 src="dst:rclone-kit-unit-test",

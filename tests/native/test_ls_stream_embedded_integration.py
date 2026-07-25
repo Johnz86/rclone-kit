@@ -1,26 +1,26 @@
-"""Native-backed parity check for the embedded bounded-memory listing
-stream (ledger row L02 `ls_stream`, L03 `save_to_db` transitively), per
-the Wave F design (`native_c_abi_wave_f_review_and_design.md`).
+"""Native-backed test for the embedded bounded-memory listing stream
+(ledger row L02 `ls_stream`, L03 `save_to_db` transitively), per the Wave F
+design (`native_c_abi_wave_f_review_and_design.md`).
 
-Skipped automatically when no built native target exists (run
+Skipped automatically when no built native library exists (run
 `scripts/native/build.py` first).
 """
 
 from pathlib import Path
 
 import pytest
-from conftest import NATIVE_EXECUTABLE_AVAILABLE
+from conftest import NATIVE_LIBRARY_AVAILABLE
 
 from rclone_kit.client import Rclone
 from rclone_kit.exceptions import RcloneCommandError
 
 pytestmark = pytest.mark.skipif(
-    not NATIVE_EXECUTABLE_AVAILABLE,
-    reason="No built native executable found; run scripts/native/build.py first.",
+    not NATIVE_LIBRARY_AVAILABLE,
+    reason="No built native library found; run scripts/native/build.py first.",
 )
 
 
-def test_ls_stream_matches_cli_file_count(tmp_path: Path, embedded: Rclone, cli: Rclone) -> None:
+def test_ls_stream_file_count(tmp_path: Path, embedded: Rclone) -> None:
     src = tmp_path / "src"
     src.mkdir()
     for i in range(5):
@@ -28,10 +28,8 @@ def test_ls_stream_matches_cli_file_count(tmp_path: Path, embedded: Rclone, cli:
 
     with embedded.ls_stream(str(src)) as embedded_stream:
         embedded_names = sorted(item.name for item in embedded_stream.files())
-    with cli.ls_stream(str(src)) as cli_stream:
-        cli_names = sorted(item.name for item in cli_stream.files())
 
-    assert embedded_names == cli_names == [f"f{i}.txt" for i in range(5)]
+    assert embedded_names == [f"f{i}.txt" for i in range(5)]
 
 
 def test_ls_stream_recurses_into_subdirectories(tmp_path: Path, embedded: Rclone) -> None:

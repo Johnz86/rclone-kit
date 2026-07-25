@@ -6,9 +6,6 @@ migration ledger rows R01 `mount`, R02 `mount_s3`), driven by a fake
 
 from pathlib import Path
 
-import pytest
-
-from rclone_kit.exceptions import UnsupportedEmbeddedOperationError
 from rclone_kit.mount_handle import MountHandle
 from rclone_kit.operations.mount_ops_embedded import (
     fetch_mount_embedded,
@@ -86,20 +83,6 @@ class TestFetchMountEmbedded:
         handle = fetch_mount_embedded(client, "remote:base", Path("*"))
 
         assert handle.mount_path == Path("Z:")
-
-    def test_other_args_raises(self) -> None:
-        client = FakeMountClient()
-
-        with pytest.raises(UnsupportedEmbeddedOperationError):
-            fetch_mount_embedded(
-                client, "remote:base", Path("/mnt/tmp"), other_args=["--allow-other"]
-            )
-
-    def test_cache_dir_raises(self) -> None:
-        client = FakeMountClient()
-
-        with pytest.raises(UnsupportedEmbeddedOperationError):
-            fetch_mount_embedded(client, "remote:base", Path("/mnt/tmp"), cache_dir=Path("/cache"))
 
 
 class TestFetchS3MountEmbedded:
@@ -179,10 +162,3 @@ class TestFetchS3MountEmbedded:
         _fs, _mp, _vo, _mo, config = client.mount_calls[0]
         assert config["transfers"] == 64
 
-    def test_other_args_raises(self) -> None:
-        client = FakeMountClient()
-
-        with pytest.raises(UnsupportedEmbeddedOperationError):
-            fetch_s3_mount_embedded(
-                client, "remote:base", Path("/mnt/tmp"), other_args=["--allow-other"]
-            )

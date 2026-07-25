@@ -11,7 +11,7 @@ tests register a fresh, uniquely-named `type = local` remote per test via
 the current working directory, like the bare local backend does) rather
 than reaching for a real cloud remote.
 
-Skipped automatically when no built native target exists (run
+Skipped automatically when no built native library exists (run
 `scripts/native/build.py` first).
 """
 
@@ -20,16 +20,16 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-from conftest import NATIVE_EXECUTABLE_AVAILABLE
+from conftest import NATIVE_LIBRARY_AVAILABLE
 
 from rclone_kit.client import Rclone
-from rclone_kit.exceptions import OperationFailedError, UnsupportedEmbeddedOperationError
+from rclone_kit.exceptions import OperationFailedError
 from rclone_kit.native.runtime import RcloneRuntime
 from rclone_kit.rc.client import RcClient
 
 pytestmark = pytest.mark.skipif(
-    not NATIVE_EXECUTABLE_AVAILABLE,
-    reason="No built native executable found; run scripts/native/build.py first.",
+    not NATIVE_LIBRARY_AVAILABLE,
+    reason="No built native library found; run scripts/native/build.py first.",
 )
 
 
@@ -53,26 +53,20 @@ def local_remote(native_runtime: RcloneRuntime) -> Iterator[str]:
     rc_client.call("config/delete", name=name)
 
 
-def test_copy_files_matches_cli_for_a_selected_subset(
-    tmp_path: Path, embedded: Rclone, cli: Rclone
-) -> None:
+def test_copy_files_for_a_selected_subset(tmp_path: Path, embedded: Rclone) -> None:
     src = tmp_path / "src"
     embedded_dst = tmp_path / "embedded_dst"
-    cli_dst = tmp_path / "cli_dst"
     src.mkdir()
     embedded_dst.mkdir()
-    cli_dst.mkdir()
     (src / "a.txt").write_bytes(b"aaa")
     (src / "b.txt").write_bytes(b"bbb")
     (src / "c.txt").write_bytes(b"ignored")
 
     embedded.copy_files(str(src), str(embedded_dst), ["a.txt", "b.txt"])
-    cli.copy_files(str(src), str(cli_dst), ["a.txt", "b.txt"])
 
-    assert (embedded_dst / "a.txt").read_bytes() == (cli_dst / "a.txt").read_bytes() == b"aaa"
-    assert (embedded_dst / "b.txt").read_bytes() == (cli_dst / "b.txt").read_bytes() == b"bbb"
+    assert (embedded_dst / "a.txt").read_bytes() == b"aaa"
+    assert (embedded_dst / "b.txt").read_bytes() == b"bbb"
     assert not (embedded_dst / "c.txt").exists()
-    assert not (cli_dst / "c.txt").exists()
 
 
 def test_copy_files_two_partitions_both_copy(tmp_path: Path, embedded: Rclone) -> None:
@@ -161,16 +155,6 @@ def test_copy_files_empty_list_is_a_noop(tmp_path: Path, embedded: Rclone) -> No
     assert result[0].ok is True
 
 
-def test_copy_files_rejects_other_args(tmp_path: Path, embedded: Rclone) -> None:
-    src = tmp_path / "src"
-    dst = tmp_path / "dst"
-    src.mkdir()
-    dst.mkdir()
-
-    with pytest.raises(UnsupportedEmbeddedOperationError):
-        embedded.copy_files(str(src), str(dst), ["a.txt"], other_args=["--foo"])
-
-
 def test_delete_files_removes_only_the_listed_files(
     tmp_path: Path, embedded: Rclone, local_remote: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -230,12 +214,3 @@ def test_delete_files_empty_list_is_a_noop(embedded: Rclone) -> None:
     result = embedded.delete_files([])
 
     assert result.ok is True
-
-
-def test_delete_files_rejects_other_args(
-    tmp_path: Path, embedded: Rclone, local_remote: str, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.chdir(tmp_path)
-
-    with pytest.raises(UnsupportedEmbeddedOperationError):
-        embedded.delete_files([f"{local_remote}:a.txt"], other_args=["--foo"])

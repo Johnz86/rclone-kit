@@ -32,7 +32,6 @@ class RemoteFSAccess(Protocol):
         self,
         src: str,
         addr: str | None = None,
-        other_args: list[str] | None = None,
     ) -> HttpServer: ...
 
     def is_s3(self, dst: str) -> bool: ...
@@ -226,13 +225,13 @@ class RemoteFS(FS):
         self.server: HttpServer | None = None
         self.rclone = rclone
 
-    def serve(self, addr: str | None = None, other_args: list[str] | None = None) -> HttpServer:
+    def serve(self, addr: str | None = None) -> HttpServer:
         """Start (or return the already-started) HTTP server for this
         filesystem's root. Not needed for `exists`/`is_dir`/`is_file`/
         `ls`/`read_bytes`/`write_binary`/`copy`/`remove` - only for a
         consumer that explicitly needs a real `HttpServer`."""
         if self.server is None:
-            self.server = self.rclone.serve_http(src=self.src, addr=addr, other_args=other_args)
+            self.server = self.rclone.serve_http(src=self.src, addr=addr)
         return self.server
 
     def root(self) -> "FSPath":

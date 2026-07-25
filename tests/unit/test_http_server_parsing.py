@@ -16,7 +16,6 @@ import pytest
 from rclone_kit import http_server as http_server_module
 from rclone_kit.exceptions import HttpFetchError
 from rclone_kit.http_server import FileList, HttpServer, _parse_files_and_dirs
-from rclone_kit.process import Process
 from rclone_kit.types import Range
 
 _TABLE_HEADER = """
@@ -36,8 +35,13 @@ def _row(name: str) -> str:
     return f'<tr class="file"><td><span class="name"><a href="{name}">{name}</a></span></td></tr>'
 
 
-def _stub_process() -> Process:
-    return object.__new__(Process)
+class _StubServerHandle:
+    def dispose(self) -> None:
+        pass
+
+
+def _stub_process() -> _StubServerHandle:
+    return _StubServerHandle()
 
 
 @dataclass(frozen=True)

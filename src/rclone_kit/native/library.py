@@ -49,10 +49,9 @@ def resolve_library_path(
        `packaged_assets_root/<wheel_platform_tag>/<library_filename>`,
        verified against its sibling `native-manifest.json`'s own recorded
        digest for that filename, then loaded directly from the installed
-       package location - no cache-directory copy is needed the way the
-       downloaded rclone executable resolver (`runtime.rclone_binary`) needs
-       one, since a shared library needs no executable-permission flag and
-       `ctypes.CDLL` loads it in place.
+       package location - no cache-directory copy is needed, since a shared
+       library needs no executable-permission flag and `ctypes.CDLL` loads
+       it in place.
 
     `native_target` defaults to the running platform's certified
     `NativeTarget` (`resolve_native_target(system=platform.system(),

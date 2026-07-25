@@ -23,7 +23,6 @@ from rclone_kit.diff import DiffItem, DiffOption, DiffType
 from rclone_kit.dir import Dir
 from rclone_kit.dir_listing import DirListing
 from rclone_kit.embedded_file_stream import EmbeddedFilesStream
-from rclone_kit.exceptions import UnsupportedEmbeddedOperationError
 from rclone_kit.file import File
 from rclone_kit.operations.listing_ops import _MIN_FILES_FOR_BATCH_LISTING, build_size_result
 from rclone_kit.rc.client import RcCallable
@@ -32,7 +31,7 @@ from rclone_kit.rc.paths import RcPath
 from rclone_kit.remote import Remote
 from rclone_kit.rpath import RcloneJsonEntry, RPath
 from rclone_kit.types import ListingOption, Order, SizeResult, SizeSuffix
-from rclone_kit.util import get_check, get_verbose, to_path, write_files_from
+from rclone_kit.util import get_check, to_path, write_files_from
 
 if TYPE_CHECKING:
     from rclone_kit.access import ListingAccess
@@ -195,9 +194,7 @@ def fetch_size_files_embedded(
     src: str,
     files: list[str],
     fast_list: bool = False,
-    other_args: list[str] | None = None,
     check: bool | None = False,
-    verbose: bool | None = None,
 ) -> SizeResult:
     """Get the size of a list of files via one `operations/list` RC call
     (Wave E design, decision E6): unlike T06/T08, this never partitions -
@@ -205,14 +202,9 @@ def fetch_size_files_embedded(
     many directories/remotes they span, exactly like the CLI backend's own
     single `lsjson --files-from` invocation.
 
-    Raises `UnsupportedEmbeddedOperationError` if `other_args` is nonempty.
     `check=True` (never the default) lets the RC failure (`RcCallError`)
-    propagate; `check=False` warns and reports an empty listing instead,
-    matching `fetch_size_files`'s own CLI-backend contract.
+    propagate; `check=False` warns and reports an empty listing instead.
     """
-    if other_args:
-        raise UnsupportedEmbeddedOperationError("size_files (other_args)")
-    verbose = get_verbose(verbose)
     check = get_check(check)
     if not files:
         return SizeResult(prefix=src, total_size=0, file_sizes={})
@@ -308,22 +300,14 @@ def stream_diff_embedded(
     fast_list: bool = True,
     size_only: bool | None = None,
     checkers: int | None = None,
-    other_args: list[str] | None = None,
 ) -> Generator[DiffItem]:
     """Compare `src` and `dst` via one `operations/check` RC call, requesting
     only the report array `diff_option` needs.
 
-    Unlike the CLI backend (whose `_classify_diff` only understands
-    `combined`, `missing-on-src`, and `missing-on-dst` output), every
-    `DiffOption` value is supported here: `operations/check` already returns
-    `differ`/`match`/`error` arrays directly, at no extra request cost.
-
-    Raises `UnsupportedEmbeddedOperationError` if `other_args` is nonempty;
-    there is no RC equivalent for arbitrary CLI flags.
+    Every `DiffOption` value is supported: `operations/check` already
+    returns `differ`/`match`/`error` arrays directly, at no extra request
+    cost.
     """
-    if other_args:
-        raise UnsupportedEmbeddedOperationError("diff (other_args)")
-
     if size_only is None:
         size_only = diff_option in (DiffOption.MISSING_ON_DST, DiffOption.MISSING_ON_SRC)
 

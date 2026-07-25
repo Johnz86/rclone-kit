@@ -1,17 +1,9 @@
 """Unit tests for configuration operations used by the public client."""
 
-import subprocess
-
 import pytest
 
-from helpers import ClientBackendAdapter
-from rclone_kit.client import Rclone
 from rclone_kit.config import Config
-from rclone_kit.operations.config_ops import (
-    check_is_s3,
-    fetch_s3_credentials,
-    obscure_password,
-)
+from rclone_kit.operations.config_ops import check_is_s3, fetch_s3_credentials
 from rclone_kit.s3.types import S3Provider
 
 _CONFIG_TEXT = """
@@ -95,21 +87,3 @@ def test_fetch_s3_credentials_defaults_provider_for_b2() -> None:
     assert creds.provider == S3Provider.BACKBLAZE
     assert creds.access_key_id == "accountid"
     assert creds.secret_access_key == "appkey"  # noqa: S105
-
-
-def test_obscure_password_builds_expected_command_vector() -> None:
-    rclone = object.__new__(Rclone)
-    backend = ClientBackendAdapter(rclone)
-    commands: list[list[str]] = []
-
-    def run(cmd: list[str], check: bool = False, capture=None) -> subprocess.CompletedProcess[str]:
-        del check, capture
-        commands.append(cmd)
-        return subprocess.CompletedProcess(cmd, 0, stdout="  obscured-value  \n", stderr="")
-
-    rclone._run = run
-
-    result = obscure_password(backend, "hunter2")
-
-    assert commands == [["obscure", "hunter2"]]
-    assert result == "obscured-value"
