@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import contextlib
 import threading
+import time
 import uuid
 from collections import deque
 from datetime import UTC, datetime
@@ -48,6 +49,8 @@ if TYPE_CHECKING:
 _DEFAULT_PENDING_CAP = 100
 _DEFAULT_CLOSE_WAIT_SECONDS = 5.0
 _ACTIVE_RELAY_STATUSES = (AuthorizationStatus.WAITING_FOR_USER, AuthorizationStatus.COMPLETING)
+_STOP_RETRY_INTERVAL_SECONDS = 0.05
+_STOP_RETRY_MAX_SECONDS = 5.0
 
 
 def _has_token(remote_config_text: str) -> bool:
@@ -220,7 +223,8 @@ class AuthorizationManager:
                 return
             record.cancel_requested = True
         threading.Thread(
-            target=self._dispatch_cancel,
+            target=self._stop_oauth_until_acknowledged,
+            args=(record,),
             daemon=True,
             name=f"rclone-kit-authz-cancel-{record.id}",
         ).start()
@@ -244,9 +248,31 @@ class AuthorizationManager:
         self._cancel_timer(record)
         record.mark_closed()
 
-    def _dispatch_cancel(self) -> None:
-        with contextlib.suppress(Exception):
-            self._auth_client.oauth_stop()
+    def _stop_oauth_until_acknowledged(self, record: _SessionRecord) -> None:
+        """`oauth_stop()` only succeeds once rclone's OAuth listener is
+        actually bound and blocking (the same moment `config/oauthstatus`
+        starts reporting `running`, which is what promotes a session to
+        `WAITING_FOR_USER` - see `session._run_watcher`). A cancel/expiry
+        requested while the active session is still `STARTING`, before
+        that happens, would otherwise race a single stop attempt: the
+        call fails, the failure is dropped, and the session is left
+        waiting for a gate that will never open. Retries until it
+        succeeds or the session settles some other way (e.g. it fails
+        before ever reaching the OAuth wait at all)."""
+        deadline = time.monotonic() + _STOP_RETRY_MAX_SECONDS
+        while True:
+            succeeded = False
+            with contextlib.suppress(Exception):
+                self._auth_client.oauth_stop()
+                succeeded = True
+            if succeeded:
+                return
+            with record.condition:
+                if record.status.is_terminal:
+                    return
+            if time.monotonic() >= deadline:
+                return
+            time.sleep(_STOP_RETRY_INTERVAL_SECONDS)
 
     def _admit(self, record: _SessionRecord) -> None:
         # Cancel the queue-wait timer armed at enqueue time before arming
@@ -304,8 +330,12 @@ class AuthorizationManager:
                 if record.status.is_terminal:
                     return
                 record.expire_requested = True
-            with contextlib.suppress(Exception):
-                self._auth_client.oauth_stop()
+            threading.Thread(
+                target=self._stop_oauth_until_acknowledged,
+                args=(record,),
+                daemon=True,
+                name=f"rclone-kit-authz-expire-{record.id}",
+            ).start()
         else:
             record.mark_expired()
             self._promote_next()
