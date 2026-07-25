@@ -40,7 +40,11 @@ def fetch_serve_http_embedded(
     Mirrors `launch_http_server`'s exact CLI flag defaults
     (`vfs-disk-space-total-size 0`, `vfs-read-chunk-size-limit 512M`).
     """
-    _, subpath = src.split(":", 1)
+    # `partition`, not `split(":", 1)` - a colonless local path (most
+    # commonly a Unix absolute path) has no subpath at all, and unpacking
+    # `split`'s single-element result would raise ValueError before ever
+    # reaching the RC call below.
+    _, _, subpath = src.partition(":")
     params: dict[str, object] = {
         "vfs_disk_space_total_size": _VFS_DISK_SPACE_TOTAL_SIZE,
         "vfs_read_chunk_size_limit": _VFS_READ_CHUNK_SIZE_LIMIT,

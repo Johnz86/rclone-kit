@@ -99,6 +99,13 @@ class RPath:
         }
 
     def __str__(self) -> str:
+        if not self.remote.name:
+            # No remote component at all (see `util.split_remote_name_and_
+            # path`'s no-colon case) - omitting the colon here is required
+            # for round-tripping: a leading/trailing ":" would make
+            # `RcPath.parse` re-parse this as an (invalid) remote or inline
+            # connection string instead of the original local path.
+            return self.path
         return f"{self.remote.name}:{self.path}"
 
     def __repr__(self):

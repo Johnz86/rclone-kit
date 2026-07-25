@@ -1,15 +1,15 @@
 """Unit tests for `rclone_kit.s3.multipart.upload_parts_server_side_merge`."""
 
 import json
-import subprocess
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
 
 from rclone_kit.client import Rclone
-from rclone_kit.completed_process import CompletedProcess
 from rclone_kit.exceptions import S3MergeError
+from rclone_kit.operation import OperationResult
 from rclone_kit.s3.multipart.info_json import InfoJson
 from rclone_kit.s3.multipart.merge_state import MergeState, Part
 from rclone_kit.s3.multipart.upload_parts_server_side_merge import (
@@ -43,6 +43,25 @@ def _stub_info(
     size: int = 100, dst: str = "remote:bucket/dst", parts_dir: str = "remote:bucket/parts"
 ) -> InfoJson:
     return cast(InfoJson, SimpleNamespace(size=size, dst=dst, parts_dir=parts_dir))
+
+
+def _failed_operation_result(error: str) -> OperationResult:
+    now = datetime(2026, 7, 23, 12, 0, 0, tzinfo=UTC)
+    return OperationResult(
+        ok=False,
+        operation="purge",
+        source="remote:bucket/parts",
+        destination=None,
+        job_ids=(1,),
+        stats=None,
+        warnings=(),
+        attempts=(),
+        started_at=now,
+        ended_at=now,
+        duration=0.0,
+        cancelled=False,
+        error=error,
+    )
 
 
 class _FailingS3Client:
@@ -112,9 +131,7 @@ def test_cleanup_merge_raises_s3_merge_error_when_purge_fails(
     monkeypatch.setattr(
         rclone,
         "purge",
-        lambda _src: CompletedProcess.from_subprocess(
-            subprocess.CompletedProcess(args=["rclone", "purge"], returncode=1)
-        ),
+        lambda _src: _failed_operation_result("boom"),
     )
 
     with pytest.raises(S3MergeError):

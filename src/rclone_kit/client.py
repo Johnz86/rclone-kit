@@ -10,7 +10,6 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING, Self
 
-from rclone_kit.completed_process import CompletedProcess
 from rclone_kit.config import Config
 from rclone_kit.convert import convert_to_filestr_list, convert_to_str
 from rclone_kit.diff import DiffItem, DiffOption
@@ -30,6 +29,7 @@ from rclone_kit.mount_handle import MountHandle
 from rclone_kit.native.build_info import NativeBuildInfo
 from rclone_kit.native.library import resolve_library_path
 from rclone_kit.native.runtime import RcloneRuntime
+from rclone_kit.operation import OperationResult
 from rclone_kit.operations.config_ops import (
     check_is_s3,
     fetch_config_paths_embedded,
@@ -162,6 +162,7 @@ class Rclone:
         self._serve_handles: set[ServeHandle] = set()
         self._mount_client: RcMountClient | None = None
         self._mount_handles: set[MountHandle] = set()
+        self._file_streams: set[EmbeddedFilesStream] = set()
 
         self.config = _to_rclone_conf(rclone_conf)
         self._client_id = uuid.uuid4()
@@ -200,9 +201,10 @@ class Rclone:
         `OperationShutdownError` and leaves the runtime open, rather than
         reporting a false close, if a job cannot be confirmed settled
         within the shutdown deadline. Also stops every `serve/start`
-        instance and unmounts every `mount/mount` instance this client
-        started but never explicitly disposed (Wave H design, R05:
-        "runtime tracks only resources it owns").
+        instance, unmounts every `mount/mount` instance, and closes every
+        `ls_stream()` cursor this client started but never explicitly
+        disposed (Wave H design, R05: "runtime tracks only resources it
+        owns").
 
         Only closes the embedded runtime itself if this client created it;
         an injected `runtime` outlives this client, matching
@@ -212,6 +214,8 @@ class Rclone:
             handle.dispose()
         for mount_handle in list(self._mount_handles):
             mount_handle.dispose()
+        for stream in list(self._file_streams):
+            stream.close()
         if self._job_monitor is not None:
             all_settled = self._job_monitor.shutdown(
                 deadline_seconds=_JOB_SHUTDOWN_DEADLINE_SECONDS
@@ -266,9 +270,10 @@ class Rclone:
         Backed by `rclonekit/liststream/*` rather than a subprocess.
         """
         assert self._rc_client is not None
-        return fetch_ls_stream_embedded(
+        stream = fetch_ls_stream_embedded(
             RcloneRcListStreamClient(self._rc_client), src, max_depth, fast_list
         )
+        return self._track_file_stream(stream)
 
     def save_to_db(
         self,
@@ -446,10 +451,9 @@ class Rclone:
         dst_dir = Dir(to_path(dst, self))
         yield from scan_missing_folders(src=src_dir, dst=dst_dir, max_depth=max_depth, order=order)
 
-    def cleanup(self, src: str) -> CompletedProcess:
+    def cleanup(self, src: str) -> OperationResult:
         """Cleanup any resources used by the Rclone instance."""
-        result = cleanup_embedded(self._ensure_job_monitor(), self._client_id, src)
-        return CompletedProcess.from_operation_result(result)
+        return cleanup_embedded(self._ensure_job_monitor(), self._client_id, src)
 
     def get_verbose(self) -> bool:
         return get_verbose(None)
@@ -459,13 +463,13 @@ class Rclone:
         src: File | str,
         dst: File | str,
         check: bool | None = None,
-    ) -> CompletedProcess:
+    ) -> OperationResult:
         """Copy one file from source to destination.
 
         Warning - slow.
 
         """
-        result = copy_file_to_embedded(
+        return copy_file_to_embedded(
             self._ensure_job_monitor(),
             self._client_id,
             self.config,
@@ -473,7 +477,6 @@ class Rclone:
             dst,
             check=check,
         )
-        return CompletedProcess.from_operation_result(result)
 
     def copy_files(
         self,
@@ -491,17 +494,16 @@ class Rclone:
         timeout: str | None = None,
         max_partition_workers: int | None = None,
         multi_thread_streams: int | None = None,
-    ) -> list[CompletedProcess]:
+    ) -> OperationResult:
         """Copy multiple files from source to destination.
 
         Args:
             payload: Dictionary of source and destination file paths
 
-        Returns a single-element list wrapping one aggregated
-        `OperationResult` spanning every partition (see
-        `native_c_abi_wave_e_review_and_design.md`, decision E7).
+        Returns one aggregated `OperationResult` spanning every partition
+        (see `native_c_abi_wave_e_review_and_design.md`, decision E7).
         """
-        result = copy_files_embedded(
+        return copy_files_embedded(
             self._ensure_job_monitor(),
             self._client_id,
             self.config,
@@ -520,7 +522,6 @@ class Rclone:
             max_partition_workers=max_partition_workers,
             multi_thread_streams=multi_thread_streams,
         )
-        return [CompletedProcess.from_operation_result(result)]
 
     def _ensure_job_monitor(self) -> _JobMonitor:
         if self._job_monitor is None:
@@ -536,10 +537,13 @@ class Rclone:
 
     def _track_serve_handle(self, handle: ServeHandle) -> ServeHandle:
         """Track `handle` so `close()` disposes it if the caller never
-        does - R05's "runtime tracks only resources it owns". Disposal is
-        idempotent, so no bookkeeping is needed for a handle the caller
-        already disposed directly before `close()` runs."""
+        does - R05's "runtime tracks only resources it owns". `_on_dispose`
+        removes it again as soon as it's disposed (by the caller or by
+        `close()`), so a client that starts and disposes many short-lived
+        serve sessions over its lifetime does not leak one tracked entry
+        per session forever."""
         self._serve_handles.add(handle)
+        handle._on_dispose = lambda: self._serve_handles.discard(handle)
         return handle
 
     def _ensure_mount_client(self) -> RcMountClient:
@@ -550,9 +554,19 @@ class Rclone:
 
     def _track_mount_handle(self, handle: MountHandle) -> MountHandle:
         """Track `handle` so `close()` disposes it if the caller never
-        does, mirroring `_track_serve_handle`'s R05 rationale."""
+        does, mirroring `_track_serve_handle`'s R05 rationale and its
+        `_on_dispose` untracking."""
         self._mount_handles.add(handle)
+        handle._on_dispose = lambda: self._mount_handles.discard(handle)
         return handle
+
+    def _track_file_stream(self, stream: EmbeddedFilesStream) -> EmbeddedFilesStream:
+        """Track `stream` so `close()` closes it if the caller never does,
+        mirroring `_track_serve_handle`'s R05 rationale and its `_on_close`
+        untracking."""
+        self._file_streams.add(stream)
+        stream._on_close = lambda: self._file_streams.discard(stream)
+        return stream
 
     def start_copy(
         self,
@@ -616,7 +630,7 @@ class Rclone:
         multi_thread_streams: int | None = None,
         low_level_retries: int | None = None,
         retries: int | None = None,
-    ) -> CompletedProcess:
+    ) -> OperationResult:
         """Copy files from source to destination.
 
         Args:
@@ -633,13 +647,11 @@ class Rclone:
             multi_thread_streams=multi_thread_streams,
             check=check,
         )
-        result = handle.wait()
-        return CompletedProcess.from_operation_result(result)
+        return handle.wait()
 
-    def purge(self, src: Dir | str) -> CompletedProcess:
+    def purge(self, src: Dir | str) -> OperationResult:
         """Purge a directory"""
-        result = purge_dir_embedded(self._ensure_job_monitor(), self._client_id, src)
-        return CompletedProcess.from_operation_result(result)
+        return purge_dir_embedded(self._ensure_job_monitor(), self._client_id, src)
 
     def delete_files(
         self,
@@ -647,9 +659,9 @@ class Rclone:
         check: bool | None = None,
         rmdirs=False,
         max_partition_workers: int | None = None,
-    ) -> CompletedProcess:
+    ) -> OperationResult:
         """Delete a directory."""
-        result = delete_files_embedded(
+        return delete_files_embedded(
             self._ensure_job_monitor(),
             self._client_id,
             self.config,
@@ -658,7 +670,6 @@ class Rclone:
             rmdirs=rmdirs,
             max_partition_workers=max_partition_workers,
         )
-        return CompletedProcess.from_operation_result(result)
 
     def exists(self, src: Dir | Remote | str | File) -> bool:
         """Check if a file or directory exists."""
@@ -813,23 +824,21 @@ class Rclone:
         except OperationFailedError as error:
             raise RcloneCommandError("cat", error.result.error or "", error) from error
 
-    def copy_dir(self, src: str | Dir, dst: str | Dir) -> CompletedProcess:
+    def copy_dir(self, src: str | Dir, dst: str | Dir) -> OperationResult:
         """Copy a directory from source to destination.
 
         Never raises. Unlike `copy()`, uses rclone's own tuning defaults
         rather than `copy()`'s aggressive tuned profile.
         """
-        result = self.start_copy(src, dst, check=False).wait()
-        return CompletedProcess.from_operation_result(result)
+        return self.start_copy(src, dst, check=False).wait()
 
-    def copy_remote(self, src: Remote, dst: Remote) -> CompletedProcess:
+    def copy_remote(self, src: Remote, dst: Remote) -> OperationResult:
         """Copy a remote to another remote.
 
         Never raises. Unlike `copy()`, uses rclone's own tuning defaults
         rather than `copy()`'s aggressive tuned profile.
         """
-        result = self.start_copy(src, dst, check=False).wait()
-        return CompletedProcess.from_operation_result(result)
+        return self.start_copy(src, dst, check=False).wait()
 
     def mount(
         self,

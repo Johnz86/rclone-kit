@@ -47,6 +47,18 @@ def test_fetch_serve_http_embedded_sends_type_http_and_default_vfs_flags() -> No
     assert server.subpath == "base"
 
 
+def test_fetch_serve_http_embedded_accepts_a_colonless_local_path() -> None:
+    # A bare Unix-style local path (no remote prefix, so no colon at all)
+    # must not raise ValueError trying to split off a subpath that doesn't
+    # exist - see finding #6's "Linux path-modeling bugs".
+    client = FakeServeClient()
+
+    server = fetch_serve_http_embedded(client, "/srv/data", cache_mode=None)
+
+    assert client.start_calls[0][1] == "/srv/data"
+    assert server.subpath == ""
+
+
 def test_fetch_serve_http_embedded_uses_the_requested_addr() -> None:
     client = FakeServeClient()
 

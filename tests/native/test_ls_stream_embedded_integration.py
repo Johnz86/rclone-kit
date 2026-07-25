@@ -94,6 +94,24 @@ def test_ls_stream_files_paged_batches_correctly(tmp_path: Path, embedded: Rclon
     assert [len(page) for page in pages] == [10, 10, 5]
 
 
+def test_ls_stream_close_removes_it_from_the_client_tracking_set(
+    tmp_path: Path, embedded: Rclone
+) -> None:
+    # A disposed stream must not stay tracked forever - see finding #5's
+    # "EmbeddedFilesStream instances aren't tracked by close()", now fixed
+    # by tracking them the same way ServeHandle/MountHandle are.
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "f.txt").write_bytes(b"x")
+
+    stream = embedded.ls_stream(str(src))
+    assert stream in embedded._file_streams
+
+    stream.close()
+
+    assert stream not in embedded._file_streams
+
+
 def test_ls_stream_can_be_closed_early_without_hanging(tmp_path: Path, embedded: Rclone) -> None:
     src = tmp_path / "src"
     src.mkdir()

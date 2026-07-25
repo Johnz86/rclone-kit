@@ -31,7 +31,7 @@ from rclone_kit.rc.paths import RcPath
 from rclone_kit.remote import Remote
 from rclone_kit.rpath import RcloneJsonEntry, RPath
 from rclone_kit.types import ListingOption, Order, SizeResult, SizeSuffix
-from rclone_kit.util import get_check, to_path, write_files_from
+from rclone_kit.util import get_check, split_remote_name_and_path, to_path, write_files_from
 
 if TYPE_CHECKING:
     from rclone_kit.access import ListingAccess
@@ -55,17 +55,6 @@ _DIFF_OPTION_TO_DIFF_TYPE = {
 }
 
 
-def _split_remote_name_and_path(src: str) -> tuple[str, str]:
-    """Match `util.to_path()`'s existing colon-naive remote/path split, so a
-    `File` built here models its `Remote` the same way every other
-    rclone-kit value does - independent of `RcPath.parse`'s more careful
-    Windows-drive-aware split, which is used only to address the RC call
-    itself correctly.
-    """
-    parts = src.split(":")
-    return parts[0], ":".join(parts[1:])
-
-
 def _stat_item(rc_client: RcCallable, access: ListingAccess, src: str, *, files_only: bool) -> File:
     # `operations/stat`'s `fs` must be a navigable root, never a bare file
     # path, so the request always splits at the final path component -
@@ -78,7 +67,7 @@ def _stat_item(rc_client: RcCallable, access: ListingAccess, src: str, *, files_
     item = result.get("item")
     if item is None:
         raise FileNotFoundError(f"File not found: {src}")
-    remote_name, path = _split_remote_name_and_path(src)
+    remote_name, path = split_remote_name_and_path(src)
     remote = Remote(name=remote_name, rclone=access)
     rpath = RPath(
         remote=remote,
@@ -126,9 +115,9 @@ def fetch_ls_embedded(
 
     # `str(src)` reconstructs the exact original combined path (a `Dir`'s
     # `Remote.name`/`RPath.path` split can itself be colon-naive for local
-    # paths - see `_split_remote_name_and_path` - but concatenating them
-    # back via `str()` always yields the original string), which
-    # `RcPath.parse` then splits Windows-drive-aware for the RC call.
+    # paths - see `util.split_remote_name_and_path` - but `RPath.__str__`
+    # always yields the original string back), which `RcPath.parse` then
+    # splits Windows-drive-aware for the RC call.
     target = RcPath.parse(str(src))
     opt: dict[str, object] = {}
     if listing_option == ListingOption.FILES_ONLY:
@@ -238,7 +227,7 @@ def fetch_size_files_embedded(
             warnings.warn(f"Error getting file sizes: {error}", stacklevel=2)
             result = {"list": []}
 
-    remote_name, parent_path = _split_remote_name_and_path(src)
+    remote_name, parent_path = split_remote_name_and_path(src)
     remote = Remote(name=remote_name, rclone=access)
     all_files = [
         File(RPath.from_dict(cast(RcloneJsonEntry, item), remote, parent_path=parent_path))

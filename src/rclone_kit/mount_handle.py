@@ -18,6 +18,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Self
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from rclone_kit.rc.mount import RcMountClient
 
 
@@ -28,12 +30,17 @@ class MountHandle:
     (e.g. the mount already went away some other way) is swallowed rather
     than raised, matching `ServeHandle.dispose()`'s own "shutdown is
     cleanup, not a place for a caller to catch a new error" philosophy.
+
+    `_on_dispose` (set by `Rclone._track_mount_handle`, never by a caller)
+    removes this handle from the client's tracking set once disposed - see
+    `ServeHandle._on_dispose`'s docstring for why that matters.
     """
 
     def __init__(self, mount_client: RcMountClient, mount_point: str) -> None:
         self._mount_client = mount_client
         self._mount_point = mount_point
         self._closed = False
+        self._on_dispose: Callable[[], None] | None = None
 
     @property
     def mount_path(self) -> Path:
@@ -49,6 +56,9 @@ class MountHandle:
         self._closed = True
         with contextlib.suppress(Exception):
             self._mount_client.unmount(self._mount_point)
+        if self._on_dispose is not None:
+            with contextlib.suppress(Exception):
+                self._on_dispose()
 
     def __enter__(self) -> Self:
         return self

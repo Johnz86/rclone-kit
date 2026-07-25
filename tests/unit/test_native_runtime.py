@@ -10,6 +10,9 @@ exception mapping) without needing a built native library on disk. The real
 """
 
 import json
+import logging
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -210,3 +213,118 @@ def test_context_manager_closes_on_exit() -> None:
         runtime.initialize()
     assert binding.finalize_calls == 1
     assert runtime.closed
+
+
+def test_concurrent_calls_are_not_serialized_behind_one_another() -> None:
+    """A slow in-flight call must not block an unrelated concurrent call -
+    the Go bridge itself does not serialize RPC dispatch, so the Python
+    side must not reintroduce that bottleneck with its own lock."""
+    binding = FakeBinding()
+    runtime = RcloneRuntime(binding)
+    runtime.initialize()
+    original_rpc = binding.rpc
+
+    slow_call_started = threading.Event()
+    slow_call_release = threading.Event()
+
+    def _blocking_rpc(method: bytes, payload: bytes) -> tuple[int, bytes]:
+        if method == b"slow/call":
+            slow_call_started.set()
+            slow_call_release.wait(timeout=2.0)
+        return original_rpc(method, payload)
+
+    binding.rpc = _blocking_rpc  # type: ignore[method-assign]
+
+    slow_thread = threading.Thread(target=lambda: runtime.call("slow/call"))
+    slow_thread.start()
+    assert slow_call_started.wait(timeout=2.0)
+
+    status, _ = runtime.call("core/version")
+
+    slow_call_release.set()
+    slow_thread.join(timeout=2.0)
+    assert not slow_thread.is_alive()
+    assert status == 200
+
+
+def test_close_waits_for_in_flight_calls_before_finalizing() -> None:
+    binding = FakeBinding()
+    runtime = RcloneRuntime(binding)
+    runtime.initialize()
+    original_rpc = binding.rpc
+
+    call_started = threading.Event()
+    call_release = threading.Event()
+
+    def _blocking_rpc(method: bytes, payload: bytes) -> tuple[int, bytes]:
+        call_started.set()
+        call_release.wait(timeout=2.0)
+        return original_rpc(method, payload)
+
+    binding.rpc = _blocking_rpc  # type: ignore[method-assign]
+
+    call_thread = threading.Thread(target=lambda: runtime.call("core/version"))
+    call_thread.start()
+    assert call_started.wait(timeout=2.0)
+
+    close_thread = threading.Thread(target=runtime.close)
+    close_thread.start()
+    time.sleep(0.05)
+    assert binding.finalize_calls == 0  # still waiting on the in-flight call
+
+    call_release.set()
+    call_thread.join(timeout=2.0)
+    close_thread.join(timeout=2.0)
+
+    assert binding.finalize_calls == 1
+
+
+def test_new_calls_are_rejected_once_close_has_begun() -> None:
+    binding = FakeBinding()
+    runtime = RcloneRuntime(binding)
+    runtime.initialize()
+    original_rpc = binding.rpc
+
+    call_started = threading.Event()
+    call_release = threading.Event()
+
+    def _blocking_rpc(method: bytes, payload: bytes) -> tuple[int, bytes]:
+        call_started.set()
+        call_release.wait(timeout=2.0)
+        return original_rpc(method, payload)
+
+    binding.rpc = _blocking_rpc  # type: ignore[method-assign]
+
+    call_thread = threading.Thread(target=lambda: runtime.call("core/version"))
+    call_thread.start()
+    assert call_started.wait(timeout=2.0)
+
+    close_thread = threading.Thread(target=runtime.close)
+    close_thread.start()
+    time.sleep(0.05)  # let close() commit to closing while the call is still in flight
+
+    with pytest.raises(RuntimeClosedError):
+        runtime.call("core/version")
+
+    call_release.set()
+    call_thread.join(timeout=2.0)
+    close_thread.join(timeout=2.0)
+
+
+def test_close_logs_a_warning_on_non_ok_finalize_status(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    binding = FakeBinding()
+
+    def _panicking_finalize() -> tuple[int, bytes]:
+        binding.finalize_calls += 1
+        return -4, b'{"error": "panic during finalize"}'
+
+    binding.finalize = _panicking_finalize  # type: ignore[method-assign]
+    runtime = RcloneRuntime(binding)
+    runtime.initialize()
+
+    with caplog.at_level(logging.WARNING, logger="rclone_kit.native.runtime"):
+        runtime.close()
+
+    assert "panic during finalize" in caplog.text

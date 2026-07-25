@@ -11,8 +11,8 @@ retry loop of their own - then immediately waits on the resulting handle.
 This closes design-review finding F5 (a synchronous RC call here used to
 hold the runtime lock for the whole operation) and F6 (these functions now
 return a real `OperationResult`, never a synthetic
-`subprocess.CompletedProcess`); `Rclone`'s own methods wrap the result via
-`CompletedProcess.from_operation_result()` for public-API compatibility.
+`subprocess.CompletedProcess`); `Rclone`'s own methods return that
+`OperationResult` directly, with no compatibility wrapper.
 
 A failure with `check=True` therefore raises `OperationFailedError` (part
 of the execution-independent `OperationError` hierarchy), not a raw

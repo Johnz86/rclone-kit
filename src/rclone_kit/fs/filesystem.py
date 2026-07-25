@@ -7,11 +7,11 @@ from collections.abc import Generator
 from pathlib import Path, PurePath, PurePosixPath
 from typing import TYPE_CHECKING, Protocol, Self
 
-from rclone_kit.completed_process import CompletedProcess
 from rclone_kit.exceptions import FilesystemError
 from rclone_kit.fs.walk import fs_walk
 from rclone_kit.fs.walk_threaded_walker import FSWalker
 from rclone_kit.http_server import HttpServer
+from rclone_kit.operation import OperationResult
 
 if TYPE_CHECKING:
     from rclone_kit.dir_listing import DirListing
@@ -38,13 +38,13 @@ class RemoteFSAccess(Protocol):
 
     def copy_file_s3(self, src: Path, dst: str, verbose: bool | None = None) -> None: ...
 
-    def copy_to(self, src: str, dst: str) -> CompletedProcess: ...
+    def copy_to(self, src: str, dst: str) -> OperationResult: ...
 
     def read_bytes(self, src: str) -> bytes: ...
 
     def write_bytes(self, data: bytes, dst: str) -> None: ...
 
-    def delete_files(self, files: str) -> CompletedProcess: ...
+    def delete_files(self, files: str) -> OperationResult: ...
 
     def exists(self, src: "Remote | str | File") -> bool: ...
 
@@ -279,9 +279,9 @@ class RemoteFS(FS):
         logging.info(f"Copying {src} -> {dst}")
         src_path = src.as_posix()
         dst = dst if isinstance(dst, str) else dst.as_posix()
-        cp: CompletedProcess = self.rclone.copy_to(src_path, dst)
-        if cp.returncode != 0:
-            raise FileNotFoundError(f"File not found: {src}, specified by {cp.stderr}")
+        result: OperationResult = self.rclone.copy_to(src_path, dst)
+        if not result.ok:
+            raise FileNotFoundError(f"File not found: {src}, specified by {result.error}")
 
     def read_bytes(self, path: Path | str) -> bytes:
         path = self._to_str(path)
@@ -341,9 +341,9 @@ class RemoteFS(FS):
         """Remove a file or symbolic link."""
 
         path = path if isinstance(path, str) else path.as_posix()
-        cp = self.rclone.delete_files(path)
-        if cp.failed():
-            raise FileNotFoundError(f"File not found: {path}, because of {cp}")
+        result = self.rclone.delete_files(path)
+        if not result.ok:
+            raise FileNotFoundError(f"File not found: {path}, because of {result.error}")
 
     def get_path(self, path: str) -> "FSPath":
         return FSPath(self, path)

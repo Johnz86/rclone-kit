@@ -8,6 +8,7 @@ implementation.
 """
 
 import json
+import logging
 import threading
 from pathlib import Path
 from typing import Protocol, Self
@@ -22,6 +23,8 @@ from rclone_kit.native.errors import (
     NativePanicError,
     RuntimeClosedError,
 )
+
+logger = logging.getLogger(__name__)
 
 EXPECTED_ABI_VERSION = 1
 
@@ -68,13 +71,25 @@ class RcloneRuntime:
     """One loaded native library, initialized at most once, with one
     immutable config path for its whole lifetime.
 
-    Not thread-safe across `initialize`/`close`; `call` serializes RPC
-    dispatch with an internal lock so callers do not need their own.
+    `call()` does NOT serialize concurrent RPC dispatch against other
+    `call()`s: the Go bridge (`librclone/rclonekit/bridge.RPC`) only holds
+    its own mutex briefly to check `initialized` before delegating to
+    upstream `librclone.RPC`, which is safe to call concurrently from
+    multiple goroutines/OS threads - the same way rclone's own RC HTTP
+    server serves concurrent requests. Serializing every call through one
+    Python-side lock would otherwise let one slow call (e.g. a blocking
+    list-stream pull awaiting new items) delay every unrelated call for its
+    full duration. `_state_lock` instead guards only the lifecycle
+    transitions (`initialize`/`close`) and the in-flight call count:
+    `close()` waits for every in-flight `call()` to finish before invoking
+    `finalize()`, and no new `call()` can start once `close()` has begun.
     """
 
     def __init__(self, binding: NativeBinding) -> None:
         self._binding = binding
-        self._lock = threading.Lock()
+        self._state_lock = threading.Lock()
+        self._no_calls_in_flight = threading.Condition(self._state_lock)
+        self._active_calls = 0
         self._initialized = False
         self._closed = False
 
@@ -109,7 +124,7 @@ class RcloneRuntime:
         written against.
         """
         self._require_open()
-        with self._lock:
+        with self._state_lock:
             if self._initialized:
                 raise NativeAlreadyInitializedError(
                     "initialize() already called on this RcloneRuntime"
@@ -130,25 +145,50 @@ class RcloneRuntime:
         every call that actually dispatched, including RC-level failures
         (rclone-kit's positive-status contract); only the ABI's own reserved
         negative lifecycle codes raise here.
+
+        Does not hold `_state_lock` for the duration of the underlying RPC
+        dispatch (see the class docstring) - only to register/deregister
+        this call as in-flight, so `close()` can wait for it to finish.
         """
-        self._require_open()
-        if not self._initialized:
-            raise NativeNotInitializedError("call() before initialize()")
-        body = json.dumps(params or {}).encode("utf-8")
-        with self._lock:
+        with self._state_lock:
+            self._require_open()
+            if not self._initialized:
+                raise NativeNotInitializedError("call() before initialize()")
+            self._active_calls += 1
+        try:
+            body = json.dumps(params or {}).encode("utf-8")
             status, output = self._binding.rpc(method.encode("utf-8"), body)
+        finally:
+            with self._no_calls_in_flight:
+                self._active_calls -= 1
+                if self._active_calls == 0:
+                    self._no_calls_in_flight.notify_all()
         _raise_for_lifecycle_status(status, output)
         decoded = json.loads(output.decode("utf-8")) if output else {}
         return status, decoded
 
     def close(self) -> None:
-        """Best-effort finalize and mark this runtime unusable. Idempotent."""
-        if self._closed:
-            return
-        with self._lock:
-            if self._initialized:
-                self._binding.finalize()
+        """Best-effort finalize and mark this runtime unusable. Idempotent.
+
+        Blocks new `call()`s from starting immediately, then waits for
+        every already-in-flight `call()` to finish before invoking
+        `finalize()` - never interrupts one, since the underlying RC
+        dispatch has no cancellation mechanism to interrupt it with.
+        """
+        with self._state_lock:
+            if self._closed:
+                return
             self._closed = True
+            was_initialized = self._initialized
+            self._no_calls_in_flight.wait_for(lambda: self._active_calls == 0)
+        if was_initialized:
+            status, output = self._binding.finalize()
+            if status != STATUS_OK:
+                logger.warning(
+                    "RcloneKitFinalize returned non-OK status %s: %s",
+                    status,
+                    output.decode("utf-8", errors="replace"),
+                )
 
     def __enter__(self) -> Self:
         return self
@@ -159,3 +199,64 @@ class RcloneRuntime:
     def _require_open(self) -> None:
         if self._closed:
             raise RuntimeClosedError()
+
+
+class _SharedRuntimeHolder:
+    """Mutable holder for `shared_runtime()`'s process-wide instance.
+
+    A plain class attribute (mutated in place, never rebound via `global`)
+    rather than a module-level variable, so the double-checked-locking
+    below only ever needs a normal attribute assignment.
+    """
+
+    lock: threading.Lock = threading.Lock()
+    instance: "RcloneRuntime | None" = None
+
+
+def shared_runtime(
+    library_path: Path | None = None, config_path: Path | None = None
+) -> RcloneRuntime:
+    """Return the process-wide shared `RcloneRuntime`, creating and
+    initializing it on the first call.
+
+    `RcloneKitInitialize` is a once-per-*process* ABI operation (see the
+    `RcloneRuntime` class docstring and `Rclone.__init__`'s own runtime-
+    sharing note): loading the same shared library twice in one process
+    reuses the same already-loaded module and its process-global Go
+    runtime state, so a second, independently-initialized `RcloneRuntime`
+    is never possible in-process, only ever a `NativeAlreadyInitializedError`.
+    A production application that wants several `Rclone` clients (e.g. one
+    per request or tenant) must therefore share one runtime, constructed
+    exactly once, rather than let each client build its own - this
+    function is that one construction point, made thread-safe so it can be
+    called lazily from anywhere (module import time, a request handler,
+    a worker thread) without the caller having to coordinate who goes
+    first.
+
+    Every call after the first returns that same already-initialized
+    instance, regardless of the `library_path`/`config_path` passed -
+    only the first caller's arguments take effect, matching `initialize()`'s
+    own once-only semantics. Construct `Rclone(per_client_conf, runtime=
+    shared_runtime())` for each client; each keeps its own job/serve/mount
+    tracking and can be closed independently (per `Rclone.close()`'s
+    injected-runtime handling) without affecting the others or the shared
+    runtime itself. Close the shared runtime itself only at process
+    shutdown, since doing so is irreversible for the rest of the process's
+    life (see `RcloneRuntime.close()`).
+
+    True isolation between clients (a hard security/tenancy boundary, not
+    just independent config) is not possible in-process at all - every
+    client sharing this runtime also shares its one immutable config path
+    - and requires separate OS processes instead, each with its own single
+    call to this function.
+    """
+    if _SharedRuntimeHolder.instance is not None:
+        return _SharedRuntimeHolder.instance
+    with _SharedRuntimeHolder.lock:
+        if _SharedRuntimeHolder.instance is None:
+            from rclone_kit.native.library import resolve_library_path
+
+            runtime = RcloneRuntime.from_library_path(resolve_library_path(library_path))
+            runtime.initialize(config_path=config_path)
+            _SharedRuntimeHolder.instance = runtime
+        return _SharedRuntimeHolder.instance

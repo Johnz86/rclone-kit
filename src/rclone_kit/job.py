@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
+import logging
 import threading
 import time
 from datetime import UTC, datetime
@@ -39,8 +40,11 @@ if TYPE_CHECKING:
 
     from rclone_kit.rc.jobs import RcJobClient
 
+logger = logging.getLogger(__name__)
+
 _DEFAULT_POLL_INTERVAL_SECONDS = 0.5
 _DEFAULT_CLOSE_WAIT_SECONDS = 5.0
+_CANCELLATION_ERROR_MARKER = "context canceled"
 
 _EMPTY_STATS = TransferStats(
     bytes=0,
@@ -123,10 +127,18 @@ class JobHandle:
         return self._monitor.poll_now(self._record)
 
     def stats(self) -> TransferStats:
+        """Return the latest transfer stats.
+
+        While the job is still running, this always makes a fresh
+        `core/stats` call - a cached non-terminal snapshot would otherwise
+        freeze progress reporting at whatever the first call happened to
+        see. Once the job has settled, the final cached snapshot is
+        returned without another RC call, since the underlying stats group
+        is deleted at settle time.
+        """
         with self._record.condition:
-            cached = self._record.latest_stats
-        if cached is not None:
-            return cached
+            if self._record.is_settled and self._record.latest_stats is not None:
+                return self._record.latest_stats
         return self._monitor.stats_now(self._record)
 
     def wait(self, timeout: float | None = None) -> OperationResult:
@@ -232,11 +244,28 @@ class _JobMonitor:
         """Idempotent: only the call that actually flips
         `cancel_requested` dispatches `job/stop`, so a race between
         `JobHandle.cancel()` and `_JobMonitor.shutdown()` (or two
-        concurrent `cancel()` calls) never stops the same job twice."""
+        concurrent `cancel()` calls) never stops the same job twice.
+
+        Flipping the flag is synchronous (cheap, in-memory), but the
+        `job/stop` RC call and its follow-up poll happen on a dedicated
+        background thread - `JobHandle.cancel()` is documented as never
+        blocking, so it must not wait on a network round-trip here. The
+        monitor's own polling thread would eventually observe the
+        cancellation regardless; dispatching `stop()` promptly just avoids
+        waiting a full poll interval for it to be requested.
+        """
         with record.condition:
             if record.is_settled or record.cancel_requested:
                 return
             record.cancel_requested = True
+        threading.Thread(
+            target=self._dispatch_cancel,
+            args=(record,),
+            daemon=True,
+            name="rclone-kit-job-cancel",
+        ).start()
+
+    def _dispatch_cancel(self, record: _JobRecord) -> None:
         with contextlib.suppress(Exception):
             # best-effort: the next poll reveals the real state either way
             self._job_client.stop(record.ref)
@@ -251,22 +280,38 @@ class _JobMonitor:
         return status
 
     def stats_now(self, record: _JobRecord) -> TransferStats:
+        """Fetch a fresh stats snapshot, unless the job already settled.
+
+        A settled job's stats group has already been deleted (see
+        `_settle_terminal`), so once `latest_stats` holds the final
+        snapshot it is returned as-is rather than attempting (and failing)
+        another RC call.
+        """
+        with record.condition:
+            if record.is_settled and record.latest_stats is not None:
+                return record.latest_stats
         try:
             stats = self._job_client.stats(record.ref.group)
         except Exception:
+            with record.condition:
+                if record.latest_stats is not None:
+                    return record.latest_stats
             stats = _EMPTY_STATS
         with record.condition:
-            if record.latest_stats is None:
+            if not record.is_settled or record.latest_stats is None:
                 record.latest_stats = stats
-            stats = record.latest_stats
-        return stats
+            return record.latest_stats
 
     def shutdown(self, *, deadline_seconds: float) -> bool:
         """Cancel and wait for every job this monitor is tracking.
 
-        Returns `True` if every job settled before the deadline. Stops and
-        joins the polling thread only after that wait, so the background
-        thread is still the one making progress while we wait.
+        Returns `True` if every job settled before the deadline AND the
+        polling thread itself stopped. Stops and joins the polling thread
+        only once every job has actually settled, so a failed shutdown
+        (this method returning `False`) leaves the thread running - a
+        caller that retries `shutdown()` later still has a live poller
+        making progress on the still-unsettled jobs, rather than a
+        permanently stopped thread that can never confirm them settled.
         """
         with self._records_lock:
             records = list(self._records.values())
@@ -284,11 +329,16 @@ class _JobMonitor:
             if not settled:
                 all_settled = False
 
+        if not all_settled:
+            return False
+
         self._stop_event.set()
         thread = self._thread
         if thread is not None:
             thread.join(timeout=1.0)
-        return all_settled
+            if thread.is_alive():
+                return False
+        return True
 
     def _ensure_thread_started(self) -> None:
         with self._records_lock:
@@ -318,11 +368,17 @@ class _JobMonitor:
             except RcJobNotFoundError:
                 self._settle_lost(record)
                 return
-            except Exception as error:
-                with record.condition:
-                    record.terminal_exception = error
-                    record.condition.notify_all()
-                self._forget(record)
+            except Exception:
+                # Transient: a status-call/parsing error does not mean the
+                # job itself failed or disappeared - only `RcJobNotFoundError`
+                # is authoritative for that. Leave the record unsettled and
+                # still tracked so the next scheduled poll retries; settling
+                # here would falsely report a still-running job as failed.
+                logger.warning(
+                    "transient error polling job %s; will retry",
+                    record.ref.job_id,
+                    exc_info=True,
+                )
                 return
 
             if status.state.is_terminal:
@@ -338,7 +394,12 @@ class _JobMonitor:
         except Exception:
             final_stats = record.latest_stats or _EMPTY_STATS
 
-        cancelled = record.cancel_requested and status.state is JobState.FAILED
+        cancelled = (
+            record.cancel_requested
+            and status.state is JobState.FAILED
+            and status.error is not None
+            and _CANCELLATION_ERROR_MARKER in status.error
+        )
         if cancelled:
             status = dataclasses.replace(status, state=JobState.CANCELLED)
         ok = status.state is JobState.SUCCEEDED

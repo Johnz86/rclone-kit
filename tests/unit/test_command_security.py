@@ -1,10 +1,8 @@
 import os
 import stat
-import subprocess
 
 import pytest
 
-from rclone_kit.completed_process import CompletedProcess
 from rclone_kit.util import clear_temp_config_file, format_command, make_temp_config_file
 
 FIRST_CREDENTIAL = "credential-one"
@@ -31,18 +29,6 @@ def test_format_command_redacts_separate_and_inline_credentials() -> None:
     assert THIRD_CREDENTIAL not in formatted
     assert formatted.count("<redacted>") == 3
     assert "remote:bucket" in formatted
-
-
-def test_completed_process_string_redacts_credentials() -> None:
-    process = subprocess.CompletedProcess(
-        ["rclone", "rcd", "--rc-pass", FIRST_CREDENTIAL],
-        returncode=1,
-    )
-
-    rendered = str(CompletedProcess.from_subprocess(process))
-
-    assert FIRST_CREDENTIAL not in rendered
-    assert "<redacted>" in rendered
 
 
 def test_temporary_config_cleanup_removes_private_directory() -> None:

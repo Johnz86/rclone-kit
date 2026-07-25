@@ -29,7 +29,7 @@ from rclone_kit.operation import JobState, JobStatus, TransferStats
 from rclone_kit.rc.jobs import RcJobNotFoundError, RcJobRef
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Callable, Mapping
 
 _POLL_INTERVAL = 0.02
 _WAIT_TIMEOUT = 2.0
@@ -108,6 +108,17 @@ class FakeJobClient:
 
 def _monitor(job_client: FakeJobClient) -> _JobMonitor:
     return _JobMonitor(job_client, poll_interval_seconds=_POLL_INTERVAL, close_wait_seconds=2.0)
+
+
+def _wait_until(predicate: Callable[[], bool], timeout: float = _WAIT_TIMEOUT) -> None:
+    """Poll `predicate` until it's true, since `cancel()` dispatches its RC
+    calls on a background thread and must not be observed synchronously."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        time.sleep(0.01)
+    assert predicate()
 
 
 def _stub_stats(job_client: FakeJobClient, group: str) -> None:
@@ -382,6 +393,41 @@ class TestStatsAndStatusCaching:
         # cached snapshot: no additional core/stats call needed after settling
         assert job_client._stats_calls_by_group.get("g1", 0) == calls_before
 
+    def test_stats_refreshes_while_the_job_is_still_running(self) -> None:
+        job_client = FakeJobClient()
+        monitor = _monitor(job_client)
+        handle = monitor.start_job(
+            "sync/copy", {}, group="g1", operation="copy", source="a", destination="b", check=False
+        )
+        # job never settles (default RUNNING status), so every stats() call
+        # below must hit the fake RC client fresh rather than freezing on
+        # whichever snapshot happened to be cached first
+        _stub_stats(job_client, "g1")
+        first = handle.stats()
+        assert first.bytes == 100
+
+        job_client.set_stats(
+            "g1",
+            TransferStats(
+                bytes=250,
+                total_bytes=1000,
+                checks=0,
+                total_checks=0,
+                transfers=1,
+                total_transfers=4,
+                errors=0,
+                fatal_error=False,
+                retry_error=False,
+                speed=20.0,
+                eta_seconds=None,
+                elapsed_seconds=5.0,
+            ),
+        )
+        second = handle.stats()
+
+        assert second.bytes == 250
+        assert not handle.done
+
     def test_status_reflects_running_then_succeeded(self) -> None:
         job_client = FakeJobClient()
         monitor = _monitor(job_client)
@@ -414,7 +460,8 @@ class TestCancel:
         accepted = handle.cancel()
 
         assert accepted is True
-        assert len(job_client.stop_calls) == 1
+        # dispatched on a background thread, not synchronously by cancel() itself
+        _wait_until(lambda: len(job_client.stop_calls) == 1)
 
     def test_cancel_is_idempotent_before_terminal(self) -> None:
         job_client = FakeJobClient()
@@ -426,7 +473,35 @@ class TestCancel:
 
         assert handle.cancel() is True
         assert handle.cancel() is True  # already requested; still "accepted", but...
+        _wait_until(lambda: len(job_client.stop_calls) >= 1)
+        time.sleep(_POLL_INTERVAL * 2)  # let any wrongly-duplicated dispatch land
         assert len(job_client.stop_calls) == 1  # ...stop() itself is called only once
+
+    def test_cancel_does_not_block_on_the_stop_rc_call(self) -> None:
+        """`cancel()` is documented as never blocking - it must return before
+        the `job/stop` RC call it dispatches even completes, not after."""
+        job_client = FakeJobClient()
+        monitor = _monitor(job_client)
+        _stub_stats(job_client, "g1")
+        handle = monitor.start_job(
+            "sync/copy", {}, group="g1", operation="copy", source="a", destination="b", check=False
+        )
+        release = threading.Event()
+        original_stop = job_client.stop
+
+        def _slow_stop(ref: RcJobRef) -> None:
+            release.wait(timeout=_WAIT_TIMEOUT)
+            original_stop(ref)
+
+        job_client.stop = _slow_stop  # type: ignore[method-assign]
+
+        started = time.monotonic()
+        accepted = handle.cancel()
+        elapsed = time.monotonic() - started
+
+        release.set()
+        assert accepted is True
+        assert elapsed < 0.1
 
     def test_cancel_after_terminal_returns_false(self) -> None:
         job_client = FakeJobClient()
@@ -511,6 +586,60 @@ class TestCancel:
         assert result.cancelled is False
         assert result.ok is True
 
+    def test_an_unrelated_failure_after_a_cancel_request_is_not_misclassified(self) -> None:
+        # A FAILED terminal state after cancel_requested=True is only a real
+        # cancellation if rclone's own error text says so ("context
+        # canceled"); an independent failure that merely races the cancel
+        # request must stay FAILED.
+        job_client = FakeJobClient()
+        monitor = _monitor(job_client)
+        _stub_stats(job_client, "g1")
+        handle = monitor.start_job(
+            "sync/copy", {}, group="g1", operation="copy", source="a", destination="b", check=False
+        )
+        job_client.queue_status(
+            handle.job_id,
+            _status(
+                handle.job_id,
+                handle.execute_id,
+                "g1",
+                state=JobState.FAILED,
+                error="disk full",
+            ),
+        )
+
+        handle.cancel()
+        result = handle.wait(timeout=_WAIT_TIMEOUT)
+
+        assert result.cancelled is False
+        assert result.ok is False
+        assert result.error == "disk full"
+        assert handle.status().state is JobState.FAILED
+
+
+class TestTransientPollingErrors:
+    def test_a_transient_status_error_does_not_settle_the_job(self) -> None:
+        # Only RcJobNotFoundError is authoritative for "the job is gone."
+        # Any other exception from a status() call (network hiccup, a
+        # parsing error) must not be mistaken for the job itself failing -
+        # the record must stay tracked so the next poll can retry.
+        job_client = FakeJobClient()
+        monitor = _monitor(job_client)
+        _stub_stats(job_client, "g1")
+        handle = monitor.start_job(
+            "sync/copy", {}, group="g1", operation="copy", source="a", destination="b", check=False
+        )
+        job_client.queue_status(
+            handle.job_id,
+            RuntimeError("transient network error"),
+            _status(handle.job_id, handle.execute_id, "g1", state=JobState.SUCCEEDED),
+        )
+
+        result = handle.wait(timeout=_WAIT_TIMEOUT)
+
+        assert result.ok is True
+        assert handle.status().state is JobState.SUCCEEDED
+
 
 class TestJobExpiry:
     def test_job_not_found_before_any_terminal_observation_raises_job_expired_error(self) -> None:
@@ -589,6 +718,48 @@ class TestShutdown:
         all_settled = monitor.shutdown(deadline_seconds=0.1)
 
         assert all_settled is False
+
+    def test_failed_shutdown_leaves_the_polling_thread_running(self) -> None:
+        job_client = FakeJobClient()
+        monitor = _monitor(job_client)
+        monitor.start_job(
+            "sync/copy", {}, group="g1", operation="copy", source="a", destination="b", check=False
+        )
+        # never queue a terminal status yet; this attempt times out
+
+        all_settled = monitor.shutdown(deadline_seconds=0.1)
+
+        assert all_settled is False
+        monitor_thread = monitor._thread
+        assert monitor_thread is not None
+        assert monitor_thread.is_alive()
+
+    def test_shutdown_retry_makes_progress_after_a_failed_attempt(self) -> None:
+        # A failed shutdown() must not kill the polling thread - otherwise a
+        # caller that retries later (e.g. `Rclone.close()` after catching
+        # `OperationShutdownError`) has no way to ever observe the job settle.
+        job_client = FakeJobClient()
+        monitor = _monitor(job_client)
+        _stub_stats(job_client, "g1")
+        handle = monitor.start_job(
+            "sync/copy", {}, group="g1", operation="copy", source="a", destination="b", check=False
+        )
+        # never queue a terminal status yet; this attempt times out
+
+        first_attempt = monitor.shutdown(deadline_seconds=0.1)
+        assert first_attempt is False
+
+        # only now does the job become observable as settled - nothing but
+        # the still-running background poller can ever pick this up, since a
+        # retried request_cancel() is a no-op once cancel_requested is set
+        job_client.queue_status(
+            handle.job_id, _status(handle.job_id, handle.execute_id, "g1", state=JobState.SUCCEEDED)
+        )
+
+        second_attempt = monitor.shutdown(deadline_seconds=_WAIT_TIMEOUT)
+
+        assert second_attempt is True
+        assert handle.done
 
     def test_shutdown_stops_the_polling_thread(self) -> None:
         job_client = FakeJobClient()

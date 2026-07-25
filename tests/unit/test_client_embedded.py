@@ -552,6 +552,22 @@ def test_close_disposes_serve_handles_the_caller_never_disposed() -> None:
     assert binding.rpc_calls[-1][0] == b"serve/stop"
 
 
+def test_disposing_a_serve_handle_removes_it_from_the_client_tracking_set() -> None:
+    # A client that starts and disposes many short-lived serve sessions
+    # over its lifetime must not leak one tracked entry per session.
+    binding = FakeBinding()
+    _set_serve_responses(binding)
+    rclone = Rclone(None, runtime=RcloneRuntime(binding))
+
+    handle = rclone.serve_webdav("remote:base", "alice", "hunter2", addr="127.0.0.1:0")
+    assert handle in rclone._serve_handles
+
+    handle.dispose()
+
+    assert handle not in rclone._serve_handles
+    rclone.close()
+
+
 def test_close_does_not_double_stop_an_already_disposed_serve_handle() -> None:
     binding = FakeBinding()
     _set_serve_responses(binding)

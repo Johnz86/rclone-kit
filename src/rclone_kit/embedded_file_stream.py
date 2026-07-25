@@ -10,6 +10,7 @@ consumer need no changes to work under `execution="embedded"`.
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import Generator
 from typing import TYPE_CHECKING, Self
 
@@ -17,6 +18,8 @@ from rclone_kit.exceptions import RcloneCommandError
 from rclone_kit.file import FileItem
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from rclone_kit.rc.list_stream import RcListStreamClient
 
 _BATCH_SIZE = 1000
@@ -38,6 +41,7 @@ class EmbeddedFilesStream:
         self._client = list_stream_client
         self._stream_id = stream_id
         self._closed = False
+        self._on_close: Callable[[], None] | None = None
 
     def __enter__(self) -> Self:
         return self
@@ -48,10 +52,18 @@ class EmbeddedFilesStream:
     def close(self) -> None:
         """Idempotent: closing an already-closed or naturally-exhausted
         stream is a no-op, matching `rclonekit/liststream/close`'s own
-        idempotent contract."""
+        idempotent contract.
+
+        `_on_close` (set by `Rclone._track_file_stream`, never by a caller)
+        removes this stream from the client's tracking set once closed -
+        see `ServeHandle._on_dispose`'s docstring for why that matters.
+        """
         if not self._closed:
             self._closed = True
             self._client.close(self._stream_id)
+            if self._on_close is not None:
+                with contextlib.suppress(Exception):
+                    self._on_close()
 
     def files(self) -> Generator[FileItem]:
         while True:

@@ -312,9 +312,9 @@ def _cleanup_merge(rclone: MultipartAccess, info: InfoJson) -> None:
         raise ValueError(f"Size mismatch: {write_size} != {size}")
 
     logger.info("Upload complete: %s", dst)
-    cp = rclone.purge(parts_dir)
-    if cp.failed():
-        raise S3MergeError(f"Failed to purge parts dir: {cp}")
+    result = rclone.purge(parts_dir)
+    if not result.ok:
+        raise S3MergeError(f"Failed to purge parts dir: {result.error}")
 
 
 def _get_merge_path(info_path: str) -> str:

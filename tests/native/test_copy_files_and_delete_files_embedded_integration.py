@@ -80,8 +80,7 @@ def test_copy_files_two_partitions_both_copy(tmp_path: Path, embedded: Rclone) -
 
     result = embedded.copy_files(str(src), str(dst), ["dirA/a.txt", "dirB/b.txt"])
 
-    assert len(result) == 1
-    assert result[0].ok is True
+    assert result.ok is True
     assert (dst / "dirA" / "a.txt").read_bytes() == b"A"
     assert (dst / "dirB" / "b.txt").read_bytes() == b"B"
 
@@ -101,8 +100,7 @@ def test_copy_files_missing_source_file_is_silently_skipped(
 
     result = embedded.copy_files(str(src), str(dst), ["missing.txt", "real.txt"])
 
-    assert len(result) == 1
-    assert result[0].ok is True
+    assert result.ok is True
     assert (dst / "real.txt").read_bytes() == b"real"
     assert not (dst / "missing.txt").exists()
 
@@ -124,8 +122,7 @@ def test_copy_files_one_failed_partition_does_not_abort_the_other(
 
     result = embedded.copy_files(str(src), str(dst), ["dirA/a.txt", "dirB/b.txt"], check=False)
 
-    assert len(result) == 1
-    assert result[0].ok is False
+    assert result.ok is False
     assert (dst / "dirB" / "b.txt").read_bytes() == b"B"
 
 
@@ -151,8 +148,7 @@ def test_copy_files_empty_list_is_a_noop(tmp_path: Path, embedded: Rclone) -> No
 
     result = embedded.copy_files(str(src), str(dst), [])
 
-    assert len(result) == 1
-    assert result[0].ok is True
+    assert result.ok is True
 
 
 def test_delete_files_removes_only_the_listed_files(

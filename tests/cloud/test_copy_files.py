@@ -9,9 +9,9 @@ import pytest
 
 from helpers import CLOUD_TEST_KEY_PREFIX
 from rclone_kit import (
-    CompletedProcess,
     DirListing,
     File,
+    OperationResult,
     Rclone,
     rclone_verbose,
 )
@@ -44,12 +44,10 @@ class RcloneCopyFilesTest(unittest.TestCase):
         first_file: File = listing.files[0]
         include_files: list[str] = [first_file.name]
         try:
-            completed_procs: list[CompletedProcess] = rclone.copy_files(
+            result: OperationResult = rclone.copy_files(
                 src=src_prefix, dst=dst_prefix, files=include_files, max_partition_workers=2
             )
-            self.assertGreater(len(completed_procs), 0)
-            for proc in completed_procs:
-                self.assertTrue(proc.returncode == 0)
+            self.assertTrue(result.ok)
             self.assertTrue(rclone.exists(dst_prefix))
         finally:
             rclone.purge(dst_prefix)
@@ -64,12 +62,10 @@ class RcloneCopyFilesTest(unittest.TestCase):
         first_file: File = listing.files[0]
         include_files: list[str] = [first_file.name]
         try:
-            completed_procs: list[CompletedProcess] = rclone.copy_files(
+            result: OperationResult = rclone.copy_files(
                 src=src_prefix, dst=dst_prefix, files=include_files, max_partition_workers=1
             )
-            self.assertGreater(len(completed_procs), 0)
-            for proc in completed_procs:
-                self.assertTrue(proc.returncode == 0)
+            self.assertTrue(result.ok)
             self.assertTrue(rclone.exists(dst_prefix))
         finally:
             rclone.purge(dst_prefix)

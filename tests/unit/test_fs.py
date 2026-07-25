@@ -10,12 +10,12 @@ from tempfile import TemporaryDirectory
 
 import pytest
 
-from rclone_kit.completed_process import CompletedProcess
 from rclone_kit.dir_listing import DirListing
 from rclone_kit.exceptions import FilesystemError
 from rclone_kit.file import File
 from rclone_kit.fs.filesystem import FSPath, RealFS, RemoteFS
 from rclone_kit.http_server import HttpServer
+from rclone_kit.operation import OperationResult
 from rclone_kit.remote import Remote
 from rclone_kit.rpath import RPath
 
@@ -203,7 +203,7 @@ class FakeRemoteFSAccess:
     def copy_file_s3(self, src: Path, dst: str, verbose: bool | None = None) -> None:
         raise NotImplementedError
 
-    def copy_to(self, src: str, dst: str) -> CompletedProcess:
+    def copy_to(self, src: str, dst: str) -> OperationResult:
         raise NotImplementedError
 
     def read_bytes(self, src: str) -> bytes:
@@ -212,7 +212,7 @@ class FakeRemoteFSAccess:
     def write_bytes(self, data: bytes, dst: str) -> None:
         raise NotImplementedError
 
-    def delete_files(self, files: str) -> CompletedProcess:
+    def delete_files(self, files: str) -> OperationResult:
         raise NotImplementedError
 
     def exists(self, src: object) -> bool:

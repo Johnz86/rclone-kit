@@ -77,11 +77,15 @@ def test_mount_dispose_is_idempotent(tmp_path: Path, embedded: Rclone) -> None:
 
     handle = embedded.mount(str(src), Path("*"))
     assert isinstance(handle, MountHandle)
+    assert handle in embedded._mount_handles
 
     handle.dispose()
     handle.dispose()
 
     assert handle.closed is True
+    # a disposed handle must not stay tracked forever - see finding #5's
+    # "disposed serve/mount handles stay in the client's tracking sets"
+    assert handle not in embedded._mount_handles
 
 
 def test_close_disposes_mount_handles_the_caller_never_disposed(

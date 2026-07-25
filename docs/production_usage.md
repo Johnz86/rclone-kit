@@ -135,6 +135,76 @@ verify_storage(rclone, {"archive", "source"})
 rclone, in that order. `config_show()` is useful for diagnostics, but its
 output can contain secrets; never include it in routine production logs.
 
+## Runtime lifecycle and multi-client processes
+
+`Rclone(config)` loads and initializes the native library the first time it's
+called with no `runtime=` argument, and owns (closes) that runtime itself.
+That default is all a single-config application - a script, a one-shot job,
+most CLI tools - needs; skip the rest of this section unless the process
+needs more than one `Rclone` client at once.
+
+The native library can be initialized **at most once per process**, not once
+per `Rclone` instance or `RcloneRuntime` object: loading the same shared
+library twice within one process (e.g. two separate `RcloneRuntime.
+from_library_path(...)` calls) returns a handle to the same already-loaded
+module and its process-global Go runtime state, so a second, independent
+`initialize()` call always fails. A service that wants several `Rclone`
+clients - one per request, one per tenant, one per background worker - must
+therefore share a single `RcloneRuntime`, constructed exactly once, rather
+than let each client build its own:
+
+```python
+from pathlib import Path
+
+from rclone_kit import Rclone, shared_runtime
+
+CONFIG_PATH = Path("/run/secrets/rclone.conf")
+
+# Once, at process startup - or lazily on first use; only the first-ever
+# call's config_path actually takes effect (see below).
+shared_runtime(config_path=CONFIG_PATH)
+
+def handle_request() -> None:
+    rclone = Rclone(CONFIG_PATH, runtime=shared_runtime())
+    try:
+        ...
+    finally:
+        rclone.close()
+```
+
+`shared_runtime()` is a thread-safe, lazy, initialize-once accessor: call it
+from anywhere (module import time, a request handler, a worker thread)
+without coordinating which caller goes first - every call returns the same
+instance, and only the first call's `library_path`/`config_path` arguments
+take effect. Each `Rclone` built this way keeps its own job/serve/mount
+tracking and can be closed independently without affecting the others or the
+shared runtime itself, since `Rclone.close()` only finalizes a runtime it
+constructed itself, never one passed in via `runtime=`. Close the shared
+runtime only at process shutdown - `RcloneRuntime.close()` is irreversible
+for the rest of the process's life; process exit is the only complete
+cleanup boundary after that.
+
+Pass the same `rclone_conf` to every `Rclone(...)` call sharing a runtime,
+even though only the first-ever call's native initialization actually takes
+effect - `self.config` (backing `is_s3()`, `get_s3_credentials()`, and
+`encode_fs_spec()`) is always derived from whatever `rclone_conf` a given
+`Rclone` instance was constructed with, independently of the runtime's own
+state. Passing `None` to a client built against an already-initialized
+runtime silently gives that client an *empty* config snapshot - the native
+runtime still has the real remotes loaded, but that client's own S3/
+credential lookups would not see them.
+
+Because the shared runtime has one immutable config for its whole lifetime,
+every client built from it also shares that one underlying config file -
+there's no way to give one client a materially different config than another
+while they share a runtime. Model different logical tenants as different
+remotes within that one shared config (registered dynamically via
+`config/create`/`config/update` RC calls if needed), not as separate
+runtimes. True hard isolation between clients - a security or tenancy
+boundary, not just independent configuration - is not achievable in-process
+at all; it requires separate OS processes, each with its own single call to
+`shared_runtime()`.
+
 ## Paths and result objects
 
 Remote paths use rclone syntax:
@@ -146,7 +216,7 @@ remote:bucket/prefix/file.ext
 Local paths use normal operating-system paths. Do not invent a `local:`
 remote unless one is actually defined in the rclone config.
 
-Short-lived operations return `CompletedProcess` where the command result is
+Short-lived operations return `OperationResult` where the command result is
 useful:
 
 ```python
@@ -156,20 +226,21 @@ result = rclone.copy(
     check=True,
 )
 if not result.ok:
-    raise RuntimeError(result.stderr)
+    raise RuntimeError(result.error)
 ```
 
 Set `check=True` on copy operations when command failure should immediately
-raise. For partitioned operations, inspect every returned result:
+raise. `copy_files()` partitions its file list internally but still folds
+every partition into one result:
 
 ```python
-results = rclone.copy_files(
+result = rclone.copy_files(
     src="source:dataset",
     dst="archive:dataset",
     files=["images/0001.png", "labels/0001.json"],
     check=True,
 )
-if not all(result.ok for result in results):
+if not result.ok:
     raise RuntimeError("One or more copy partitions failed")
 ```
 
@@ -392,14 +463,14 @@ destination = "archive:completed/run-42"
 
 copy_result = rclone.copy(source, destination, check=True)
 if not copy_result.ok:
-    raise RuntimeError(copy_result.stderr)
+    raise RuntimeError(copy_result.error)
 
 if not rclone.is_synced(source, destination):
     raise RuntimeError("Destination verification failed")
 
 purge_result = rclone.purge(source)
 if not purge_result.ok:
-    raise RuntimeError(purge_result.stderr)
+    raise RuntimeError(purge_result.error)
 ```
 
 `purge()` is destructive: it removes the path and all contents. Keep it
@@ -419,15 +490,15 @@ result = rclone.delete_files(
     rmdirs=True,
 )
 if not result.ok:
-    raise RuntimeError(result.stderr)
+    raise RuntimeError(result.error)
 ```
 
 ## Asynchronous copies, partitioned operations, and result types
 
 The client links the bundled native library directly in-process; there is no `rclone` executable and
 no subprocess per call. `copy()`, `copy_to()`, `copy_dir()`, `copy_remote()`, `purge()`, `cleanup()`,
-`copy_files()`, and `delete_files()` all return `CompletedProcess` (`size_files()` returns `SizeResult`),
-and `check=True` still raises on failure - code that only inspects `.ok`/`.returncode` needs no special
+`copy_files()`, and `delete_files()` all return `OperationResult` (`size_files()` returns `SizeResult`),
+and `check=True` still raises on failure - code that only inspects `.ok`/`.error` needs no special
 handling. `start_copy()` gives direct access to the underlying asynchronous job model when a caller
 needs more than a blocking call.
 
@@ -486,15 +557,14 @@ if any partition failed.
 
 ```python
 result = rclone.copy_files(source, destination, ["a.txt", "b/c.txt"], check=False)
-if not result[0].ok:
-    for warning in result[0].operation_result.warnings:
+if not result.ok:
+    for warning in result.warnings:
         print(warning.message)  # "<partition src> -> <partition dst>: <error>", one per failure
 ```
 
-`copy_files()` returns `list[CompletedProcess]` with exactly one element, wrapping the aggregate
-result (`job_ids`/`attempts`/`stats` span every partition). `delete_files()` returns a single
-`CompletedProcess`. A file entry that does not exist is not an error in either operation - it is
-simply not visited during the underlying walk.
+`copy_files()` and `delete_files()` each return a single `OperationResult` whose `job_ids`/`attempts`/
+`stats` span every partition. A file entry that does not exist is not an error in either operation - it
+is simply not visited during the underlying walk.
 
 ### `ls_stream()`/`copy_bytes()`: bounded-memory streaming and byte ranges
 
@@ -514,20 +584,6 @@ rather than leaving it open for the life of the runtime.
 
 `copy_bytes()` extends past the end of the object without error - it copies whatever is available.
 `check` is not exposed on it: a failure always raises `RcloneCommandError`.
-
-### `CompletedProcess` is a compatibility type, not a real process result
-
-`CompletedProcess` predates the current architecture, when every result came from a parsed subprocess
-invocation. A result still exposes `.ok` and `.returncode` (`0`/`1`), but never a real command,
-stdout, or stderr - `.stdout`, `.stderr`, `.completed`, `.failed()`, `.successes()`, and command-string
-formatting are always empty. Code that logs `result.stderr` on failure silently loses that detail;
-prefer `.ok` plus a typed exception (`OperationFailedError.result.error`, surfaced through
-`RcloneCommandError` for `copy_to()`/`read_bytes()`/`write_bytes()`) for diagnostics.
-
-`CompletedProcess` is planned for removal in a future major release, at which point every currently
-`CompletedProcess`-returning method returns `OperationResult` directly. Code written against `.ok` and
-`.returncode` needs no change at that point; code depending on `.stdout`/`.stderr`/`.completed` needs to
-move to the typed exception hierarchy before then.
 
 ## Streaming differences and reconciliation
 

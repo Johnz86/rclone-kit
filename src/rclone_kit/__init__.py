@@ -3,7 +3,6 @@
 import logging
 
 from rclone_kit.client import Rclone
-from rclone_kit.completed_process import CompletedProcess
 from rclone_kit.config import Config, Parsed, Section
 from rclone_kit.diff import DiffItem, DiffOption, DiffType
 from rclone_kit.dir import Dir
@@ -18,6 +17,7 @@ from rclone_kit.log import configure_logging
 from rclone_kit.log import setup_default_logging as setup_default_logging
 from rclone_kit.mount_handle import MountHandle
 from rclone_kit.native.build_info import NativeBuildInfo
+from rclone_kit.native.runtime import RcloneRuntime, shared_runtime
 from rclone_kit.operation import (
     ActiveTransfer,
     JobState,
@@ -38,7 +38,6 @@ logging.getLogger(__name__).addHandler(logging.NullHandler())
 
 __all__ = [
     "ActiveTransfer",
-    "CompletedProcess",
     "Config",
     "DiffItem",
     "DiffOption",
@@ -69,6 +68,7 @@ __all__ = [
     "RPath",
     "Range",
     "Rclone",
+    "RcloneRuntime",
     "RealFS",
     "Remote",
     "RemoteFS",
@@ -80,4 +80,5 @@ __all__ = [
     "configure_logging",
     "rclone_verbose",
     "setup_default_logging",
+    "shared_runtime",
 ]
