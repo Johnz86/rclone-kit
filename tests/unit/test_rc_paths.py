@@ -8,6 +8,8 @@ for why. These tests compute the expected absolutized form with
 uses, rather than hardcoding a platform-specific string.
 """
 
+import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -118,7 +120,7 @@ def test_as_parent_and_name_splits_an_absolutized_local_path(raw: str) -> None:
     split = RcPath.parse(raw).as_parent_and_name()
 
     absolute = Path(_abs(raw))
-    assert split.fs == str(absolute.parent) + "\\"
+    assert split.fs == str(absolute.parent) + os.sep
     assert split.remote == absolute.name
 
 
@@ -137,14 +139,14 @@ def test_as_parent_and_name_splits_a_bare_relative_basename() -> None:
     # `_resolve_local`.
     split = RcPath.parse("file.txt").as_parent_and_name()
 
-    assert split.fs == _abs(".") + "\\"
+    assert split.fs == _abs(".") + os.sep
     assert split.remote == "file.txt"
 
 
 def test_as_parent_and_name_splits_a_bare_relative_directory_reference() -> None:
     split = RcPath.parse("foo/").as_parent_and_name()
 
-    assert split.fs == _abs(".") + "\\"
+    assert split.fs == _abs(".") + os.sep
     assert split.remote == "foo"
 
 
@@ -178,6 +180,7 @@ def test_parse_treats_a_bare_inline_remote_with_no_second_colon_as_local() -> No
     assert parsed.remote == ""
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="UNC path syntax is a Windows-only concept")
 def test_parse_and_split_handle_a_unc_path() -> None:
     parsed = RcPath.parse("\\\\server\\share\\dir\\file.txt")
 

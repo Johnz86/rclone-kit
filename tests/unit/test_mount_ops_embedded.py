@@ -161,4 +161,3 @@ class TestFetchS3MountEmbedded:
 
         _fs, _mp, _vo, _mo, config = client.mount_calls[0]
         assert config["transfers"] == 64
-
