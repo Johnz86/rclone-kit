@@ -457,8 +457,8 @@ class FSPath:
 
     def rmtree(self, ignore_errors=False) -> None:
         self_exists = self.exists()
-        if not ignore_errors:
-            assert self_exists, f"Path does not exist: {self.path}"
+        if not ignore_errors and not self_exists:
+            raise FileNotFoundError(f"Path does not exist: {self.path}")
 
         if isinstance(self.fs, RealFS):
             shutil.rmtree(self.path, ignore_errors=ignore_errors)

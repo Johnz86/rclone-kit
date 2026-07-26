@@ -139,6 +139,19 @@ def test_remove_wraps_other_os_errors_in_filesystem_error(
             monkeypatch.undo()
 
 
+def test_rmtree_raises_file_not_found_for_missing_path() -> None:
+    with TemporaryDirectory() as temp_dir:
+        missing = RealFS.from_path(Path(temp_dir) / "does-not-exist")
+        with pytest.raises(FileNotFoundError):
+            missing.rmtree()
+
+
+def test_rmtree_with_ignore_errors_is_a_no_op_for_a_missing_path() -> None:
+    with TemporaryDirectory() as temp_dir:
+        missing = RealFS.from_path(Path(temp_dir) / "does-not-exist")
+        missing.rmtree(ignore_errors=True)
+
+
 def test_remote_fs_path_truediv_preserves_literal_backslash_in_joined_name() -> None:
     """`FSPath` path math must use `PurePosixPath`, not `Path`, for a
     `RemoteFS`-backed path: `remote:bucket/...` is a forward-slash-only
