@@ -19,6 +19,7 @@ from threading import Lock
 from typing import TYPE_CHECKING, Any
 
 from rclone_kit.dir import Dir
+from rclone_kit.rc.paths import split_remote_and_path
 from rclone_kit.remote import Remote
 from rclone_kit.rpath import RPath
 
@@ -208,30 +209,9 @@ def find_free_port() -> int:
     return port
 
 
-def split_remote_name_and_path(item: str) -> tuple[str, str]:
-    """Split `item` into `(remote_name, path)`.
-
-    A string with no colon at all - most commonly a Unix absolute local
-    path, which never contains one - has no remote component at all: it
-    must not be treated as a remote whose name is the entire path (which
-    would also lose the path itself, since nothing would be left over to
-    become `path`). `remote_name=""` combined with `RPath.__str__`'s
-    matching empty-remote handling round-trips such a path back to its
-    original, unprefixed form. Does not special-case a Windows drive
-    letter (`C:\\...`) the way `rc.paths.RcPath.parse` does - that
-    accidentally-correct case (`remote_name="C"` reconstructs to the same
-    string rclone already accepts as a local `fs` spec) is unrelated to
-    the no-colon bug this fixes.
-    """
-    if ":" not in item:
-        return "", item
-    parts = item.split(":")
-    return parts[0], ":".join(parts[1:])
-
-
 def to_path(item: Dir | Remote | str, rclone: ListingAccess) -> RPath:
     if isinstance(item, str):
-        remote_name, path = split_remote_name_and_path(item)
+        remote_name, path = split_remote_and_path(item)
         remote = Remote(name=remote_name, rclone=rclone)
         out = RPath(
             remote=remote,

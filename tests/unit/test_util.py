@@ -1,7 +1,9 @@
-"""Unit tests for `rclone_kit.util`'s remote/path splitting (finding #6,
-"Linux path-modeling bugs": a bare local path - most commonly a Unix
+"""Unit tests for `rclone_kit.util.to_path`'s remote/path splitting (finding
+#6, "Linux path-modeling bugs": a bare local path - most commonly a Unix
 absolute path, which never contains a colon - was previously misparsed as
-a remote whose name is the entire path, losing the path itself).
+a remote whose name is the entire path, losing the path itself). The
+underlying split itself is `rc.paths.split_remote_and_path` - see
+`tests/unit/test_rc_paths.py` for its own dedicated coverage.
 """
 
 from typing import cast
@@ -9,27 +11,9 @@ from typing import cast
 from rclone_kit.client import Rclone
 from rclone_kit.dir import Dir
 from rclone_kit.remote import Remote
-from rclone_kit.util import split_remote_name_and_path, to_path
+from rclone_kit.util import to_path
 
 _FAKE_RCLONE = cast(Rclone, object())
-
-
-def test_split_remote_name_and_path_with_a_real_remote() -> None:
-    assert split_remote_name_and_path("remote:bucket/prefix") == ("remote", "bucket/prefix")
-
-
-def test_split_remote_name_and_path_with_a_bare_remote_root() -> None:
-    assert split_remote_name_and_path("remote:") == ("remote", "")
-
-
-def test_split_remote_name_and_path_with_extra_colons_in_the_path() -> None:
-    # Matches the pre-existing (unchanged) colon-naive behavior for a path
-    # segment that itself contains a colon.
-    assert split_remote_name_and_path("remote:a:b") == ("remote", "a:b")
-
-
-def test_split_remote_name_and_path_with_a_colonless_unix_local_path() -> None:
-    assert split_remote_name_and_path("/srv/data") == ("", "/srv/data")
 
 
 def test_to_path_with_a_unix_local_path_round_trips_through_str() -> None:

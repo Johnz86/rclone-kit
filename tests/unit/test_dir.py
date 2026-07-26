@@ -65,7 +65,7 @@ def test_to_string_without_remote_strips_the_remote_prefix() -> None:
 
 
 def test_to_string_without_remote_on_a_local_path_is_unchanged() -> None:
-    # A local Dir (no remote at all - see util.split_remote_name_and_path)
+    # A local Dir (no remote at all - see rc.paths.split_remote_and_path)
     # has no prefix to strip; the previous unconditional `.split(":", 1)`
     # would raise ValueError here instead of returning the path as-is.
     remote = Remote(name="", rclone=_FAKE_RCLONE)

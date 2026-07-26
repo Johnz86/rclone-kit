@@ -27,11 +27,11 @@ from rclone_kit.file import File
 from rclone_kit.operations.listing_ops import _MIN_FILES_FOR_BATCH_LISTING, build_size_result
 from rclone_kit.rc.client import RcCallable
 from rclone_kit.rc.errors import RcCallError
-from rclone_kit.rc.paths import RcPath
+from rclone_kit.rc.paths import RcPath, split_remote_and_path
 from rclone_kit.remote import Remote
 from rclone_kit.rpath import RcloneJsonEntry, RPath
 from rclone_kit.types import ListingOption, Order, SizeResult, SizeSuffix
-from rclone_kit.util import get_check, split_remote_name_and_path, to_path, write_files_from
+from rclone_kit.util import get_check, to_path, write_files_from
 
 if TYPE_CHECKING:
     from rclone_kit.access import ListingAccess
@@ -67,7 +67,7 @@ def _stat_item(rc_client: RcCallable, access: ListingAccess, src: str, *, files_
     item = result.get("item")
     if item is None:
         raise FileNotFoundError(f"File not found: {src}")
-    remote_name, path = split_remote_name_and_path(src)
+    remote_name, path = split_remote_and_path(src)
     remote = Remote(name=remote_name, rclone=access)
     rpath = RPath(
         remote=remote,
@@ -113,11 +113,10 @@ def fetch_ls_embedded(
     remote = src.remote if isinstance(src, Dir) else src
     parent_path = src.path.path if isinstance(src, Dir) else None
 
-    # `str(src)` reconstructs the exact original combined path (a `Dir`'s
-    # `Remote.name`/`RPath.path` split can itself be colon-naive for local
-    # paths - see `util.split_remote_name_and_path` - but `RPath.__str__`
-    # always yields the original string back), which `RcPath.parse` then
-    # splits Windows-drive-aware for the RC call.
+    # `str(src)` reconstructs the exact original combined path (`RPath.
+    # __str__` always yields the original string back, whatever the
+    # `Remote.name`/`RPath.path` split - see `rc.paths.split_remote_and_path`),
+    # which `RcPath.parse` then splits Windows-drive-aware for the RC call.
     target = RcPath.parse(str(src))
     opt: dict[str, object] = {}
     if listing_option == ListingOption.FILES_ONLY:
@@ -227,7 +226,7 @@ def fetch_size_files_embedded(
             warnings.warn(f"Error getting file sizes: {error}", stacklevel=2)
             result = {"list": []}
 
-    remote_name, parent_path = split_remote_name_and_path(src)
+    remote_name, parent_path = split_remote_and_path(src)
     remote = Remote(name=remote_name, rclone=access)
     all_files = [
         File(RPath.from_dict(cast(RcloneJsonEntry, item), remote, parent_path=parent_path))

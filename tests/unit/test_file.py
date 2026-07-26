@@ -45,7 +45,7 @@ def test_relative_to_ordinary_nested_path() -> None:
 
 
 def test_to_string_on_a_local_path_has_no_leading_colon() -> None:
-    """A local File (no remote at all - see util.split_remote_name_and_path)
+    """A local File (no remote at all - see rc.paths.split_remote_and_path)
     has nothing to prefix; the previous `f"{remote.name}:{path}"`
     reconstruction produced a leading ":" (e.g. ":/tmp/a.txt") that
     doesn't round-trip back through `RcPath.parse`.
