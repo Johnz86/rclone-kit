@@ -151,6 +151,21 @@ class GroupFilestest(unittest.TestCase):
 
         self.assertEqual(groups, {"/srv/data/subdir": ["manifest.txt"]})
 
+    def test_fully_qualified_windows_local_path_splits_on_backslash(self) -> None:
+        """A Windows local path's own directory separators are backslashes,
+        not "/" - `parse_file`/`group_files` must decompose parents using
+        `RcPath.parse_parts` instead of assuming rclone's forward-slash
+        remote-path convention, and reassemble the drive letter's colon
+        with its separator kept (`C:/Users`, not the drive-relative
+        `C:Users`) - see `_colonify`."""
+        files = [
+            r"C:\Users\jan\data\subdir\manifest.txt",
+        ]
+
+        groups: dict[str, list[str]] = _group_files(files, fully_qualified=True)
+
+        self.assertEqual(groups, {"C:/Users/jan/data/subdir": ["manifest.txt"]})
+
     def test_group_under_one_prefix(self) -> None:
         files = [
             "Bucket/subdir/file1.txt",

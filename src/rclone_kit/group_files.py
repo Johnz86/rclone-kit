@@ -1,6 +1,8 @@
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 
+from rclone_kit.rc.paths import RcPath, RcPathParts, is_windows_drive_prefix
+
 _MAX_CHILDREN_FOR_INDIVIDUAL_MERGE = 2
 
 
@@ -10,49 +12,37 @@ class PrefixResult:
     files: list[str]
 
 
-@dataclass
-class FilePathParts:
-    """File path dataclass."""
-
-    remote: str
-    parents: list[str]
-    name: str
-
-    def to_string(self, include_remote: bool, include_bucket: bool) -> str:
-        """Convert to string, may throw for not include_bucket=False."""
-        parents = list(self.parents)
-        if not include_bucket:
-            parents.pop(0)
-        path = "/".join(parents)
-        if path:
-            path += "/"
-        path += self.name
-        if include_remote:
-            return f"{self.remote}{path}"
-        return path
-
-
-def parse_file(file_path: str) -> FilePathParts:
+def parse_file(file_path: str) -> RcPathParts:
     """Parse file path into parts.
 
     A colonless `file_path` (a local filesystem path, not `remote:path`)
     parses with `remote=""` rather than raising - `delete_files_embedded`
     calls this on real local paths too (via `RemoteFS.remove()`), and on
-    Linux those never contain a colon at all. A Windows path still parses
-    the same as before: its drive letter's own colon (`C:\\...`) is
-    indistinguishable from `remote:path` here, which happens to reproduce
-    correctly once reassembled - see `to_string`.
+    Linux those never contain a colon at all. A Windows path also parses
+    with `remote=""` and its drive letter (`C:\\...`) folded into
+    `parents`/`name` via `RcPath.parse_parts` - not the pre-existing
+    accidental `remote="C"` split this used to do by hand, which never
+    split on `\\` at all and so collapsed a Windows path's whole
+    directory structure into one opaque `name` (see `_colonify` for how
+    `group_files` reassembles a Windows drive's parent path once split
+    this way).
     """
     assert not file_path.endswith("/"), "This looks like a directory path"
-    head, colon, tail = file_path.partition(":")
-    remote, path = (head, tail) if colon else ("", head)
-    if path.startswith("/"):
-        path = path[1:]
-    parents = path.split("/")
-    if len(parents) == 1:
-        return FilePathParts(remote=remote, parents=[], name=parents[0])
-    name = parents.pop()
-    return FilePathParts(remote=remote, parents=parents, name=name)
+    return RcPath.parse_parts(file_path)
+
+
+def _to_string(parts: RcPathParts, include_remote: bool, include_bucket: bool) -> str:
+    """Convert `parts` back to a string, may throw for not include_bucket=False."""
+    parents = list(parts.parents)
+    if not include_bucket:
+        parents.pop(0)
+    path = "/".join(parents)
+    if path:
+        path += "/"
+    path += parts.name
+    if include_remote:
+        return f"{parts.remote}{path}"
+    return path
 
 
 class TreeNode:
@@ -157,11 +147,21 @@ def _colonify(path: str) -> str:
     local, colonless path from `parse_file`, not a real remote name - so
     `path` is already a plain absolute local path with no remote segment
     to colon-ify; return it unchanged. Otherwise the first "/" marks the
-    end of the remote name and becomes ":".
+    end of the remote name and becomes ":" - except when that remote name
+    is a Windows drive letter (`parse_file` folds `C:\\...` into
+    `remote="C"`, `parents=[...]`), where the "/" must be *kept* rather
+    than consumed: "C:/Users" is an absolute path, but "C:Users" is a
+    valid, entirely different Windows path meaning "relative to the
+    current directory on the C: drive."
     """
     if path.startswith("/"):
         return path
-    return path.replace("/", ":", 1)
+    head, sep, rest = path.partition("/")
+    if not sep:
+        return path
+    if is_windows_drive_prefix(f"{head}:"):
+        return f"{head}:/{rest}"
+    return f"{head}:{rest}"
 
 
 def _fixup_rclone_paths(outpaths: dict[str, list[str]]) -> dict[str, list[str]]:
@@ -210,7 +210,7 @@ def group_under_remote_bucket(
         bucket = parts[0]
         remote_bucket = f"{remote}{bucket}"
         file_list = out.setdefault(remote_bucket, [])
-        file_list.append(parsed.to_string(include_remote=False, include_bucket=False))
+        file_list.append(_to_string(parsed, include_remote=False, include_bucket=False))
     return out
 
 
