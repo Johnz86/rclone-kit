@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from rclone_kit.rc.paths import RcPath
+from rclone_kit.rc.paths import RcPath, RcPathParts, split_remote_and_path
 
 
 def _abs(path: str) -> str:
@@ -201,3 +201,76 @@ def test_remote_object_name_containing_a_literal_backslash_is_not_split_on_it() 
 
     assert split.fs == "remote:folder"
     assert split.remote == "name\\with\\backslashes.txt"
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected_remote_name", "expected_rest"),
+    [
+        ("remote:path/to/object", "remote", "path/to/object"),
+        ("remote:/path", "remote", "path"),
+        ("/home/user/file.txt", "", "/home/user/file.txt"),
+        ("relative/local/path.txt", "", "relative/local/path.txt"),
+        ("C:\\Users\\example\\file.txt", "", "C:\\Users\\example\\file.txt"),
+    ],
+)
+def test_split_remote_and_path_matches_parse(
+    raw: str, expected_remote_name: str, expected_rest: str
+) -> None:
+    remote_name, rest = split_remote_and_path(raw)
+
+    assert remote_name == expected_remote_name
+    assert rest == expected_rest
+
+
+def test_split_remote_and_path_does_not_resolve_a_bare_local_reference() -> None:
+    # Unlike RcPath.parse, this must not absolutize - callers that only
+    # need the (remote_name, remainder) split want the original string
+    # back untouched.
+    remote_name, rest = split_remote_and_path("relative/local/path.txt")
+
+    assert remote_name == ""
+    assert rest == "relative/local/path.txt"
+
+
+def test_parse_parts_decomposes_a_real_remote_path() -> None:
+    parts = RcPath.parse_parts("dst:TorrentBooks/libgenrs_nonfiction/204000/manifest.txt")
+
+    assert parts == RcPathParts(
+        remote="dst",
+        parents=["TorrentBooks", "libgenrs_nonfiction", "204000"],
+        name="manifest.txt",
+    )
+
+
+def test_parse_parts_decomposes_a_posix_local_path() -> None:
+    parts = RcPath.parse_parts("/srv/data/subdir/manifest.txt")
+
+    assert parts == RcPathParts(remote="", parents=["srv", "data", "subdir"], name="manifest.txt")
+
+
+def test_parse_parts_decomposes_a_windows_drive_local_path() -> None:
+    """The regression case for the Windows local-path grouping bug:
+    `parse_file`/`group_files` previously collapsed everything past the
+    drive letter into one opaque name because they only ever split on
+    "/". `PureWindowsPath` makes this deterministic on any host OS, not
+    only when actually running on Windows - see `RcPath.parse_parts`.
+    """
+    parts = RcPath.parse_parts(r"C:\Users\jan\data\subdir\manifest.txt")
+
+    assert parts == RcPathParts(
+        remote="C", parents=["Users", "jan", "data", "subdir"], name="manifest.txt"
+    )
+
+
+def test_parse_parts_decomposes_a_windows_drive_path_with_forward_slashes() -> None:
+    parts = RcPath.parse_parts("C:/Users/jan/data/subdir/manifest.txt")
+
+    assert parts == RcPathParts(
+        remote="C", parents=["Users", "jan", "data", "subdir"], name="manifest.txt"
+    )
+
+
+def test_parse_parts_decomposes_a_bare_filename() -> None:
+    parts = RcPath.parse_parts("manifest.txt")
+
+    assert parts == RcPathParts(remote="", parents=[], name="manifest.txt")

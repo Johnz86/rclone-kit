@@ -10,7 +10,11 @@ Two RC call shapes need different splits of the same input:
   as the containing directory and `remote` as just the final path component.
 
 `RcPath.parse` produces the first shape; `as_parent_and_name` derives the
-second from it.
+second from it. A third shape, `remote`/`parents`/`name` (a full directory
+decomposition rather than a single split), is available via `parse_parts`
+for callers building a tree from many paths (`group_files`); `split_remote_and_path`
+is the free-standing `(remote_name, remainder)` split the other two shapes
+share, for callers that need only that much.
 
 Every bare local reference (no remote prefix) is absolutized against the
 current process working directory as soon as it is parsed - see
@@ -20,13 +24,13 @@ current process working directory as soon as it is parsed - see
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 _WINDOWS_DRIVE_LETTERS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
 _DRIVE_PREFIX_LENGTH = 2
 
 
-def _is_windows_drive_prefix(path: str) -> bool:
+def is_windows_drive_prefix(path: str) -> bool:
     """True for `C:\\...` / `C:/...` / bare `C:`, which are local paths, not
     an rclone remote named `C`.
     """
@@ -58,6 +62,45 @@ def _resolve_local(path: str) -> str:
     return str(Path(path).resolve())
 
 
+def split_remote_and_path(path: str) -> tuple[str, str]:
+    """Split `path` into `(remote_name, remainder)`, the same shape
+    `RcPath.parse` computes internally, without `_resolve_local`'s
+    cwd-absolutizing side effect.
+
+    For any caller that only needs to know "is there a remote here, and
+    what's left over" - not the RC-ready `fs`/`remote` pair, which
+    requires absolutizing a bare local reference before it crosses the RC
+    boundary (see `_resolve_local`) - and is not about to reparse the
+    same path through `RcPath.parse` for that purpose. Windows-drive-aware
+    like `RcPath.parse`: `C:\\...` reports `remote_name=""` (a local path),
+    never `remote_name="C"`.
+    """
+    if is_windows_drive_prefix(path):
+        return "", path
+    if path.startswith(":"):
+        second_colon = path.find(":", 1)
+        if second_colon == -1:
+            return "", path
+        return path[:second_colon], path[second_colon + 1 :].strip("/")
+    remote_name, colon, rest = path.partition(":")
+    if not colon:
+        return "", path
+    return remote_name, rest.strip("/")
+
+
+@dataclass(frozen=True)
+class RcPathParts:
+    """One path fully decomposed into its remote name, parent directory
+    segments, and final path component - the shape callers that build a
+    directory tree from many paths need (`group_files`), as opposed to
+    `RcPath`'s own `fs`/`remote` RC-call shape.
+    """
+
+    remote: str
+    parents: list[str]
+    name: str
+
+
 @dataclass(frozen=True)
 class RcPath:
     """One rclone path, already split into the `fs` and `remote` RC expects.
@@ -82,7 +125,7 @@ class RcPath:
         would put nothing but a bare `":"` in `fs` and swallow the real
         backend/parameter prefix into `remote`.
         """
-        if _is_windows_drive_prefix(path):
+        if is_windows_drive_prefix(path):
             return cls(fs=path, remote="")
         if path.startswith(":"):
             second_colon = path.find(":", 1)
@@ -93,6 +136,43 @@ class RcPath:
         if not colon:
             return cls(fs=_resolve_local(path), remote="")
         return cls(fs=f"{remote_name}:", remote=rest.strip("/"))
+
+    @classmethod
+    def parse_parts(cls, path: str) -> RcPathParts:
+        """Decompose `path` into `(remote, parents, name)`.
+
+        A real remote's path is always forward-slash-delimited regardless
+        of host OS (rclone remote paths are POSIX-shaped by protocol, not
+        by host), so it splits on `PurePosixPath` - matching
+        `group_files._get_prefix`'s existing precedent for the same
+        reason. A Windows drive-letter local path (`C:\\...` or
+        `C:/...`) splits on `PureWindowsPath` explicitly - not the host's
+        native `Path` - so this is correct (and deterministically
+        testable) on any host OS, not only when actually running on
+        Windows: the drive-letter prefix is itself the unambiguous marker
+        that this string is Windows-shaped, independent of the platform
+        this process happens to run on. Any other local reference (a
+        POSIX absolute path, or a bare relative path) splits on
+        `PurePosixPath` too, the same as a real remote - there is no
+        equivalent unambiguous marker for "this bare, colonless string is
+        Windows-shaped" the way a drive letter is, so - like
+        `_resolve_local` absolutizing every bare local reference the same
+        way regardless of what it looks like - this is treated uniformly
+        rather than guessed at.
+        """
+        if is_windows_drive_prefix(path):
+            pure = PureWindowsPath(path)
+            *parents, name = pure.parts[1:]
+            return RcPathParts(remote=pure.drive.rstrip(":"), parents=parents, name=name)
+        remote_name, rest = split_remote_and_path(path)
+        posix_path = PurePosixPath(rest)
+        posix_parts = posix_path.parts
+        if posix_path.is_absolute():
+            posix_parts = posix_parts[1:]
+        if not posix_parts:
+            return RcPathParts(remote=remote_name, parents=[], name=rest)
+        *parents, name = posix_parts
+        return RcPathParts(remote=remote_name, parents=parents, name=name)
 
     def as_parent_and_name(self) -> RcPath:
         """Return an `RcPath` split at the last path component instead: `fs`
