@@ -15,7 +15,7 @@ from collections.abc import Callable
 import pytest
 
 from rclone_kit.operation import TransferStats
-from rclone_kit.progress import on_progress, watch
+from rclone_kit.progress import ProgressSubscription, on_progress, watch
 
 _WAIT_TIMEOUT = 2.0
 
@@ -219,7 +219,7 @@ class TestStopTimeoutAndReentrancy:
         # the join rather than let Thread.join() raise RuntimeError.
         source = FakeProgressSource(_stats(10), _stats(50), _stats(100))
         received: list[int] = []
-        box: dict[str, object] = {}
+        box: dict[str, ProgressSubscription] = {}
 
         def _callback(snapshot: TransferStats) -> None:
             received.append(snapshot.bytes)
