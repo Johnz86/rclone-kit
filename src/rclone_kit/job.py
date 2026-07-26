@@ -33,10 +33,13 @@ from rclone_kit.exceptions import (
     OperationTimeoutError,
 )
 from rclone_kit.operation import JobState, JobStatus, OperationResult, TransferStats
+from rclone_kit.progress import _DEFAULT_WATCH_INTERVAL_SECONDS, ProgressSubscription
+from rclone_kit.progress import on_progress as _on_progress
+from rclone_kit.progress import watch as _watch
 from rclone_kit.rc.jobs import RcJobNotFoundError, RcJobRef, parse_operation_attempts
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Callable, Iterator, Mapping
 
     from rclone_kit.rc.jobs import RcJobClient
 
@@ -140,6 +143,30 @@ class JobHandle:
             if self._record.is_settled and self._record.latest_stats is not None:
                 return self._record.latest_stats
         return self._monitor.stats_now(self._record)
+
+    def watch(
+        self, *, interval: float = _DEFAULT_WATCH_INTERVAL_SECONDS
+    ) -> Iterator[TransferStats]:
+        """Yield a `TransferStats` snapshot every `interval` seconds until
+        the job settles. The final snapshot is always yielded last. A thin
+        wrapper around `stats()`/`done` - encapsulates the sleep loop,
+        nothing more; see `rclone_kit.progress.watch`."""
+        return _watch(self, interval=interval)
+
+    def on_progress(
+        self,
+        callback: Callable[[TransferStats], None],
+        *,
+        interval: float = _DEFAULT_WATCH_INTERVAL_SECONDS,
+    ) -> ProgressSubscription:
+        """Run `callback` on a dedicated background thread every `interval`
+        seconds until the job settles. Never runs on `_JobMonitor`'s shared
+        poll thread, so one job's slow callback can never delay another
+        job's status polling. A callback exception is logged and
+        swallowed, never crashes the thread. Returns a subscription whose
+        `.stop()`/context-manager exit ends it early; see
+        `rclone_kit.progress.on_progress`."""
+        return _on_progress(self, callback, interval=interval)
 
     def wait(self, timeout: float | None = None) -> OperationResult:
         """Block until the job reaches a terminal state.

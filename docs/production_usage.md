@@ -573,6 +573,42 @@ while not handle.done:
     time.sleep(5)
 ```
 
+This manual loop is not deprecated - it is still the right tool for a caller that wants to interleave
+stats checks with other work on its own thread (e.g. inside a UI event loop) rather than receive a
+callback on a background thread. For most callers, though, `watch()`/`on_progress()` below are the
+recommended idiom: they encapsulate the same loop and remove the two easy ways to get it subtly wrong
+(calling `.stats()` again after `.done` already flipped true, or picking too tight a poll interval).
+
+### `watch()`/`on_progress()`: the recommended progress idiom
+
+`watch()` yields a `TransferStats` snapshot on the calling thread every `interval` seconds until the job
+settles, with the final snapshot always yielded last:
+
+```python
+handle = rclone.start_copy(source, destination)
+for stats in handle.watch(interval=5):
+    print(f"{stats.bytes}/{stats.total_bytes} bytes, {stats.transfers} files")
+result = handle.wait()
+```
+
+`on_progress()` runs a callback on its own dedicated background thread instead, so progress reporting
+never blocks the caller's thread and one job's slow callback can never delay another job's status
+polling (each subscription gets its own thread; none of them share `JobHandle`'s internal poll thread).
+It returns a `ProgressSubscription` that is also a context manager:
+
+```python
+def report(stats):
+    print(f"{stats.bytes}/{stats.total_bytes} bytes")
+
+handle = rclone.start_copy(source, destination)
+with handle.on_progress(report, interval=5):
+    result = handle.wait()
+```
+
+A callback exception is logged and swallowed rather than crashing the subscription thread. Both methods
+are defined once against a narrow `ProgressSource` Protocol and work identically on the
+`PartitionedJobHandle` `start_copy_files()`/`start_delete_files()` return - see below.
+
 ### `copy_files()`/`delete_files()`: partitioned operations under one result
 
 `copy_files()` and `delete_files()` partition their file list by common directory/remote prefix, so
@@ -591,6 +627,24 @@ if not result.ok:
 `copy_files()` and `delete_files()` each return a single `OperationResult` whose `job_ids`/`attempts`/
 `stats` span every partition. A file entry that does not exist is not an error in either operation - it
 is simply not visited during the underlying walk.
+
+`start_copy_files()`/`start_delete_files()` mirror `start_copy()`/`copy()`: they start every partition
+job immediately and return a non-blocking `PartitionedJobHandle` instead of waiting.
+`PartitionedJobHandle` exposes the same `.done`/`.stats()`/`.watch()`/`.on_progress()`/`.wait()`/
+`.cancel()` surface as `JobHandle`, aggregated across every partition:
+
+```python
+with rclone.start_copy_files(source, destination, ["a.txt", "b/c.txt"]) as handle:
+    for stats in handle.watch(interval=5):
+        print(f"{stats.bytes}/{stats.total_bytes} bytes across all partitions")
+    result = handle.wait()
+```
+
+Unlike the blocking wrappers, neither non-blocking entry point supports `max_partition_workers` pacing -
+a fire-and-forget start has no notion of "outstanding" jobs to throttle - and `start_delete_files()` does
+not support `rmdirs=True`: that step only starts once a given partition's delete has been observed to
+succeed, which has no non-blocking equivalent without a background orchestrator. Use the blocking
+`delete_files(rmdirs=True)` for that case.
 
 ### `ls_stream()`/`copy_bytes()`: bounded-memory streaming and byte ranges
 
@@ -698,6 +752,7 @@ with rclone.serve_http("archive:models") as server:
         dst_path=Path("/srv/models/model-v4.bin"),
         chunk_size=SizeSuffix("32M").as_int(),
         n_threads=8,
+        on_progress=lambda done, total: print(f"{done}/{total} bytes"),
     )
 
     header = server.get(
@@ -705,6 +760,11 @@ with rclone.serve_http("archive:models") as server:
         range=Range(start=0, end=SizeSuffix("4K")),
     )
 ```
+
+`on_progress`, when given, is called once per completed chunk (not a smooth per-byte stream, since each
+chunk is fetched as one blocking HTTP request) with the running byte total and the overall size. This
+has no relationship to the `JobHandle`/`PartitionedJobHandle` progress model above - it is plain chunked
+HTTP I/O, not an rclone RC job.
 
 The `Range` end is exclusive. The server context manager shuts down the
 server even if a download raises. Bind to the automatically selected

@@ -72,10 +72,13 @@ from rclone_kit.operations.transfer_ops_embedded import (
     copy_files_embedded,
     delete_files_embedded,
     purge_dir_embedded,
+    start_copy_files_embedded,
+    start_delete_files_embedded,
 )
 from rclone_kit.operations.transfer_options import TransferOptions, encode_transfer_options_config
 from rclone_kit.operations.walk import walk
 from rclone_kit.optional_dependency import MissingOptionalDependencyError
+from rclone_kit.partitioned_job import PartitionedJobHandle
 from rclone_kit.rc.client import RcClient
 from rclone_kit.rc.fs_spec import encode_fs_spec
 from rclone_kit.rc.jobs import RcloneRcJobClient
@@ -528,6 +531,47 @@ class Rclone:
             multi_thread_streams=multi_thread_streams,
         )
 
+    def start_copy_files(
+        self,
+        src: str,
+        dst: str,
+        files: list[str] | Path,
+        check: bool | None = None,
+        max_backlog: int | None = None,
+        checkers: int | None = None,
+        transfers: int | None = None,
+        low_level_retries: int | None = None,
+        retries: int | None = None,
+        retries_sleep: str | None = None,
+        metadata: bool | None = None,
+        timeout: str | None = None,
+        multi_thread_streams: int | None = None,
+    ) -> PartitionedJobHandle:
+        """Start `copy_files()`'s partitioned jobs without waiting, and
+        return a non-blocking `PartitionedJobHandle` - mirroring
+        `start_copy()`/`copy()`. Unlike `copy_files()`, every partition
+        job is started immediately; there is no `max_partition_workers`
+        pacing here.
+        """
+        return start_copy_files_embedded(
+            self._ensure_job_monitor(),
+            self._client_id,
+            self.config,
+            src,
+            dst,
+            files,
+            check=check,
+            max_backlog=max_backlog,
+            checkers=checkers,
+            transfers=transfers,
+            low_level_retries=low_level_retries,
+            retries=retries,
+            retries_sleep=retries_sleep,
+            metadata=metadata,
+            timeout=timeout,
+            multi_thread_streams=multi_thread_streams,
+        )
+
     def _ensure_job_monitor(self) -> _JobMonitor:
         if self._job_monitor is None:
             self._job_monitor = _JobMonitor(RcloneRcJobClient(self._rc_client))
@@ -727,6 +771,27 @@ class Rclone:
             check=check,
             rmdirs=rmdirs,
             max_partition_workers=max_partition_workers,
+        )
+
+    def start_delete_files(
+        self,
+        files: str | File | list[str] | list[File],
+        check: bool | None = None,
+    ) -> PartitionedJobHandle:
+        """Start `delete_files()`'s partitioned jobs without waiting, and
+        return a non-blocking `PartitionedJobHandle` - mirroring
+        `start_copy()`/`copy()`. Unlike `delete_files()`, every partition
+        job is started immediately (no `max_partition_workers` pacing),
+        and `rmdirs=True` is not supported - it is a sequential
+        per-partition follow-up with no non-blocking equivalent; use
+        `delete_files(rmdirs=True)` for that case.
+        """
+        return start_delete_files_embedded(
+            self._ensure_job_monitor(),
+            self._client_id,
+            self.config,
+            convert_to_filestr_list(files),
+            check=check,
         )
 
     def exists(self, src: Dir | Remote | str | File) -> bool:

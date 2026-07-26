@@ -3,6 +3,7 @@
 import logging
 import time
 import warnings
+from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from html.parser import HTMLParser
@@ -303,8 +304,14 @@ class HttpServer:
         chunk_size: int = 32 * 1024 * 1024,
         n_threads: int = 16,
         range: Range | None = None,
+        on_progress: Callable[[int, int], None] | None = None,
     ) -> Path:
         """Copy file from src to dst, fetching chunks in parallel.
+
+        `on_progress`, when given, is called with (bytes completed, total
+        bytes) as each chunk finishes - one call per chunk, not a smooth
+        per-byte stream, since each chunk is fetched by `download()` as one
+        blocking HTTP request.
 
         Raises `HttpFetchError` if any chunk fails to download; downloaded
         chunk files are cleaned up before re-raising.
@@ -313,10 +320,11 @@ class HttpServer:
 
         if range is None:
             range = Range(0, self.size(src_path))
+        total_bytes = range.end.as_int() - range.start.as_int()
 
         try:
             with ThreadPoolExecutor(max_workers=n_threads) as executor:
-                futures: list[Future[Path]] = []
+                futures: list[tuple[Future[Path], int]] = []
                 start: int
                 for start in _range(range.start.as_int(), range.end.as_int(), chunk_size):
                     end = min(SizeSuffix(start + chunk_size).as_int(), range.end.as_int())
@@ -326,14 +334,19 @@ class HttpServer:
                         dst = dst_path.with_suffix(f".{r.start}")
                         return self.download(src_path, dst, r)
 
-                    futures.append(executor.submit(task, r))
+                    futures.append((executor.submit(task, r), end - start))
 
                 errors: list[Exception] = []
-                for fut in futures:
+                bytes_completed = 0
+                for fut, chunk_length in futures:
                     try:
                         finished.append(fut.result())
                     except Exception as e:
                         errors.append(e)
+                        continue
+                    bytes_completed += chunk_length
+                    if on_progress is not None:
+                        on_progress(bytes_completed, total_bytes)
 
                 if errors:
                     warnings.warn(f"Failed to download chunked: {errors}", stacklevel=2)

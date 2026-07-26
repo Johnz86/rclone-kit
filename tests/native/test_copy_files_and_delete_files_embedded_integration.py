@@ -207,3 +207,53 @@ def test_delete_files_empty_list_is_a_noop(embedded: Rclone) -> None:
     result = embedded.delete_files([])
 
     assert result.ok is True
+
+
+def test_start_copy_files_is_non_blocking_and_watch_reaches_a_final_snapshot(
+    tmp_path: Path, embedded: Rclone
+) -> None:
+    src = tmp_path / "src"
+    dst = tmp_path / "dst"
+    src.mkdir()
+    dst.mkdir()
+    (src / "a.txt").write_bytes(b"aaa")
+    (src / "b.txt").write_bytes(b"bbb")
+
+    with embedded.start_copy_files(str(src), str(dst), ["a.txt", "b.txt"]) as handle:
+        snapshots = list(handle.watch(interval=0.05))
+        result = handle.wait()
+
+    assert snapshots[-1].bytes == snapshots[-1].total_bytes
+    assert result.ok is True
+    assert (dst / "a.txt").read_bytes() == b"aaa"
+    assert (dst / "b.txt").read_bytes() == b"bbb"
+
+
+def test_start_copy_files_empty_list_returns_a_settled_handle(
+    tmp_path: Path, embedded: Rclone
+) -> None:
+    src = tmp_path / "src"
+    dst = tmp_path / "dst"
+    src.mkdir()
+    dst.mkdir()
+
+    handle = embedded.start_copy_files(str(src), str(dst), [])
+
+    assert handle.done is True
+    assert handle.wait().ok is True
+
+
+def test_start_delete_files_is_non_blocking_and_removes_the_file(
+    tmp_path: Path, embedded: Rclone, local_remote: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "a.txt").write_bytes(b"a")
+    (tmp_path / "sub" / "b.txt").write_bytes(b"b")
+
+    with embedded.start_delete_files([f"{local_remote}:sub/a.txt"]) as handle:
+        result = handle.wait()
+
+    assert result.ok is True
+    assert not (tmp_path / "sub" / "a.txt").exists()
+    assert (tmp_path / "sub" / "b.txt").exists()

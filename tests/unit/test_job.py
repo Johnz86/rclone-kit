@@ -13,10 +13,15 @@ from __future__ import annotations
 
 import threading
 import time
-from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING
 
 import pytest
+from fake_job_client import POLL_INTERVAL as _POLL_INTERVAL
+from fake_job_client import WAIT_TIMEOUT as _WAIT_TIMEOUT
+from fake_job_client import FakeJobClient
+from fake_job_client import monitor as _monitor
+from fake_job_client import status as _status
+from fake_job_client import stub_stats as _stub_stats
+from fake_job_client import wait_until as _wait_until
 
 from rclone_kit.exceptions import (
     JobExpiredError,
@@ -24,121 +29,8 @@ from rclone_kit.exceptions import (
     OperationFailedError,
     OperationTimeoutError,
 )
-from rclone_kit.job import _JobMonitor
-from rclone_kit.operation import JobState, JobStatus, TransferStats
+from rclone_kit.operation import JobState, TransferStats
 from rclone_kit.rc.jobs import RcJobNotFoundError, RcJobRef
-
-if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping
-
-_POLL_INTERVAL = 0.02
-_WAIT_TIMEOUT = 2.0
-_NOW = datetime.now(UTC)
-
-
-def _status(
-    job_id: int, execute_id: str, group: str, *, state: JobState, **overrides: object
-) -> JobStatus:
-    fields: dict[str, object] = {
-        "job_id": job_id,
-        "execute_id": execute_id,
-        "group": group,
-        "state": state,
-        "started_at": _NOW,
-        "ended_at": _NOW + timedelta(seconds=1) if state.is_terminal else None,
-        "duration": 1.0 if state.is_terminal else 0.0,
-        "error": None,
-        "output": {},
-    }
-    fields.update(overrides)
-    return JobStatus(**fields)  # type: ignore[arg-type]
-
-
-class FakeJobClient:
-    """A fake `RcJobClient`. `status()` returns a queued sequence of
-    `JobStatus`/exception entries per job ID, repeating the last queued
-    entry; with nothing queued it returns a synthetic RUNNING status, so a
-    test can start a job and queue its terminal status afterward without
-    racing the monitor thread's first poll.
-    """
-
-    def __init__(self) -> None:
-        self.starts: list[tuple[str, dict, str]] = []
-        self.stop_calls: list[RcJobRef] = []
-        self.delete_stats_calls: list[str] = []
-        self._next_job_id = 1
-        self._queues: dict[int, list[JobStatus | Exception]] = {}
-        self._stats_by_group: dict[str, TransferStats] = {}
-        self._stats_calls_by_group: dict[str, int] = {}
-
-    def start(self, method: str, params: Mapping[str, object], group: str) -> RcJobRef:
-        job_id = self._next_job_id
-        self._next_job_id += 1
-        self.starts.append((method, dict(params), group))
-        return RcJobRef(job_id=job_id, execute_id=f"exec-{job_id}", group=group)
-
-    def queue_status(self, job_id: int, *entries: JobStatus | Exception) -> None:
-        self._queues[job_id] = list(entries)
-
-    def status(self, ref: RcJobRef) -> JobStatus:
-        queue = self._queues.get(ref.job_id)
-        if not queue:
-            return _status(ref.job_id, ref.execute_id, ref.group, state=JobState.RUNNING)
-        entry = queue[0] if len(queue) == 1 else queue.pop(0)
-        if isinstance(entry, Exception):
-            raise entry
-        return entry
-
-    def set_stats(self, group: str, stats: TransferStats) -> None:
-        self._stats_by_group[group] = stats
-
-    def stats(self, group: str) -> TransferStats:
-        self._stats_calls_by_group[group] = self._stats_calls_by_group.get(group, 0) + 1
-        stats = self._stats_by_group.get(group)
-        if stats is None:
-            raise AssertionError(f"no stats queued for group {group!r}")
-        return stats
-
-    def stop(self, ref: RcJobRef) -> None:
-        self.stop_calls.append(ref)
-
-    def delete_stats(self, group: str) -> None:
-        self.delete_stats_calls.append(group)
-
-
-def _monitor(job_client: FakeJobClient) -> _JobMonitor:
-    return _JobMonitor(job_client, poll_interval_seconds=_POLL_INTERVAL, close_wait_seconds=2.0)
-
-
-def _wait_until(predicate: Callable[[], bool], timeout: float = _WAIT_TIMEOUT) -> None:
-    """Poll `predicate` until it's true, since `cancel()` dispatches its RC
-    calls on a background thread and must not be observed synchronously."""
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if predicate():
-            return
-        time.sleep(0.01)
-    assert predicate()
-
-
-def _stub_stats(job_client: FakeJobClient, group: str) -> None:
-    job_client.set_stats(
-        group,
-        TransferStats(
-            bytes=100,
-            total_bytes=100,
-            checks=0,
-            total_checks=0,
-            transfers=1,
-            total_transfers=1,
-            errors=0,
-            fatal_error=False,
-            retry_error=False,
-            speed=10.0,
-            eta_seconds=None,
-            elapsed_seconds=1.0,
-        ),
-    )
 
 
 class TestLazyMonitorStart:
@@ -777,6 +669,113 @@ class TestShutdown:
         monitor.shutdown(deadline_seconds=_WAIT_TIMEOUT)
 
         assert not monitor_thread.is_alive()
+
+
+class TestWatchAndOnProgress:
+    def test_watch_yields_snapshots_until_the_job_settles(self) -> None:
+        job_client = FakeJobClient()
+        monitor = _monitor(job_client)
+        handle = monitor.start_job(
+            "sync/copy", {}, group="g1", operation="copy", source="a", destination="b", check=False
+        )
+        job_client.set_stats(
+            "g1",
+            TransferStats(
+                bytes=10,
+                total_bytes=100,
+                checks=0,
+                total_checks=0,
+                transfers=0,
+                total_transfers=1,
+                errors=0,
+                fatal_error=False,
+                retry_error=False,
+                speed=1.0,
+                eta_seconds=None,
+                elapsed_seconds=1.0,
+            ),
+        )
+
+        seen: list[int] = []
+
+        def _drive() -> None:
+            for snapshot in handle.watch(interval=0.01):
+                seen.append(snapshot.bytes)
+                if len(seen) == 1:
+                    job_client.set_stats(
+                        "g1",
+                        TransferStats(
+                            bytes=100,
+                            total_bytes=100,
+                            checks=0,
+                            total_checks=0,
+                            transfers=1,
+                            total_transfers=1,
+                            errors=0,
+                            fatal_error=False,
+                            retry_error=False,
+                            speed=1.0,
+                            eta_seconds=None,
+                            elapsed_seconds=1.0,
+                        ),
+                    )
+                    job_client.queue_status(
+                        handle.job_id,
+                        _status(handle.job_id, handle.execute_id, "g1", state=JobState.SUCCEEDED),
+                    )
+
+        thread = threading.Thread(target=_drive)
+        thread.start()
+        thread.join(timeout=_WAIT_TIMEOUT)
+
+        assert not thread.is_alive()
+        assert seen[0] == 10
+        assert seen[-1] == 100
+        assert handle.done
+
+    def test_watch_on_an_already_settled_job_yields_the_final_snapshot_once(self) -> None:
+        job_client = FakeJobClient()
+        monitor = _monitor(job_client)
+        _stub_stats(job_client, "g1")
+        handle = monitor.start_job(
+            "sync/copy", {}, group="g1", operation="copy", source="a", destination="b", check=True
+        )
+        job_client.queue_status(
+            handle.job_id, _status(handle.job_id, handle.execute_id, "g1", state=JobState.SUCCEEDED)
+        )
+        handle.wait(timeout=_WAIT_TIMEOUT)
+
+        snapshots = list(handle.watch(interval=0.01))
+
+        assert len(snapshots) == 1
+        assert snapshots[0].bytes == 100
+
+    def test_on_progress_runs_on_a_dedicated_thread_and_reports_the_final_snapshot(self) -> None:
+        job_client = FakeJobClient()
+        monitor = _monitor(job_client)
+        _stub_stats(job_client, "g1")
+        handle = monitor.start_job(
+            "sync/copy", {}, group="g1", operation="copy", source="a", destination="b", check=True
+        )
+        job_client.queue_status(
+            handle.job_id, _status(handle.job_id, handle.execute_id, "g1", state=JobState.SUCCEEDED)
+        )
+        handle.wait(timeout=_WAIT_TIMEOUT)
+        received: list[TransferStats] = []
+        thread_names: list[str] = []
+
+        def _callback(snapshot: TransferStats) -> None:
+            received.append(snapshot)
+            thread_names.append(threading.current_thread().name)
+
+        subscription = handle.on_progress(_callback, interval=0.01)
+        _wait_until(lambda: len(received) >= 1)
+        subscription.stop()
+
+        assert received
+        assert received[-1].bytes == 100
+        assert all(name != threading.current_thread().name for name in thread_names)
+        assert all(name != "rclone-kit-job-monitor" for name in thread_names)
 
 
 class TestContextManager:

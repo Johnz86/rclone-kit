@@ -18,10 +18,17 @@ hierarchy), not a raw `RcCallError`.
 
 `copy_files_embedded`/`delete_files_embedded` are composite: each
 partitions its file list via `group_files()`, starts one job per
-partition, waits on every partition (never aborting collection early on a
-partial failure), and folds every partition's `OperationResult` into a
-single aggregate via `_aggregate_results()` before optionally raising
-once, for the aggregate as a whole.
+partition (in batches of at most `max_partition_workers`, waiting for each
+batch before starting the next), and folds every partition's
+`OperationResult` into a single aggregate via `partitioned_job.aggregate_results()`
+before optionally raising once, for the aggregate as a whole.
+`start_copy_files_embedded()`/`start_delete_files_embedded()` are their
+non-blocking counterparts: every partition job is started immediately (no
+`max_partition_workers` batching - a fire-and-forget entry point has no
+notion of "outstanding" jobs to pace), returning a `PartitionedJobHandle`
+a caller can `.watch()`/`.wait()` like a plain `JobHandle`.
+`start_delete_files_embedded()` does not support `rmdirs=True`; see its
+own docstring for why.
 
 `copy_bytes_embedded` starts the downstream `rclonekit/readrange` endpoint
 as a job too, even though a byte range is bounded (not partitioned like
@@ -33,32 +40,34 @@ synchronously for the whole transfer.
 
 from __future__ import annotations
 
+import shutil
+import tempfile
 import uuid
-from datetime import UTC, datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING
 
 from rclone_kit.convert import convert_to_str
-from rclone_kit.exceptions import (
-    OperationCancelledError,
-    OperationFailedError,
-)
 from rclone_kit.group_files import group_files
-from rclone_kit.operation import OperationResult, OperationWarning, TransferStats
+from rclone_kit.operation import OperationResult
 from rclone_kit.operations.transfer_options import TransferOptions, encode_transfer_options_config
+from rclone_kit.partitioned_job import (
+    PartitionedJobHandle,
+    aggregate_results,
+    raise_if_check_failed,
+)
 from rclone_kit.rc.fs_spec import encode_fs_spec
 from rclone_kit.rc.paths import RcPath
 from rclone_kit.types import SizeSuffix
 from rclone_kit.util import get_check, write_files_from
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping
 
     from rclone_kit.config import Config
     from rclone_kit.dir import Dir
     from rclone_kit.file import File
-    from rclone_kit.job import _JobMonitor
+    from rclone_kit.job import JobHandle, _JobMonitor
 
 _COPY_FILES_DEFAULT_CHECKERS = 1000
 _COPY_FILES_DEFAULT_TRANSFERS = 32
@@ -159,111 +168,82 @@ def cleanup_embedded(monitor: _JobMonitor, client_id: uuid.UUID, src: str) -> Op
     return handle.wait()
 
 
-def _sum_stats(stats: Sequence[TransferStats]) -> TransferStats:
-    """Combine every partition's final stats into one snapshot.
-
-    Only genuinely cumulative counters (bytes/checks/transfers/errors) are
-    summed; `speed`/`eta_seconds`/`elapsed_seconds` describe a single,
-    already-finished job's own timeline and are not meaningfully summable
-    across partitions that ran concurrently, so they are reported as
-    `0.0`/`None` in the aggregate rather than inflated by partition count.
-    """
-    return TransferStats(
-        bytes=sum(s.bytes for s in stats),
-        total_bytes=sum(s.total_bytes for s in stats),
-        checks=sum(s.checks for s in stats),
-        total_checks=sum(s.total_checks for s in stats),
-        transfers=sum(s.transfers for s in stats),
-        total_transfers=sum(s.total_transfers for s in stats),
-        errors=sum(s.errors for s in stats),
-        fatal_error=any(s.fatal_error for s in stats),
-        retry_error=any(s.retry_error for s in stats),
-        speed=0.0,
-        eta_seconds=None,
-        elapsed_seconds=0.0,
+def _read_copy_files_list(files: list[str] | Path) -> list[str]:
+    payload: list[str] = (
+        files
+        if isinstance(files, list)
+        else [f.strip() for f in files.read_text().splitlines() if f.strip()]
     )
+    for path in payload:
+        if ":" in path:
+            raise ValueError(
+                f"Invalid file path, contains a remote, which is not allowed for copy_files: {path}"
+            )
+    return payload
 
 
-def _aggregate_results(
-    operation: str,
-    source: str | None,
-    destination: str | None,
-    results: Sequence[OperationResult],
-) -> OperationResult:
-    """Fold every partition's `OperationResult` into a single composite one.
-
-    An empty `results` (no partition needed to run - e.g. an empty input
-    file list) yields a trivial `ok=True`, no-jobs-started result.
-    """
-    if not results:
-        now = datetime.now(UTC)
-        return OperationResult(
-            ok=True,
-            operation=operation,
-            source=source,
-            destination=destination,
-            job_ids=(),
-            stats=None,
-            warnings=(),
-            attempts=(),
-            started_at=now,
-            ended_at=now,
-            duration=0.0,
-            cancelled=False,
-            error=None,
-        )
-
-    failures = [result for result in results if not result.ok]
-    ok = not failures
-    job_ids = tuple(job_id for result in results for job_id in result.job_ids)
-    attempts = tuple(attempt for result in results for attempt in result.attempts)
-    warnings = tuple(
-        OperationWarning(
-            message=f"{failure.source} -> {failure.destination}: {failure.error}",
-            detail={
-                "source": failure.source,
-                "destination": failure.destination,
-                "error": failure.error,
-                "job_ids": failure.job_ids,
-            },
-        )
-        for failure in failures
+def _copy_files_partitions(
+    payload: list[str],
+    *,
+    max_backlog: int | None,
+    checkers: int | None,
+    transfers: int | None,
+    low_level_retries: int | None,
+    retries: int | None,
+    retries_sleep: str | None,
+    metadata: bool | None,
+    timeout: str | None,
+    multi_thread_streams: int | None,
+) -> tuple[list[tuple[str, list[str]]], Mapping[str, object]]:
+    datalists: dict[str, list[str]] = group_files(payload, fully_qualified=False)
+    options = TransferOptions(
+        checkers=_COPY_FILES_DEFAULT_CHECKERS if checkers is None else checkers,
+        transfers=_COPY_FILES_DEFAULT_TRANSFERS if transfers is None else transfers,
+        low_level_retries=(
+            _COPY_FILES_DEFAULT_LOW_LEVEL_RETRIES
+            if low_level_retries is None
+            else low_level_retries
+        ),
+        retries=_COPY_FILES_DEFAULT_RETRIES if retries is None else retries,
+        multi_thread_streams=multi_thread_streams,
+        retries_sleep=retries_sleep,
+        timeout=timeout,
+        max_backlog=max_backlog,
+        metadata=metadata,
     )
-    stats_list = [result.stats for result in results if result.stats is not None]
-    stats = _sum_stats(stats_list) if stats_list else None
-    started_at = min(result.started_at for result in results)
-    ended_at = max(result.ended_at for result in results)
-    cancelled = bool(failures) and all(failure.cancelled for failure in failures)
-    error = (
-        None
-        if ok
-        else "; ".join(
-            f"{failure.source} -> {failure.destination}: {failure.error}" for failure in failures
-        )
-    )
-    return OperationResult(
-        ok=ok,
-        operation=operation,
-        source=source,
-        destination=destination,
-        job_ids=job_ids,
-        stats=stats,
-        warnings=warnings,
-        attempts=attempts,
-        started_at=started_at,
-        ended_at=ended_at,
-        duration=(ended_at - started_at).total_seconds(),
-        cancelled=cancelled,
-        error=error,
-    )
+    return list(datalists.items()), encode_transfer_options_config(options)
 
 
-def _raise_if_check_failed(check: bool, aggregate: OperationResult) -> None:
-    if not check or aggregate.ok:
-        return
-    if aggregate.cancelled:
-        raise OperationCancelledError(aggregate)
-    raise OperationFailedError(aggregate)
+def _start_copy_partition(
+    monitor: _JobMonitor,
+    client_id: uuid.UUID,
+    config: Config,
+    tmpdir: Path,
+    src_path: str,
+    dst_path: str,
+    partition_files: list[str],
+    config_overlay: Mapping[str, object],
+) -> JobHandle:
+    partition_dir = tmpdir / uuid.uuid4().hex
+    partition_dir.mkdir()
+    filepath = write_files_from(partition_dir, partition_files)
+    params: dict[str, object] = {
+        "srcFs": encode_fs_spec(config, src_path),
+        "dstFs": encode_fs_spec(config, dst_path),
+        "createEmptySrcDirs": False,
+        "_filter": {"FilesFrom": [str(filepath)]},
+    }
+    if config_overlay:
+        params["_config"] = dict(config_overlay)
+    return monitor.start_job(
+        "rclonekit/copy",
+        params,
+        group=_new_group(client_id),
+        operation="copy_files",
+        source=src_path,
+        destination=dst_path,
+        check=False,
+    )
 
 
 def copy_files_embedded(
@@ -301,75 +281,146 @@ def copy_files_embedded(
     failure never loses a still-running sibling partition's result.
     """
     check = get_check(check)
-    payload: list[str] = (
-        files
-        if isinstance(files, list)
-        else [f.strip() for f in files.read_text().splitlines() if f.strip()]
-    )
+    payload = _read_copy_files_list(files)
     if len(payload) == 0:
-        return _aggregate_results("copy_files", src, dst, [])
+        return aggregate_results("copy_files", src, dst, [])
 
-    for path in payload:
-        if ":" in path:
-            raise ValueError(
-                f"Invalid file path, contains a remote, which is not allowed for copy_files: {path}"
-            )
-
-    datalists: dict[str, list[str]] = group_files(payload, fully_qualified=False)
-    partitions = list(datalists.items())
-    options = TransferOptions(
-        checkers=_COPY_FILES_DEFAULT_CHECKERS if checkers is None else checkers,
-        transfers=_COPY_FILES_DEFAULT_TRANSFERS if transfers is None else transfers,
-        low_level_retries=(
-            _COPY_FILES_DEFAULT_LOW_LEVEL_RETRIES
-            if low_level_retries is None
-            else low_level_retries
-        ),
-        retries=_COPY_FILES_DEFAULT_RETRIES if retries is None else retries,
-        multi_thread_streams=multi_thread_streams,
-        retries_sleep=retries_sleep,
-        timeout=timeout,
+    partitions, config_overlay = _copy_files_partitions(
+        payload,
         max_backlog=max_backlog,
+        checkers=checkers,
+        transfers=transfers,
+        low_level_retries=low_level_retries,
+        retries=retries,
+        retries_sleep=retries_sleep,
         metadata=metadata,
+        timeout=timeout,
+        multi_thread_streams=multi_thread_streams,
     )
-    config_overlay = encode_transfer_options_config(options)
     batch_size = len(partitions) if max_partition_workers is None else max(1, max_partition_workers)
 
     results: list[OperationResult] = []
     with TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
         for batch_start in range(0, len(partitions), batch_size):
-            handles = []
-            for offset, (common_prefix, partition_files) in enumerate(
-                partitions[batch_start : batch_start + batch_size]
-            ):
-                src_path = f"{src}/{common_prefix}" if common_prefix else src
-                dst_path = f"{dst}/{common_prefix}" if common_prefix else dst
-                partition_dir = Path(tmpdir) / str(batch_start + offset)
-                partition_dir.mkdir()
-                filepath = write_files_from(partition_dir, partition_files)
-                params: dict[str, object] = {
-                    "srcFs": encode_fs_spec(config, src_path),
-                    "dstFs": encode_fs_spec(config, dst_path),
-                    "createEmptySrcDirs": False,
-                    "_filter": {"FilesFrom": [str(filepath)]},
-                }
-                if config_overlay:
-                    params["_config"] = config_overlay
-                handle = monitor.start_job(
-                    "rclonekit/copy",
-                    params,
-                    group=_new_group(client_id),
-                    operation="copy_files",
-                    source=src_path,
-                    destination=dst_path,
-                    check=False,
+            handles = [
+                _start_copy_partition(
+                    monitor,
+                    client_id,
+                    config,
+                    tmpdir_path,
+                    f"{src}/{common_prefix}" if common_prefix else src,
+                    f"{dst}/{common_prefix}" if common_prefix else dst,
+                    partition_files,
+                    config_overlay,
                 )
-                handles.append(handle)
+                for common_prefix, partition_files in partitions[
+                    batch_start : batch_start + batch_size
+                ]
+            ]
             results.extend(handle.wait() for handle in handles)
 
-    aggregate = _aggregate_results("copy_files", src, dst, results)
-    _raise_if_check_failed(check, aggregate)
+    aggregate = aggregate_results("copy_files", src, dst, results)
+    raise_if_check_failed(check, aggregate)
     return aggregate
+
+
+def start_copy_files_embedded(
+    monitor: _JobMonitor,
+    client_id: uuid.UUID,
+    config: Config,
+    src: str,
+    dst: str,
+    files: list[str] | Path,
+    *,
+    check: bool | None = None,
+    max_backlog: int | None = None,
+    checkers: int | None = None,
+    transfers: int | None = None,
+    low_level_retries: int | None = None,
+    retries: int | None = None,
+    retries_sleep: str | None = None,
+    metadata: bool | None = None,
+    timeout: str | None = None,
+    multi_thread_streams: int | None = None,
+) -> PartitionedJobHandle:
+    """Start every `copy_files()` partition job immediately and return a
+    non-blocking `PartitionedJobHandle` - unlike `copy_files_embedded`'s
+    own `max_partition_workers` batching, every partition job is started
+    up front; pacing outstanding jobs is only available through the
+    blocking `copy_files()` wrapper.
+
+    The partitions' `--files-from` lists live in a directory created with
+    `tempfile.mkdtemp` (not a `with TemporaryDirectory()` block, since the
+    jobs reading it are still running when this function returns); it is
+    removed once `PartitionedJobHandle.wait()` observes every partition
+    settled.
+    """
+    check = get_check(check)
+    payload = _read_copy_files_list(files)
+    if len(payload) == 0:
+        return PartitionedJobHandle(
+            (), operation="copy_files", source=src, destination=dst, check=check
+        )
+
+    partitions, config_overlay = _copy_files_partitions(
+        payload,
+        max_backlog=max_backlog,
+        checkers=checkers,
+        transfers=transfers,
+        low_level_retries=low_level_retries,
+        retries=retries,
+        retries_sleep=retries_sleep,
+        metadata=metadata,
+        timeout=timeout,
+        multi_thread_streams=multi_thread_streams,
+    )
+    tmpdir = Path(tempfile.mkdtemp(prefix="rclone-kit-copy-files-"))
+    handles = [
+        _start_copy_partition(
+            monitor,
+            client_id,
+            config,
+            tmpdir,
+            f"{src}/{common_prefix}" if common_prefix else src,
+            f"{dst}/{common_prefix}" if common_prefix else dst,
+            partition_files,
+            config_overlay,
+        )
+        for common_prefix, partition_files in partitions
+    ]
+    return PartitionedJobHandle(
+        handles,
+        operation="copy_files",
+        source=src,
+        destination=dst,
+        check=check,
+        cleanup=lambda: shutil.rmtree(tmpdir, ignore_errors=True),
+    )
+
+
+def _start_delete_partition(
+    monitor: _JobMonitor,
+    client_id: uuid.UUID,
+    config: Config,
+    tmpdir: Path,
+    remote_root: str,
+    remote_files: list[str],
+    config_overlay: Mapping[str, object],
+) -> JobHandle:
+    partition_dir = tmpdir / uuid.uuid4().hex
+    partition_dir.mkdir()
+    filepath = write_files_from(partition_dir, remote_files)
+    fs = encode_fs_spec(config, remote_root)
+    return monitor.start_job(
+        "operations/delete",
+        {"fs": fs, "_filter": {"FilesFrom": [str(filepath)]}, "_config": dict(config_overlay)},
+        group=_new_group(client_id),
+        operation="delete_files",
+        source=remote_root,
+        destination=None,
+        check=False,
+    )
 
 
 def delete_files_embedded(
@@ -393,7 +444,7 @@ def delete_files_embedded(
     """
     check = get_check(check)
     if len(files) == 0:
-        return _aggregate_results("delete_files", None, None, [])
+        return aggregate_results("delete_files", None, None, [])
 
     datalists: dict[str, list[str]] = group_files(list(files))
     partitions = list(datalists.items())
@@ -402,36 +453,35 @@ def delete_files_embedded(
 
     results: list[OperationResult] = []
     with TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
         for batch_start in range(0, len(partitions), batch_size):
-            handles = []
-            for offset, (remote_root, remote_files) in enumerate(
-                partitions[batch_start : batch_start + batch_size]
-            ):
-                partition_dir = Path(tmpdir) / str(batch_start + offset)
-                partition_dir.mkdir()
-                filepath = write_files_from(partition_dir, remote_files)
-                fs = encode_fs_spec(config, remote_root)
-                handle = monitor.start_job(
-                    "operations/delete",
-                    {
-                        "fs": fs,
-                        "_filter": {"FilesFrom": [str(filepath)]},
-                        "_config": config_overlay,
-                    },
-                    group=_new_group(client_id),
-                    operation="delete_files",
-                    source=remote_root,
-                    destination=None,
-                    check=False,
+            batch = partitions[batch_start : batch_start + batch_size]
+            handles = [
+                (
+                    remote_root,
+                    _start_delete_partition(
+                        monitor,
+                        client_id,
+                        config,
+                        tmpdir_path,
+                        remote_root,
+                        remote_files,
+                        config_overlay,
+                    ),
                 )
-                handles.append((remote_root, fs, handle))
-            for remote_root, fs, handle in handles:
+                for remote_root, remote_files in batch
+            ]
+            for remote_root, handle in handles:
                 delete_result = handle.wait()
                 results.append(delete_result)
                 if rmdirs and delete_result.ok:
                     rmdirs_handle = monitor.start_job(
                         "operations/rmdirs",
-                        {"fs": fs, "remote": "", "leaveRoot": True},
+                        {
+                            "fs": encode_fs_spec(config, remote_root),
+                            "remote": "",
+                            "leaveRoot": True,
+                        },
                         group=_new_group(client_id),
                         operation="delete_files_rmdirs",
                         source=remote_root,
@@ -440,9 +490,63 @@ def delete_files_embedded(
                     )
                     results.append(rmdirs_handle.wait())
 
-    aggregate = _aggregate_results("delete_files", None, None, results)
-    _raise_if_check_failed(check, aggregate)
+    aggregate = aggregate_results("delete_files", None, None, results)
+    raise_if_check_failed(check, aggregate)
     return aggregate
+
+
+def start_delete_files_embedded(
+    monitor: _JobMonitor,
+    client_id: uuid.UUID,
+    config: Config,
+    files: list[str],
+    *,
+    check: bool | None = None,
+    rmdirs: bool = False,
+) -> PartitionedJobHandle:
+    """Start every `delete_files()` partition job immediately and return a
+    non-blocking `PartitionedJobHandle` - unlike `delete_files_embedded`'s
+    own `max_partition_workers` batching, every partition job is started
+    up front.
+
+    `rmdirs=True` is not supported here and raises `ValueError`:
+    `delete_files_embedded`'s `rmdirs` step is a sequential per-partition
+    follow-up that only starts once *that* partition's delete has been
+    observed to succeed - there is no non-blocking equivalent without a
+    background orchestrator this "start everything, aggregate
+    independently" handle deliberately does not have. Use
+    `delete_files(rmdirs=True)` (the blocking wrapper) for that case.
+    """
+    if rmdirs:
+        raise ValueError(
+            "start_delete_files() does not support rmdirs=True; "
+            "use delete_files(rmdirs=True) instead"
+        )
+    check = get_check(check)
+    if len(files) == 0:
+        return PartitionedJobHandle(
+            (), operation="delete_files", source=None, destination=None, check=check
+        )
+
+    datalists: dict[str, list[str]] = group_files(list(files))
+    partitions = list(datalists.items())
+    config_overlay = {"Checkers": _DELETE_FILES_CHECKERS, "Transfers": _DELETE_FILES_TRANSFERS}
+
+    tmpdir = Path(tempfile.mkdtemp(prefix="rclone-kit-delete-files-"))
+    handles = [
+        _start_delete_partition(
+            monitor, client_id, config, tmpdir, remote_root, remote_files, config_overlay
+        )
+        for remote_root, remote_files in partitions
+    ]
+    return PartitionedJobHandle(
+        handles,
+        operation="delete_files",
+        source=None,
+        destination=None,
+        check=check,
+        cleanup=lambda: shutil.rmtree(tmpdir, ignore_errors=True),
+    )
 
 
 def copy_bytes_embedded(
