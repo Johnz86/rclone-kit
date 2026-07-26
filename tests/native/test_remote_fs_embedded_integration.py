@@ -92,7 +92,8 @@ def test_read_write_copy_remove_still_work_through_fspath(tmp_path: Path, embedd
         assert target.read_text() == "hello from RemoteFS"
 
         moved = cwd / "moved.txt"
-        target.move_to(moved)
+        target.fs.copy(target.path, moved.path)
+        target.remove()
         assert moved.exists() is True
         assert not target.exists()
 

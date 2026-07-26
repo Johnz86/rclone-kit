@@ -380,13 +380,6 @@ class FSPath:
             assert path is not None, "path must be non None, when not auto converting from Path"
             self.fs = fs
             self.path = path
-        self.fs_holder: FS | None = None
-
-    def set_owner(self) -> None:
-        self.fs_holder = self.fs
-
-    def is_real_fs(self) -> bool:
-        return isinstance(self.fs, RealFS)
 
     def read_text(self) -> str:
         data = self.read_bytes()
@@ -410,14 +403,10 @@ class FSPath:
         return f"FSPath({self.path})"
 
     def __enter__(self) -> Self:
-        if self.fs_holder is not None:
-            warnings.warn("This operation is reserved for the cwd returned by FS", stacklevel=2)
         return self
 
     def __exit__(self, exc_type, exc_value, traceback) -> None:
-        if self.fs_holder is not None:
-            self.fs_holder.dispose()
-            self.fs_holder = None
+        pass
 
     def mkdir(self, parents=True, exist_ok=True) -> None:
         self.fs.mkdir(self.path, parents=parents, exist_ok=exist_ok)
@@ -462,12 +451,6 @@ class FSPath:
         if encoding is None:
             encoding = "utf-8"
         self.write_bytes(data.encode(encoding))
-
-    def move_to(self, dst: "FSPath") -> None:
-        """Move a file or directory."""
-
-        self.fs.copy(self.path, dst.path)
-        self.fs.remove(self.path)
 
     def write_bytes(self, data: bytes) -> None:
         self.fs.write_binary(self.path, data)

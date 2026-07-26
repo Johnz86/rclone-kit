@@ -28,7 +28,8 @@ class RcloneRemoteFSTester(unittest.TestCase):
                 new_file_path.write_bytes(b"test")
 
                 moved_file_path = remote_tester / "moved_test.txt"
-                new_file_path.move_to(moved_file_path)
+                new_file_path.fs.copy(new_file_path.path, moved_file_path.path)
+                new_file_path.remove()
                 self.assertTrue(moved_file_path.exists())
                 self.assertFalse(new_file_path.exists())
             finally:
