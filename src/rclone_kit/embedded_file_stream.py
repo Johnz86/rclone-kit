@@ -1,11 +1,8 @@
-"""Embedded-execution counterpart to `file_stream.FilesStream` (CLI-to-C-
-ABI migration Wave F design, section 4/5, decisions F1-F4/F7).
+"""A `rclonekit/liststream/*`-backed stream of `FileItem`s.
 
 Pulls items from a `rclonekit/liststream/*` cursor (bounded, backpressured
-- see `rc/list_stream.py`) instead of parsing a subprocess's stdout, but
-exposes the exact same public surface (`files()`, `files_paged()`, context-
-manager close) so `Rclone.save_to_db()` and any other `FilesStream`
-consumer need no changes to work under `execution="embedded"`.
+- see `rc/list_stream.py`), exposing `files()`, `files_paged()`, and a
+context-manager `close()` for `Rclone.ls_stream()` and `Rclone.save_to_db()`.
 """
 
 from __future__ import annotations
@@ -29,11 +26,9 @@ _POLL_TIMEOUT_MS = 500
 class EmbeddedFilesStream:
     """A `rclonekit/liststream/*`-backed stream of `FileItem`s under `path`.
 
-    Unlike `FilesStream` (which never surfaces a failed `lsjson`
-    subprocess as an exception - a pre-existing CLI-backend gap), a
-    listing failure here raises `RcloneCommandError` once the generator
-    reaches the point where the stream reports it, since silently
-    swallowing a real failure would be a worse contract to introduce anew.
+    A listing failure raises `RcloneCommandError` once the generator
+    reaches the point where the stream reports it, rather than silently
+    swallowing it.
     """
 
     def __init__(self, list_stream_client: RcListStreamClient, path: str, stream_id: int) -> None:

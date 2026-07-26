@@ -1,15 +1,13 @@
 """Native-backed parity check for the embedded composite transfer
-operations (ledger rows T06 `copy_files`, T08 `delete_files`), per the
-Wave E design (`native_c_abi_wave_e_review_and_design.md`).
+operations `copy_files`/`delete_files`.
 
 `copy_files()` never needs a registered remote - its file entries are
-plain relative names under a caller-supplied local `src`/`dst`, exactly
-like the CLI backend. `delete_files()`'s entries must be fully qualified
-`remote:path` references (enforced by `group_files.parse_file`), so these
-tests register a fresh, uniquely-named `type = local` remote per test via
-`config/create` (confirmed empirically to resolve relative paths against
-the current working directory, like the bare local backend does) rather
-than reaching for a real cloud remote.
+plain relative names under a caller-supplied local `src`/`dst`.
+`delete_files()`'s entries must be fully qualified `remote:path` references
+(enforced by `group_files.parse_file`), so these tests register a fresh,
+uniquely-named `type = local` remote per test via `config/create`
+(confirmed empirically to resolve relative paths against the current
+working directory) rather than reaching for a real cloud remote.
 
 Skipped automatically when no built native library exists (run
 `scripts/native/build.py` first).
@@ -155,8 +153,7 @@ def test_delete_files_removes_only_the_listed_files(
     tmp_path: Path, embedded: Rclone, local_remote: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # `group_files()` keys a partition by every file's *immediate parent*
-    # directory (see `native_c_abi_wave_e_review_and_design.md` and this
-    # module's own docstring) - a bare top-level "remote:a.txt" reference
+    # directory - a bare top-level "remote:a.txt" reference
     # (no subdirectory) hits a separate, pre-existing `group_files` quirk
     # (the grouping key loses its trailing `:`), so every entry here lives
     # under a "sub" subdirectory to stay on the well-supported path.

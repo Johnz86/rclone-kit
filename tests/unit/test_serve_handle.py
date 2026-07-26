@@ -1,5 +1,4 @@
-"""Unit tests for `ServeHandle` (CLI-to-C-ABI migration Wave H design,
-R03/R04), driven by a fake `RcServeClient`."""
+"""Unit tests for `ServeHandle`, driven by a fake `RcServeClient`."""
 
 from rclone_kit.rc.serve import ServeRef
 from rclone_kit.serve_handle import ServeHandle

@@ -1,11 +1,10 @@
-"""Typed transfer options and their RC `_config` encoding (CLI-to-C-ABI
-migration Wave D design, section 9.1).
+"""Typed transfer options and their RC `_config` encoding.
 
 `TransferOptions` itself carries no defaults beyond "let rclone use its
-own configured value" (`None`): `copy()`'s historical tuned profile
-(checkers 1000, transfers 32, low-level retries 10, retries 3) is a
-compatibility policy that belongs at its own call site, not baked into
-this generic type - `copy_dir()`/`copy_remote()` must not inherit it.
+own configured value" (`None`): `copy()`'s tuned profile (checkers 1000,
+transfers 32, low-level retries 10, retries 3) is a policy that belongs at
+its own call site, not baked into this generic type -
+`copy_dir()`/`copy_remote()` must not inherit it.
 """
 
 from __future__ import annotations

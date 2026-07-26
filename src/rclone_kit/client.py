@@ -214,8 +214,8 @@ class Rclone:
         within the shutdown deadline. Also stops every `serve/start`
         instance, unmounts every `mount/mount` instance, closes every
         `ls_stream()` cursor, and cancels every authorization session this
-        client started but never explicitly disposed (Wave H design, R05:
-        "runtime tracks only resources it owns").
+        client started but never explicitly disposed: this client tracks
+        only the resources it owns.
 
         Only closes the embedded runtime itself if this client created it;
         an injected `runtime` outlives this client, matching
@@ -250,7 +250,7 @@ class Rclone:
     def native_build_info(self) -> NativeBuildInfo:
         """Report which native rclone build this embedded client links:
         ABI version, rclone version/commit, Go version, build tags, and
-        target platform (Wave I design, C02).
+        target platform.
         """
         return self._embedded_runtime.build_info()
 
@@ -506,8 +506,7 @@ class Rclone:
         Args:
             payload: Dictionary of source and destination file paths
 
-        Returns one aggregated `OperationResult` spanning every partition
-        (see `native_c_abi_wave_e_review_and_design.md`, decision E7).
+        Returns one aggregated `OperationResult` spanning every partition.
         """
         return copy_files_embedded(
             self._ensure_job_monitor(),
@@ -541,11 +540,11 @@ class Rclone:
 
     def _track_serve_handle(self, handle: ServeHandle) -> ServeHandle:
         """Track `handle` so `close()` disposes it if the caller never
-        does - R05's "runtime tracks only resources it owns". `_on_dispose`
-        removes it again as soon as it's disposed (by the caller or by
-        `close()`), so a client that starts and disposes many short-lived
-        serve sessions over its lifetime does not leak one tracked entry
-        per session forever."""
+        does - this client tracks only the resources it owns.
+        `_on_dispose` removes it again as soon as it's disposed (by the
+        caller or by `close()`), so a client that starts and disposes many
+        short-lived serve sessions over its lifetime does not leak one
+        tracked entry per session forever."""
         self._serve_handles.add(handle)
         handle._on_dispose = lambda: self._serve_handles.discard(handle)
         return handle
@@ -557,7 +556,7 @@ class Rclone:
 
     def _track_mount_handle(self, handle: MountHandle) -> MountHandle:
         """Track `handle` so `close()` disposes it if the caller never
-        does, mirroring `_track_serve_handle`'s R05 rationale and its
+        does, mirroring `_track_serve_handle`'s rationale and its
         `_on_dispose` untracking."""
         self._mount_handles.add(handle)
         handle._on_dispose = lambda: self._mount_handles.discard(handle)
@@ -613,15 +612,15 @@ class Rclone:
 
     def _track_authorization_session(self, session: AuthorizationSession) -> AuthorizationSession:
         """Track `session` so `close()` cancels it if the caller never
-        disposes it, mirroring `_track_serve_handle`'s R05 rationale and
-        its `_on_dispose` untracking."""
+        disposes it, mirroring `_track_serve_handle`'s rationale and its
+        `_on_dispose` untracking."""
         self._authorization_sessions.add(session)
         session._on_dispose = lambda: self._authorization_sessions.discard(session)
         return session
 
     def _track_file_stream(self, stream: EmbeddedFilesStream) -> EmbeddedFilesStream:
         """Track `stream` so `close()` closes it if the caller never does,
-        mirroring `_track_serve_handle`'s R05 rationale and its `_on_close`
+        mirroring `_track_serve_handle`'s rationale and its `_on_close`
         untracking."""
         self._file_streams.add(stream)
         stream._on_close = lambda: self._file_streams.discard(stream)

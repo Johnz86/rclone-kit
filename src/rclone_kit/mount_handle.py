@@ -1,14 +1,11 @@
 """`MountHandle`: the execution-independent handle for one embedded
-`mount/mount` instance (CLI-to-C-ABI migration Wave H design, R01/R02).
+`mount/mount` instance.
 
-Deliberately not a reuse of `Mount` (`mount.py`): `Mount.__post_init__`/
-`close()` assume a real CLI subprocess - `wait_for_mount`/`clean_mount`
-poll `.pid`/`.poll()` and shell out to `fusermount`/`mountvol`, none of
-which apply to an embedded mount, where the mount lives inside this
-process's own WinFsp/FUSE (cgofuse) goroutine, not a child process.
-`mount/mount`/`mount/unmount` already start and tear down that goroutine
-cleanly, so this handle only needs to remember which mount point to pass
-back to `mount/unmount`. Mirrors `serve_handle.py`'s `ServeHandle` shape.
+The mount lives inside this process's own WinFsp/FUSE (cgofuse) goroutine,
+not a child process. `mount/mount`/`mount/unmount` start and tear down
+that goroutine cleanly, so this handle only needs to remember which mount
+point to pass back to `mount/unmount`. Mirrors `serve_handle.py`'s
+`ServeHandle` shape.
 """
 
 from __future__ import annotations

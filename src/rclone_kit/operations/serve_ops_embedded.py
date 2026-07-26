@@ -1,12 +1,12 @@
-"""Embedded RC-backed serve operations (CLI-to-C-ABI migration ledger rows
-R03 `serve_webdav`, R04 `serve_http`).
+"""Embedded RC-backed serve operations: `fetch_serve_webdav_embedded`/
+`fetch_serve_http_embedded`.
 
 Both start a `serve/start` instance via `RcServeClient` and wrap the
 result in a `ServeHandle` - `serve_http()` further wraps that `ServeHandle`
-inside an `HttpServer` (unchanged: `HttpServer` never used any
-`Process`-specific behavior beyond "is it still alive" and "dispose it",
-both of which `ServeHandle` also provides - see `http_server.py`'s
-`_DisposableServerHandle` protocol).
+inside an `HttpServer`: `HttpServer` never uses any `Process`-specific
+behavior beyond "is it still alive" and "dispose it", both of which
+`ServeHandle` also provides - see `http_server.py`'s
+`_DisposableServerHandle` protocol.
 
 The actual bound address always comes from `serve/start`'s own response,
 never a Python-side `find_free_port()` guess: requesting port `0` lets

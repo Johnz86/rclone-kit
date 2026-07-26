@@ -1,7 +1,7 @@
-"""Native-backed test that `walk()` (ledger row L13) and
-`scan_missing_folders()` (L14) work correctly under embedded execution with
-no code changes of their own - both only ever call `Dir.ls()`, which already
-dispatches to the embedded `operations/list` adapter once L01 landed.
+"""Native-backed test that `walk()` and `scan_missing_folders()` work
+correctly under embedded execution with no code of their own - both only
+ever call `Dir.ls()`, which dispatches to the embedded `operations/list`
+adapter.
 
 Skipped automatically when no built native library exists (run
 `scripts/native/build.py` first).

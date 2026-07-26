@@ -93,8 +93,7 @@ class S3MergeError(RcloneKitError):
 
 class OperationError(RcloneKitError):
     """Base type for the execution-independent embedded operation errors
-    (`JobHandle`/`start_*` family), added by the CLI-to-C-ABI migration's
-    Wave D design.
+    (`JobHandle`/`start_*` family).
 
     Raised by operations when the operation itself starts, fails, is
     cancelled, times out, or its job identity/lifecycle cannot be trusted.

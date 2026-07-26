@@ -3,9 +3,7 @@
 Builds the diagnostic `rclone` executable and the `librclone_kit` shared
 library from the pinned `native/rclone` submodule, using the toolchain
 recorded in `native/toolchain.toml`, then generates a manifest, `SHA256SUMS`,
-and a native smoke-test result — see
-`reference/rclone_c_abi_implementation_plan.md`'s "Native build process"
-section, which this script implements. This is the single command a
+and a native smoke-test result. This is the single command a
 developer or CI job runs; no other script or manual shell sequence is the
 source of truth for a native build.
 
@@ -15,8 +13,8 @@ cmount` and requires the WinFsp SDK (headers only, at build time) to be
 installed on the Windows build host - it does not need to be installed on
 end-user machines for anything except actually calling `mount()`/
 `mount_s3()`, which also needs the separate WinFsp runtime/driver installed
-and running (see `native_c_abi_wave_h_review_and_design.md`'s mount addendum
-for how this was verified against a real mount).
+and running (verified against a real mount on Windows; see
+`docs/production_usage.md`'s mount section).
 
 On Linux, mount support needs no build tag and no build-time package at all:
 `cmd/mount` (bazil.org/fuse, pure Go, no cgo) is imported unconditionally in

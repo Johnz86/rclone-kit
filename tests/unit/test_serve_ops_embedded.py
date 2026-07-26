@@ -1,7 +1,6 @@
-"""Unit tests for the embedded RC-backed serve operations (CLI-to-C-ABI
-migration ledger rows R03 `serve_webdav`, R04 `serve_http`), driven by a
-fake `RcServeClient`. Native-DLL parity is covered by
-`tests/native/test_serve_ops_embedded_integration.py`.
+"""Unit tests for the embedded RC-backed serve operations (`serve_webdav`,
+`serve_http`), driven by a fake `RcServeClient`. Native-DLL parity is
+covered by `tests/native/test_serve_ops_embedded_integration.py`.
 """
 
 from rclone_kit.operations.serve_ops_embedded import (

@@ -30,7 +30,7 @@ def fetch_config_paths_embedded(rc_client: RcCallable) -> list[Path]:
 def fetch_config_show_embedded(rc_client: RcCallable, remote: str | None = None) -> str:
     """Return the configuration text reported by `rclonekit/configshow`,
     byte-for-byte identical to `rclone config show`/`rclone config show
-    <remote>`'s own plain-text output (Wave I addendum, M04).
+    <remote>`'s own plain-text output.
     """
     params: dict[str, object] = {}
     if remote is not None:

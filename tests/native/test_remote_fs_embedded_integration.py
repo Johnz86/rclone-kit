@@ -1,5 +1,4 @@
-"""Native-backed test for the direct-RC `RemoteFS` facade (ledger rows
-F01-F05), per the Wave G design (`native_c_abi_wave_g_review_and_design.md`).
+"""Native-backed test for the direct-RC `RemoteFS` facade.
 
 `RemoteFS` is backend-agnostic (it only depends on the `RemoteFSAccess`
 protocol, which `Rclone` satisfies regardless of whether `src` addresses a

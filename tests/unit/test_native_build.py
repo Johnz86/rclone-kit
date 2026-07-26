@@ -3,8 +3,7 @@
 Uses `monkeypatch` so these tests exercise tag construction, `CPATH`
 handling, and WinFsp SDK detection without invoking a real Go/C toolchain;
 the actual end-to-end build is proven separately by running
-`scripts/native/build.py` against the real toolchain (see
-`native_c_abi_wave_h_review_and_design.md`'s mount addendum).
+`scripts/native/build.py` against the real toolchain.
 """
 
 from pathlib import Path

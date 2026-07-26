@@ -1,5 +1,4 @@
-"""Unit tests for the embedded RC-backed listing/stat operations (CLI-to-
-C-ABI migration ledger rows M02, L05, L08, L10).
+"""Unit tests for the embedded RC-backed listing/stat operations.
 
 Uses a fake `RcClient`-shaped object driven by canned per-method responses,
 so these tests exercise request/response mapping without a built native
@@ -203,8 +202,8 @@ def test_check_exists_embedded_false_when_item_missing() -> None:
 
 
 def test_check_exists_embedded_true_for_empty_directory() -> None:
-    """Unlike the CLI backend's `ls()`-based approximation, `operations/stat`
-    reports an empty directory as existing - the ledger's sanctioned L10 fix.
+    """`operations/stat` reports an empty directory as existing, not just
+    directories containing entries.
     """
     client = FakeRcClient()
     client.responses["operations/stat"] = {"item": _DIR_ITEM}

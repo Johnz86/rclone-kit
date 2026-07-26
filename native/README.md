@@ -77,9 +77,8 @@ command sequence used to verify the whole native-library packaging pipeline for 
 Docker Desktop (WSL2 backend) on a Windows development machine - no new Docker image was built; only
 the standard, already-published PyPA image, with tools installed into a running container.
 
-Unlike Windows, no build-time WinFsp-equivalent SDK is needed at all for Linux mount support: see
-`native_c_abi_wave_h_review_and_design.md`'s Linux mount addendum for why `cmd/mount` (bazil.org/fuse,
-pure Go) needs no cgo or system FUSE headers to compile.
+Unlike Windows, no build-time WinFsp-equivalent SDK is needed at all for Linux mount support:
+`cmd/mount` (bazil.org/fuse, pure Go) needs no cgo or system FUSE headers to compile.
 
 ### 1. Start a persistent container with the repo mounted and FUSE devices enabled
 
@@ -143,7 +142,7 @@ docker exec rclone-kit-linux-build bash -c "yum install -y fuse3 fuse"
 Then drive the real C ABI directly via `ctypes` (mirrors exactly how production Python code loads
 the library - see `rclone_kit/native/abi.py` for the authoritative signatures) to mount a local
 directory, read a file through it, list it, and unmount it. This is the same verification method
-used for the Windows WinFsp toolchain (see the Wave H design doc's mount addendum).
+used for the Windows WinFsp toolchain.
 
 ### 5. Build, stage, verify, and smoke-test the actual wheel end to end
 

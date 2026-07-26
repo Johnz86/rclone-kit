@@ -1,11 +1,8 @@
 """Public, execution-independent operation result/status value types.
 
-Introduced by the CLI-to-C-ABI migration's Wave D design
-(`reference/native_c_abi_wave_d_review_and_design.md`, section 5) as the
-replacement for `subprocess.CompletedProcess`/`Process`-shaped return
-values: a `JobHandle` (added alongside the RC job boundary in a later
-migration step) produces these types, never raw RC JSON or ctypes
-structures.
+`JobHandle` (the RC job boundary) produces these types, never raw RC JSON
+or ctypes structures - callers never see a `subprocess.CompletedProcess`/
+`Process`-shaped value.
 
 This module is a leaf: it imports no native, RC, client, or subprocess
 modules, and depends on nothing else in this package. Wire parsing (the RC
@@ -216,7 +213,7 @@ class OperationResult:
     """The execution-independent result of one completed (non-streaming)
     embedded operation.
 
-    `job_ids` is a tuple even though Wave D only ever produces one: Wave E's
+    `job_ids` is a tuple even though most operations only ever produce one:
     partitioned operations (files-from copies/deletes) aggregate several
     jobs into a single `OperationResult` without needing a new result type.
 

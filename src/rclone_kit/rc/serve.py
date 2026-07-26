@@ -1,6 +1,6 @@
 """RC serve boundary: typed `start`/`stop`/`list` adapters over one
 `RcCallable`, translating `serve/start`/`serve/stop`/`serve/list`'s wire
-JSON into plain Python values (CLI-to-C-ABI migration Wave H design).
+JSON into plain Python values.
 
 Wire shapes below were verified empirically against the pinned native
 build (`native/rclone` at `a5866fdbe`), not merely assumed from the RC

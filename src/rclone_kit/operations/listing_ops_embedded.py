@@ -1,12 +1,8 @@
-"""Embedded RC-backed listing/stat operations (CLI-to-C-ABI migration ledger
-rows L01, M02, L05, L06/L07 (transitive), L08, L10, L11, L12).
+"""Embedded RC-backed listing/stat operations.
 
-Parallels `listing_ops.py`'s CLI-backed functions; `Rclone` dispatches to
-whichever matches its `execution` mode. `operations/stat`'s `item` field is
-non-null exactly when the target exists, which is a more direct and correct
-check than the CLI backend's "does listing this path return any children"
-approximation - the ledger notes this as an expected, sanctioned behavior
-difference (L05, L10), not a regression to reconcile away.
+`operations/stat`'s `item` field is non-null exactly when the target
+exists, which is a more direct and correct check than "does listing this
+path return any children" would be.
 """
 
 from __future__ import annotations
@@ -93,12 +89,11 @@ def fetch_ls_embedded(
 ) -> DirListing:
     """List files in the given path via `operations/list`.
 
-    Mirrors `listing_ops.fetch_ls`'s exact semantics: `src=None` lists
-    configured remotes as root directories (no RC listing call involved,
-    same as the CLI path); `max_depth<0` recurses without limit,
-    `max_depth>0` recurses bounded by `_config.MaxDepth`, and `None`/`0`
-    list only the immediate target - matching `--recursive`/`--max-depth`'s
-    CLI behavior exactly.
+    `src=None` lists configured remotes as root directories (no RC listing
+    call involved); `max_depth<0` recurses without limit, `max_depth>0`
+    recurses bounded by `_config.MaxDepth`, and `None`/`0` list only the
+    immediate target - matching rclone's own `--recursive`/`--max-depth`
+    semantics.
     """
     if src is None:
         list_remotes = fetch_listremotes_embedded(rc_client, access)
@@ -184,11 +179,10 @@ def fetch_size_files_embedded(
     fast_list: bool = False,
     check: bool | None = False,
 ) -> SizeResult:
-    """Get the size of a list of files via one `operations/list` RC call
-    (Wave E design, decision E6): unlike T06/T08, this never partitions -
-    a single call already covers every requested file regardless of how
-    many directories/remotes they span, exactly like the CLI backend's own
-    single `lsjson --files-from` invocation.
+    """Get the size of a list of files via one `operations/list` RC call:
+    unlike the partitioned `copy_files_embedded`/`delete_files_embedded`,
+    this never partitions - a single call already covers every requested
+    file regardless of how many directories/remotes they span.
 
     `check=True` (never the default) lets the RC failure (`RcCallError`)
     propagate; `check=False` warns and reports an empty listing instead.
@@ -248,10 +242,9 @@ def check_is_synced_embedded(rc_client: RcCallable, src: str | Dir, dst: str | D
     """Check if two directories are in sync via `operations/check`.
 
     Requests only the `success` field's inputs (no per-file reports, which
-    this method doesn't use) and returns it directly. Unlike the CLI
-    backend, which conflates every nonzero return code with "not synced",
-    an unexpected RC failure (bad path, missing backend, ...) raises
-    `RcCallError` instead of silently returning `False`.
+    this method doesn't use) and returns it directly. An unexpected RC
+    failure (bad path, missing backend, ...) raises `RcCallError` instead
+    of silently returning `False`.
     """
     result = rc_client.call(
         "operations/check",
@@ -354,13 +347,11 @@ def fetch_ls_stream_embedded(
     max_depth: int = -1,
     fast_list: bool = False,
 ) -> EmbeddedFilesStream:
-    """Open a bounded-memory listing stream via `rclonekit/liststream/open`
-    (Wave F design, L02).
+    """Open a bounded-memory listing stream via `rclonekit/liststream/open`.
 
-    Mirrors `Rclone.ls_stream()`'s exact CLI semantics: `max_depth < 0` or
-    `> 1` recurses (bounded via `_config.MaxDepth` when `> 1`), matching
-    the CLI backend's `-R`/`--max-depth` and `fetch_ls_embedded`'s own
-    `max_depth` mapping; `fast_list` sets `_config.UseListR`.
+    `max_depth < 0` or `> 1` recurses (bounded via `_config.MaxDepth` when
+    `> 1`), matching `fetch_ls_embedded`'s own `max_depth` mapping;
+    `fast_list` sets `_config.UseListR`.
     """
     target = RcPath.parse(src)
     opt: dict[str, object] = {"filesOnly": True}

@@ -1,6 +1,5 @@
-"""Native-backed test for the embedded RC-backed serve operations (ledger
-rows R03 `serve_webdav`, R04 `serve_http`, R05 resource tracking), per the
-Wave H design (`native_c_abi_wave_h_review_and_design.md`).
+"""Native-backed test for the embedded RC-backed serve operations
+`serve_webdav`/`serve_http`, plus resource tracking.
 
 Skipped automatically when no built native library exists (run
 `scripts/native/build.py` first).

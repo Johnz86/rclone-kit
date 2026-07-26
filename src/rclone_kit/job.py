@@ -1,5 +1,5 @@
 """Public `JobHandle` and the internal per-client `_JobMonitor` that backs
-it (CLI-to-C-ABI migration Wave D design, sections 3/7/D3).
+it.
 
 A `JobHandle` is a thin, thread-safe view over one `_JobRecord` owned by a
 `_JobMonitor`. The monitor - not the handle - owns mutation: exactly one

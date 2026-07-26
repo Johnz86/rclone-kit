@@ -23,9 +23,8 @@ class RemoteFSAccess(Protocol):
     """High-level capabilities used by the remote filesystem adapter.
 
     `exists`/`stat`/`ls` back `RemoteFS`'s own `exists`/`is_dir`/`is_file`/
-    `ls` directly via RC (CLI-to-C-ABI migration Wave G design, F03) -
-    `serve_http` is no longer called by `RemoteFS` construction (F01), only
-    by its own explicit, on-demand `serve()` method.
+    `ls` directly via RC - `serve_http` is not called by `RemoteFS`
+    construction, only by its own explicit, on-demand `serve()` method.
     """
 
     def serve_http(
@@ -204,18 +203,15 @@ class RealFS(FS):
 
 
 class RemoteFS(FS):
-    """A direct-RC filesystem facade over one rclone client (CLI-to-C-ABI
-    migration Wave G design). Construction binds no port and starts no
-    server (F01): `exists`/`is_dir`/`is_file`/`ls` go straight to
-    `operations/stat`/`operations/list` via `rclone.exists()`/`stat()`/
-    `ls()` (F03), which already dispatch correctly for both CLI and
-    embedded clients. `read_bytes`/`write_binary`/`copy`/`remove` were
-    already transitive through `rclone`'s own public methods (F04) and are
-    unchanged here.
+    """A direct-RC filesystem facade over one rclone client. Construction
+    binds no port and starts no server: `exists`/`is_dir`/`is_file`/`ls`
+    go straight to `operations/stat`/`operations/list` via
+    `rclone.exists()`/`stat()`/`ls()`. `read_bytes`/`write_binary`/`copy`/
+    `remove` are transitive through `rclone`'s own public methods.
 
     An HTTP server is created only on explicit, on-demand request via
     `serve()` - for a future consumer that genuinely needs a real listener
-    (e.g. multipart/resumable downloads, Wave H) - never implicitly.
+    (e.g. multipart/resumable downloads) - never implicitly.
     """
 
     def __init__(self, rclone: RemoteFSAccess, src: str) -> None:

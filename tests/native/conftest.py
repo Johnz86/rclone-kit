@@ -54,8 +54,7 @@ NATIVE_LIBRARY_AVAILABLE = LIBRARY_PATH is not None and LIBRARY_PATH.is_file()
 def _built_with_mount_support() -> bool:
     """Whether the currently built target was produced with `--profile
     production` (`-tags cmount`): `mount/mount` only has a real WinFsp/FUSE
-    implementation registered in that profile - see
-    `native_c_abi_wave_h_review_and_design.md`'s mount addendum. Checked
+    implementation registered in that profile. Checked
     via the build's own manifest rather than assumed, since
     `build/native/<target>/` may hold either profile's output depending on
     which `scripts/native/build.py` invocation produced it last.

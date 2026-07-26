@@ -1,7 +1,6 @@
 """RC list-stream boundary: typed `open`/`next`/`close` adapters over one
 `RcCallable`, translating `rclonekit/liststream/*`'s wire JSON into plain
-Python values (CLI-to-C-ABI migration Wave F design, section 4, decision
-F1).
+Python values.
 
 Wire shapes below were verified empirically against the pinned native
 build (`native/rclone` at `6c929caad`), not merely assumed from the Go

@@ -1,5 +1,5 @@
-"""Embedded RC-backed mount operations (CLI-to-C-ABI migration ledger rows
-R01 `mount`, R02 `mount_s3`).
+"""Embedded RC-backed mount operations: `fetch_mount_embedded`/
+`fetch_s3_mount_embedded`.
 
 Both start a `mount/mount` instance via `RcMountClient` and wrap the result
 in a `MountHandle`. `mount/mount`'s `vfsOpt`/`mountOpt` parameters are JSON

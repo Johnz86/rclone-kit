@@ -1,38 +1,34 @@
-"""Embedded RC-backed transfer operations (CLI-to-C-ABI migration ledger
-rows T01, T02, T06, T07, T08; T11/T12 (`read_bytes`/`read_text`) become
-transitive once `copy_to` (T02) is embedded-aware, since `Rclone.read_bytes`
-only ever calls `self.copy_to`.
+"""Embedded RC-backed transfer operations.
 
-T01/T02/T07 each start their RC method as an asynchronous job through the
-shared `_JobMonitor` (Wave D Phase D3) - via the same generic `_async: true`
-RC mechanism `start_copy()` uses, not a bespoke Go endpoint, since
+`copy_file_to_embedded`/`purge_dir_embedded`/`cleanup_embedded`
+(`read_bytes`/`read_text` are transitive, since `Rclone.read_bytes` only
+ever calls `self.copy_to`) each start their RC method as an asynchronous
+job through the shared
+`_JobMonitor` - via the same generic `_async: true` RC mechanism
+`start_copy()` uses, not a bespoke Go endpoint, since
 `operations/copyfile`/`operations/purge`/`operations/cleanup` need no
-retry loop of their own - then immediately waits on the resulting handle.
-This closes design-review finding F5 (a synchronous RC call here used to
-hold the runtime lock for the whole operation) and F6 (these functions now
-return a real `OperationResult`, never a synthetic
-`subprocess.CompletedProcess`); `Rclone`'s own methods return that
-`OperationResult` directly, with no compatibility wrapper.
+retry loop of their own - then immediately wait on the resulting handle.
+This keeps a synchronous RC call from holding the runtime lock for the
+whole operation, and means these functions return a real
+`OperationResult`, never a synthetic `subprocess.CompletedProcess`;
+`Rclone`'s own methods return that `OperationResult` directly, with no
+compatibility wrapper. A failure with `check=True` raises
+`OperationFailedError` (part of the execution-independent `OperationError`
+hierarchy), not a raw `RcCallError`.
 
-A failure with `check=True` therefore raises `OperationFailedError` (part
-of the execution-independent `OperationError` hierarchy), not a raw
-`RcCallError` - closing design-review finding F4 for `copy_to`.
+`copy_files_embedded`/`delete_files_embedded` are composite: each
+partitions its file list via `group_files()`, starts one job per
+partition, waits on every partition (never aborting collection early on a
+partial failure), and folds every partition's `OperationResult` into a
+single aggregate via `_aggregate_results()` before optionally raising
+once, for the aggregate as a whole.
 
-T06/T08 (`copy_files_embedded`/`delete_files_embedded`, Wave E) are
-composite: each partitions its file list exactly like the CLI backend
-does (`group_files()`, unchanged), starts one job per partition, waits on
-every partition (never aborting collection early on a partial failure -
-see `native_c_abi_wave_e_review_and_design.md` section 3, decision E3),
-and folds every partition's `OperationResult` into a single aggregate via
-`_aggregate_results()` before optionally raising once, for the aggregate
-as a whole.
-
-T13 (`copy_bytes_embedded`, Wave F) starts the downstream `rclonekit/
-readrange` endpoint as a job too, even though a byte range is bounded (not
-partitioned like T06/T08) - purely so a large in-flight range download can
-be observed/cancelled/timed-out like any other embedded operation, instead
-of holding the runtime lock synchronously for the whole transfer (see
-`native_c_abi_wave_f_review_and_design.md` section 4, decision F8).
+`copy_bytes_embedded` starts the downstream `rclonekit/readrange` endpoint
+as a job too, even though a byte range is bounded (not partitioned like
+`copy_files_embedded`/`delete_files_embedded`) - purely so a large
+in-flight range download can be observed/cancelled/timed-out like any
+other embedded operation, instead of holding the runtime lock
+synchronously for the whole transfer.
 """
 
 from __future__ import annotations
@@ -125,8 +121,8 @@ def purge_dir_embedded(
 ) -> OperationResult:
     """Purge a directory and all of its contents via `operations/purge`.
 
-    Never raises: matches the CLI backend's own `purge_dir`, which always
-    returns a result for the caller to inspect via `.ok`.
+    Never raises: always returns a result for the caller to inspect via
+    `.ok`.
     """
     src_str = convert_to_str(src)
     target = RcPath.parse(src_str)
@@ -145,11 +141,11 @@ def purge_dir_embedded(
 def cleanup_embedded(monitor: _JobMonitor, client_id: uuid.UUID, src: str) -> OperationResult:
     """Remove trashed files in `src` via `operations/cleanup`.
 
-    Never raises, matching the CLI backend's own `cleanup`. `src` is
-    reassembled through `RcPath.parse` (rather than forwarded as a raw
-    string) so a bare local reference gets absolutized - see
-    `RcPath`/`_resolve_local` for why this matters for the shared embedded
-    runtime; a configured or inline remote passes through unchanged.
+    Never raises. `src` is reassembled through `RcPath.parse` (rather than
+    forwarded as a raw string) so a bare local reference gets absolutized -
+    see `RcPath`/`_resolve_local` for why this matters for the shared
+    embedded runtime; a configured or inline remote passes through
+    unchanged.
     """
     handle = monitor.start_job(
         "operations/cleanup",
@@ -194,12 +190,10 @@ def _aggregate_results(
     destination: str | None,
     results: Sequence[OperationResult],
 ) -> OperationResult:
-    """Fold every partition's `OperationResult` into a single composite one
-    (Wave E design, section 3, decision E3).
+    """Fold every partition's `OperationResult` into a single composite one.
 
     An empty `results` (no partition needed to run - e.g. an empty input
-    file list) yields a trivial `ok=True`, no-jobs-started result, matching
-    the CLI backend's own no-op early return for the same input.
+    file list) yields a trivial `ok=True`, no-jobs-started result.
     """
     if not results:
         now = datetime.now(UTC)
@@ -292,13 +286,12 @@ def copy_files_embedded(
     multi_thread_streams: int | None = None,
 ) -> OperationResult:
     """Copy multiple individual files from `src` to `dst` via partitioned
-    `rclonekit/copy` jobs, one per common-prefix group (Wave E design,
-    decisions E1/E2/E3/E4).
+    `rclonekit/copy` jobs, one per common-prefix group.
 
     Each partition keeps the retry-aware `rclonekit/copy` endpoint (not a
-    bare `sync/copy`), matching `copy()`'s own historical tuned defaults
-    (checkers 1000, transfers 32, low-level retries 10, retries 3) unless
-    overridden. `max_partition_workers` bounds how many partition jobs are
+    bare `sync/copy`), matching `copy()`'s own tuned defaults (checkers
+    1000, transfers 32, low-level retries 10, retries 3) unless overridden.
+    `max_partition_workers` bounds how many partition jobs are
     outstanding (started but not yet waited-on) at once - an RC job is
     already concurrent on rclone's side the moment `start()` returns, so no
     Python-side thread pool is needed.
@@ -389,10 +382,10 @@ def delete_files_embedded(
     max_partition_workers: int | None = None,
 ) -> OperationResult:
     """Delete multiple individual files via partitioned `operations/delete`
-    jobs, one per remote/common-prefix group (Wave E design, decisions
-    E1/E3/E4/E5), optionally followed by `operations/rmdirs(leaveRoot=True)`
-    per partition when `rmdirs=True` - reproducing the `delete` command's
-    own `--rmdirs` sequence (`cmd/delete/delete.go`), not a new one.
+    jobs, one per remote/common-prefix group, optionally followed by
+    `operations/rmdirs(leaveRoot=True)` per partition when `rmdirs=True` -
+    reproducing the `delete` command's own `--rmdirs` sequence
+    (`cmd/delete/delete.go`).
 
     A partition that fails `operations/delete` never attempts its
     `rmdirs` call - there is nothing to clean up if delete didn't finish.
@@ -461,11 +454,11 @@ def copy_bytes_embedded(
     outfile: Path,
 ) -> OperationResult:
     """Copy a byte range from `src` into `outfile` via the downstream
-    `rclonekit/readrange` RC method (Wave F design, decision F8).
+    `rclonekit/readrange` RC method.
 
     Always raises `OperationFailedError` on failure (`check` is not
-    exposed here - `copy_bytes()` never took one on the CLI backend
-    either, which always ran with an effective `check=True`).
+    exposed here - `copy_bytes()` always runs with an effective
+    `check=True`).
     """
     target = RcPath.parse(src).as_parent_and_name()
     offset_int = SizeSuffix(offset).as_int()

@@ -1,9 +1,8 @@
 """Typed JSON RC call boundary over one `RcloneRuntime`.
 
 Receives and returns plain Python `dict`/`str` values; never imports
-`ctypes` or touches a raw pointer. Operation-level adapters (Wave A/B of
-`reference/rclone_cli_to_c_abi_migration_plan.md`) depend on this, not on
-`rclone_kit.native` directly.
+`ctypes` or touches a raw pointer. Operation-level adapters depend on this,
+not on `rclone_kit.native` directly.
 """
 
 from typing import Protocol

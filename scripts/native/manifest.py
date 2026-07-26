@@ -1,10 +1,8 @@
 """Generated-manifest model for one completed native build.
 
 `scripts/native/build.py` is the only writer. Kept separate so the manifest
-shape (and the source/toolchain provenance it records — see
-`reference/rclone_c_abi_implementation_plan.md`'s "Build outputs" section) can
-be unit tested with fake subprocess/git results, without invoking a real Go
-toolchain.
+shape (and the source/toolchain provenance it records) can be unit tested
+with fake subprocess/git results, without invoking a real Go toolchain.
 """
 
 import json

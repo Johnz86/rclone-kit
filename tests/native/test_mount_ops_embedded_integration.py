@@ -1,6 +1,5 @@
 """Native-backed parity check for the embedded RC-backed mount operations
-(ledger rows R01 `mount`, R02 `mount_s3`), per the Wave H design
-(`native_c_abi_wave_h_review_and_design.md`'s mount addendum).
+`mount`/`mount_s3`.
 
 Skipped automatically unless the currently built native target was
 produced with `--profile production` (`-tags cmount` plus the installed

@@ -91,6 +91,36 @@ uses this order:
 Failure to perform discovery raises `ConfigDiscoveryError`; a successful
 search that finds no existing config returns `None`.
 
+The native library can be initialized at most once per OS process:
+`RcloneKitFinalize` is best-effort cleanup, not a reset, so a second
+`Rclone(...)` construction in the same process fails with
+`NativeAlreadyInitializedError` unless it is handed an already-initialized
+runtime. `native/runtime.py:shared_runtime()` is the supported way to give
+several `Rclone` clients (one per request, one per tenant) the same
+process: it lazily creates and initializes exactly one process-wide
+`RcloneRuntime`, and every call after the first returns that same instance
+regardless of the arguments passed. Construct each client as
+`Rclone(per_client_conf, runtime=shared_runtime())`; each keeps its own
+job/serve/mount tracking and can `close()` independently, and clients
+sharing a runtime also share its one immutable config path (a call-dispatch
+convenience, not a tenancy boundary). This same rule makes
+`find_conf_file_embedded()` a footgun if misused: its own throwaway
+`RcloneRuntime` is initialized and then `close()`d, but `close()` never
+frees the process's one-shot initialization slot - calling this function in
+a process that will later construct a real embedded `Rclone(...)` client
+permanently exhausts that slot and makes the later `initialize()` fail. Use
+it only when no real embedded runtime is initialized afterward in the same
+process.
+
+`RcloneRuntime.call()` does not serialize concurrent RC dispatch against
+other `call()`s - only `initialize()`/`close()` and the in-flight call
+count are guarded by a lock, so two operations can run their RC calls
+concurrently on one runtime. `close()` waits for every in-flight call to
+finish rather than interrupting one (RC dispatch has no cancellation
+mechanism to interrupt it with). This is why a slow call - e.g. an
+`ls_stream()` pull awaiting new items - does not starve an unrelated
+job-status check or cancellation the way full serialization would.
+
 ### Domain and feature modules
 
 - `file.py`, `dir.py`, `remote.py`, `rpath.py`, and `types.py` hold the
@@ -110,6 +140,36 @@ S3 and database dependencies are optional and imported lazily. Missing
 packages raise `MissingOptionalDependencyError` with the extra to install.
 Importing `rclone_kit` itself must not require optional extras, configure the
 root logger, start a thread, or spawn a process.
+
+### Job handles and the retry-aware copy endpoint
+
+rclone's own RC `sync/copy` handler calls `CopyDir` once - it never enters
+the CLI's `cmd.Run`, which owns the high-level retry loop, fatal/no-retry
+error classification, and retry-sleep behavior. A bare `sync/copy` job
+therefore silently drops from the CLI's multiple high-level attempts to
+one. `start_copy()` and every method built on it (`copy()`, `copy_dir()`,
+`copy_remote()`, the partitioned `copy_files()`) instead call
+`rclonekit/copy`, a small fork-owned RC endpoint
+(`native/rclone/librclone/rclonekit/rc/copy.go`) that reproduces `cmd.Run`'s
+retry loop scoped to the calling job's own accounting group, so concurrent
+jobs never share retry/error state.
+
+rclone deletes a finished job's `job/status` record after
+`rc_job_expire_duration` (60s by default, checked every 10s). `_JobMonitor`
+(`job.py`) exists to poll and cache every started job's terminal status and
+stats before that expiry window can lose them, so a caller that calls
+`JobHandle.wait()` long after a transfer actually finished still gets the
+real result. Job identity is validated on both `jobid` and `executeId`:
+rclone restarts job IDs from 1 after a process restart, so `executeId` is
+what actually distinguishes an old job from a coincidentally reused ID; a
+mismatch raises `JobIdentityError` rather than silently trusting a stale ID.
+
+`copy_files()`/`delete_files()` write each partition's file list to a
+temporary `_filter.FilesFrom` file rather than passing paths inline - RC has
+no way to hand rclone an in-memory file list. A path in that list that does
+not exist is not an error: the underlying walk simply never visits it,
+matching `rclone copy --files-from`'s own CLI behavior, so a typo'd path is
+silently skipped rather than raising.
 
 ## Bundled native library lifecycle
 
@@ -757,7 +817,7 @@ future session, they will have moved again.
 | Release publication | Done: `.github/workflows/release.yaml` builds, verifies, and publishes both certified wheels to PyPI via trusted publishing (OIDC, no stored token) on `v*` tags, gated by the `pypi-release` GitHub Environment. See `docs/release_process.md`. Artifact attestations (`actions/attest-build-provenance` or equivalent) are not yet added. | Add build provenance attestations to the `publish` job's uploaded wheels if supply-chain verification beyond trusted publishing becomes a requirement. | A published wheel carries a verifiable attestation, not just a trusted-publishing OIDC trail. |
 | Build isolation | Smoke tests poison proxies but do not enforce network denial. | Run them in a network-disabled container or namespace where supported. | A deliberate network attempt fails while the bundled executable still runs. |
 | Source distributions | An sdist cannot yet build a complete certified wheel. | Keep wheel-only releases, or add a verified artifact input/download hook and test sdist-to-wheel builds on every target. | A built-from-sdist wheel passes the same verifier and smoke test. |
-| `scan_missing_folders()` on hierarchical backends | Found live against `tests/live/gdrive`, related to but distinct from the now-fixed `fetch_stat()`/`fetch_size_file()` gap: when the dst root doesn't exist at all on a backend with real directories (Drive, SFTP, local, ...), the underlying `ls()` call's `CalledProcessError` happens inside `scan_missing_folders()`'s background `ThreadPoolExecutor` worker and is never propagated to the generator - the thread just crashes (a bare traceback to stderr), and the generator silently yields an empty result instead of raising or reporting the whole dst as missing. | Make the worker thread propagate a real listing failure to the generator (raise, or explicitly detect a missing dst root and yield it as entirely missing) instead of dropping it. | A unit test with a fake backend that raises "directory not found" for a missing dst root proves `scan_missing_folders()` either raises or correctly reports the whole dst as missing, not silently empty. |
+| `scan_missing_folders()` on hierarchical backends | Found live against `tests/live/gdrive`, related to but distinct from the now-fixed `fetch_stat()`/`fetch_size_file()` gap: when the dst root doesn't exist at all on a backend with real directories (Drive, SFTP, local, ...), the underlying `ls()` call fails inside the background walk thread (`scan_missing_folders.py`); the thread reports this to the main thread via `_thread.interrupt_main()`, but the generator's own read loop catches the resulting `KeyboardInterrupt` and silently stops iterating instead of re-raising it, so the caller sees an empty result instead of an error or "whole dst missing" report - and the same catch would just as silently swallow a real user-issued Ctrl+C during iteration. | Make the generator distinguish a propagated listing failure from a real interrupt (e.g. a dedicated exception/sentinel instead of `KeyboardInterrupt`) and raise or report the whole dst as missing, instead of silently stopping either way. | A unit test with a fake backend that raises "directory not found" for a missing dst root proves `scan_missing_folders()` either raises or correctly reports the whole dst as missing, not silently empty. |
 
 Keep improvement pull requests small. Establish the contract with tests,
 change one boundary, preserve compatibility, and remove the old path only

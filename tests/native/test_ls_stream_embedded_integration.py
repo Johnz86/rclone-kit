@@ -1,6 +1,5 @@
 """Native-backed test for the embedded bounded-memory listing stream
-(ledger row L02 `ls_stream`, L03 `save_to_db` transitively), per the Wave F
-design (`native_c_abi_wave_f_review_and_design.md`).
+`ls_stream` (`save_to_db` transitively).
 
 Skipped automatically when no built native library exists (run
 `scripts/native/build.py` first).

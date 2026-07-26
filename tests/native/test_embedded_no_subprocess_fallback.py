@@ -1,12 +1,11 @@
 """Proves that every currently-ported embedded operation completes without
 spawning a subprocess.
 
-This is the "no silent subprocess fallback" migration invariant made
-executable: `subprocess.Popen` is patched to raise before a single
-currently-ported public `Rclone` method is called against the real
-built native library, so a regression that quietly reintroduces a CLI
-call (directly or through a helper that still shells out) fails loudly
-here instead of only showing up as a slow/flaky parity mismatch.
+`subprocess.Popen` is patched to raise before a single currently-ported
+public `Rclone` method is called against the real built native library, so
+a regression that quietly reintroduces a subprocess call (directly or
+through a helper that still shells out) fails loudly here instead of only
+showing up as a slow/flaky parity mismatch.
 
 Deliberately uses the real DLL (not a fake `RcClient`) - a fake can't prove
 the *production* code path takes no subprocess branch, only that the test's
@@ -66,15 +65,16 @@ def test_every_currently_ported_embedded_method_avoids_subprocess(
     purge_target.mkdir()
     (purge_target / "c.txt").write_bytes(b"purge me")
 
-    # M01, M02, M03, M05 (M06 is covered separately by test_client_embedded.py:
-    # it raises ValueError for a non-S3/unknown remote before touching the RC
-    # boundary at all, which isn't useful to exercise here)
+    # Config and remote-info methods. is_s3()'s error path for a non-S3/
+    # unknown remote is covered separately by test_client_embedded.py: it
+    # raises ValueError before touching the RC boundary at all, which isn't
+    # useful to exercise here.
     rclone.obscure("secret")
     rclone.listremotes()
     rclone.config_paths()
     rclone.is_s3(str(src_dir))
 
-    # L01, L05, L06, L07, L08, L10, L11, L12, L13, L14
+    # Listing/stat/diff/walk operations
     rclone.ls(str(src_dir), max_depth=-1)
     rclone.stat(str(src_dir / "a.txt"))
     rclone.modtime(str(src_dir / "a.txt"))
@@ -86,7 +86,7 @@ def test_every_currently_ported_embedded_method_avoids_subprocess(
     list(rclone.walk(str(src_dir)))
     list(rclone.scan_missing_folders(str(src_dir), str(dst_dir)))
 
-    # T01, T02, T07, T11, T12
+    # Transfer operations
     copied = tmp_path / "copied.txt"
     rclone.copy_to(str(src_dir / "a.txt"), str(copied))
     rclone.read_bytes(str(src_dir / "a.txt"))

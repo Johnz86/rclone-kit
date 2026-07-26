@@ -1,7 +1,7 @@
-"""Unit tests for `EmbeddedFilesStream` (CLI-to-C-ABI migration ledger row
-L02), driven by a fake `RcListStreamClient` so these tests exercise
-batching/pagination/error semantics without a built native library.
-Native-DLL parity is covered by `tests/native/test_ls_stream_embedded_integration.py`.
+"""Unit tests for `EmbeddedFilesStream`, driven by a fake
+`RcListStreamClient` so these tests exercise batching/pagination/error
+semantics without a built native library. Native-DLL parity is covered by
+`tests/native/test_ls_stream_embedded_integration.py`.
 """
 
 import pytest

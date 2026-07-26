@@ -192,9 +192,8 @@ def test_real_fs_path_truediv_still_uses_native_path_semantics() -> None:
 
 
 class FakeRemoteFSAccess:
-    """A fake `RemoteFSAccess` (CLI-to-C-ABI migration Wave G design):
-    every method the protocol declares, none of which touch a real
-    process or network call."""
+    """A fake `RemoteFSAccess` implementing every method the protocol
+    declares, none of which touch a real process or network call."""
 
     def __init__(self) -> None:
         self.serve_http_calls: list[str] = []

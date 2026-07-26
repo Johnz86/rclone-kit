@@ -1,10 +1,9 @@
 """RC mount boundary: typed `mount`/`unmount` adapters over one
 `RcCallable`, translating `mount/mount`/`mount/unmount`'s wire JSON into
-plain Python values (CLI-to-C-ABI migration Wave H design, R01/R02).
+plain Python values.
 
 Wire shapes verified empirically against the pinned native build (built
-with `-tags cmount` and the installed WinFsp SDK's `CPATH`, per
-`native_c_abi_wave_h_review_and_design.md`'s mount addendum) and by reading
+with `-tags cmount` and the installed WinFsp SDK's `CPATH`) and by reading
 `native/rclone/cmd/mountlib/rc.go` directly:
 
 - `mount/mount` takes `fs` (required), `mountPoint` (required), and

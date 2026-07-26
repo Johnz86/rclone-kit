@@ -47,10 +47,11 @@ def _resolve_local(path: str) -> str:
     against the *current* working directory the first time it is ever
     used against a given runtime; every later call with that same literal
     string reuses that first resolution, even after this process's cwd has
-    since changed. `RcPath` addresses only the shared, long-lived embedded
-    runtime (never a short-lived CLI subprocess, which has no such reuse
-    hazard), so resolving here - in Python, at the moment of the call - is
-    the only way repeated relative-path calls stay correct.
+    since changed. This hazard only exists because `RcPath` addresses a
+    shared, long-lived embedded runtime - a hypothetical short-lived
+    process, torn down and relaunched per call, would have no such reuse
+    to worry about - so resolving here, in Python, at the moment of the
+    call, is the only way repeated relative-path calls stay correct.
     """
     if not path or not path.strip("/\\"):
         # Empty, or nothing but separator characters ("/", "\\", "//", ...):

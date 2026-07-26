@@ -1,7 +1,6 @@
 """Native library path resolution.
 
-Resolution order, per `reference/rclone_c_abi_implementation_plan.md`'s
-"Library loading" section:
+Resolution order:
 
 1. an explicit `library_path` passed by the caller;
 2. the `RCLONE_KIT_LIBRARY` development override;

@@ -1,5 +1,5 @@
 """Native-backed test for the embedded RC-backed listing/stat operations
-(ledger rows M02, L05, L06/L07, L08, L10) and `config_show` (M04).
+and `config_show`.
 
 Uses local filesystem paths, so no configured remote is required; reuses
 the shared, already-initialized `native_runtime` session fixture (see
@@ -118,8 +118,7 @@ def test_config_show_whole_config_returns_text(embedded: Rclone) -> None:
 
 
 def test_native_build_info_reports_a_real_build(embedded: Rclone) -> None:
-    # Wave I design, C02: the embedded replacement for upgrade_rclone()'s
-    # old "which rclone am I running" concern.
+    # Reports which embedded rclone build is actually running.
     info = embedded.native_build_info()
 
     assert info.abi_version >= 1

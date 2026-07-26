@@ -1,20 +1,16 @@
 """Native-backed parity check for the embedded RC-backed transfer
-operations (ledger rows T01, T02, T07), plus verification that
-`read_bytes()`/`read_text()` (T11/T12) work transitively - both only ever
-call `self.copy_to`, so they needed no embedded adapter of their own once
-T02 landed.
+operations `copy_to`/`purge`/`cleanup`, plus verification that
+`read_bytes()`/`read_text()` work transitively - both only ever call
+`self.copy_to`, so they need no embedded adapter of their own.
 
-Since Wave D Phase D7, all three route through the shared async job engine
-(`_JobMonitor`), so a `copy_to(check=True)` failure raises
-`OperationFailedError` - not a raw `RcCallError` - the same
-execution-independent exception `read_bytes()`/`read_text()` translate to
-`RcloneCommandError`, closing design-review finding F4.
+All three route through the shared async job engine (`_JobMonitor`), so a
+`copy_to(check=True)` failure raises `OperationFailedError` - not a raw
+`RcCallError` - the same execution-independent exception
+`read_bytes()`/`read_text()` translate to `RcloneCommandError`.
 
-Also covers T09/T10 (`write_bytes()`/`write_text()`, confirmed already
-transitively embedded through `copy_to()` before any Wave F code was
-written for them) and T13 (`copy_bytes()`, backed by the downstream
-`rclonekit/readrange` RC method - see
-`native_c_abi_wave_f_review_and_design.md`).
+Also covers `write_bytes()`/`write_text()` (transitively embedded through
+`copy_to()`) and `copy_bytes()` (backed by the downstream
+`rclonekit/readrange` RC method).
 
 Skipped automatically when no built native library exists (run
 `scripts/native/build.py` first).
@@ -50,10 +46,8 @@ def test_copy_to_for_a_real_file(tmp_path: Path, embedded: Rclone) -> None:
 def test_copy_to_works_with_bare_relative_basenames(
     tmp_path: Path, embedded: Rclone, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # Regression test for design-review finding F8: RcPath.as_parent_and_name()
-    # used to reject a bare relative filename with no directory separator
-    # ("src.txt") instead of resolving its parent as the current directory,
-    # which is what the CLI does.
+    # A bare relative filename with no directory separator ("src.txt") must
+    # resolve its parent to the current directory, not raise.
     monkeypatch.chdir(tmp_path)
     Path("src.txt").write_bytes(b"relative basename works")
 
@@ -65,8 +59,8 @@ def test_copy_to_works_with_bare_relative_basenames(
 def test_copy_to_relative_basename_destination_also_works(
     tmp_path: Path, embedded: Rclone, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # F8 covers the destination side too: a bare relative basename with no
-    # existing file yet at that name must still resolve its parent to ".".
+    # The destination side of the same rule: a bare relative basename with
+    # no existing file yet at that name must still resolve its parent to ".".
     monkeypatch.chdir(tmp_path)
     src = tmp_path / "abs_src.txt"
     src.write_bytes(b"dest side relative basename")
@@ -109,10 +103,9 @@ def test_read_bytes_and_read_text_work_transitively_through_copy_to(
 
 
 def test_write_bytes_transitively_through_copy_to(tmp_path: Path, embedded: Rclone) -> None:
-    # T09/T10 (Wave F): write_bytes()/write_text() need no embedded-specific
-    # code at all - they already call copy_to(), embedded since Wave D
-    # Phase D7. Confirmed empirically (not just inferred from reading the
-    # dispatch) before adding any Wave F code for these two rows.
+    # write_bytes()/write_text() need no embedded-specific code of their
+    # own - they already call copy_to(), confirmed empirically here rather
+    # than just inferred from reading the dispatch.
     embedded_dst = tmp_path / "embedded_out.bin"
 
     embedded.write_bytes(b"hello embedded write_bytes", str(embedded_dst))
@@ -131,7 +124,7 @@ def test_write_text_transitively_through_write_bytes(tmp_path: Path, embedded: R
 def test_print_works_transitively_through_read_text(
     tmp_path: Path, embedded: Rclone, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    # L04 (Wave F): print() only ever calls read_text(), already embedded.
+    # print() only ever calls read_text(), already embedded.
     src = tmp_path / "hello.txt"
     src.write_text("printed via embedded read_text", encoding="utf-8")
 
@@ -143,9 +136,8 @@ def test_print_works_transitively_through_read_text(
 def test_read_bytes_raises_rclone_command_error_for_a_missing_source(
     tmp_path: Path, embedded: Rclone
 ) -> None:
-    # Closes design-review finding F4: the embedded failure contract now
-    # matches the CLI's - RcloneCommandError regardless of execution mode -
-    # not a bare RcCallError/OperationFailedError leaking through.
+    # read_bytes() must always raise RcloneCommandError for a missing
+    # source, not a bare RcCallError/OperationFailedError leaking through.
     missing = tmp_path / "does-not-exist.txt"
 
     with pytest.raises(RcloneCommandError):

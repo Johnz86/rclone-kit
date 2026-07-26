@@ -1,5 +1,4 @@
-"""Unit tests for `MountHandle` (CLI-to-C-ABI migration Wave H design,
-R01/R02), driven by a fake `RcMountClient`."""
+"""Unit tests for `MountHandle`, driven by a fake `RcMountClient`."""
 
 from pathlib import Path
 

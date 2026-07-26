@@ -1,14 +1,14 @@
-"""Native-backed test for `upload_parts_resumable()` under embedded
-execution (CLI-to-C-ABI migration ledger row T15, `copy_file_s3_resumable`).
+"""Native-backed test for `upload_parts_resumable()`
+(`copy_file_s3_resumable`) under embedded execution.
 
 `upload_parts_resumable()` calls `self.size_file(src)` and
 `self.serve_http(src_dir)` directly on its `access: MultipartAccess`
-parameter - both already embedded-capable (Wave D, Wave H) - then downloads
-byte ranges from that server and re-uploads each chunk via
-`access.copy_to(chunk, dst_part)`. None of that machinery is S3-specific:
-using a plain local directory as `dst_dir` here exercises the exact same
-`size_file`/`serve_http`/range-download/`copy_to` chain the real S3 flow
-uses, without needing a real bucket.
+parameter - both embedded-capable - then downloads byte ranges from that
+server and re-uploads each chunk via `access.copy_to(chunk, dst_part)`.
+None of that machinery is S3-specific: using a plain local directory as
+`dst_dir` here exercises the exact same `size_file`/`serve_http`/
+range-download/`copy_to` chain the real S3 flow uses, without needing a
+real bucket.
 
 What this test deliberately does NOT cover: `upload_parts_server_side_merge
 .py`'s merge step, which calls a real `boto3` client's `upload_part_copy`/
@@ -16,7 +16,7 @@ What this test deliberately does NOT cover: `upload_parts_server_side_merge
 step has no local equivalent and (per this repo's own existing
 `tests/cloud/test_copy_file_resumable_s3.py::test_copy_parts`) is an
 unconditionally-skipped manual test even when live credentials are
-available, unrelated to CLI-vs-embedded execution or this migration.
+available.
 
 Skipped automatically when no built native library exists (run
 `scripts/native/build.py` first).

@@ -1,13 +1,11 @@
 """`encode_fs_spec`: encode an rclone path/remote string into the value an
-RC `srcFs`/`dstFs` parameter expects (CLI-to-C-ABI migration Wave D
-design, section 9.3).
+RC `srcFs`/`dstFs` parameter expects.
 
 Most targets pass through as a plain string. A configured S3 or B2 remote
 becomes rclone's documented RC config-object form instead, so
-`no_check_bucket` can be set - the CLI's `copy`/`copy_dir`/`copy_remote`/
-`copy_to` methods always pass `--s3-no-check-bucket`, and that is a
-backend option with no `fs.ConfigInfo` field, so it cannot be expressed
-through `_config` the way transfer tuning can.
+`no_check_bucket` can be set: this is a backend option with no
+`fs.ConfigInfo` field, so it cannot be expressed through `_config` the way
+transfer tuning can.
 """
 
 from __future__ import annotations

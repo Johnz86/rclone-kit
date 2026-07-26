@@ -1,7 +1,6 @@
-"""Unit tests for the embedded RC-backed mount operations (CLI-to-C-ABI
-migration ledger rows R01 `mount`, R02 `mount_s3`), driven by a fake
-`RcMountClient`. Native-DLL parity is covered by
-`tests/native/test_mount_ops_embedded_integration.py`.
+"""Unit tests for the embedded RC-backed mount operations (`mount`,
+`mount_s3`), driven by a fake `RcMountClient`. Native-DLL parity is covered
+by `tests/native/test_mount_ops_embedded_integration.py`.
 """
 
 from pathlib import Path

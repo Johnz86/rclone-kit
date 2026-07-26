@@ -100,9 +100,8 @@ def test_file_item_from_json_ordinary_nested_path() -> None:
 
 
 class _RecordingRclone:
-    """Records the `src` passed to `read_text`; ledger row F06 requires
-    `File.read_text` to delegate here rather than call `_run(["cat", ...])`
-    directly.
+    """Records the `src` passed to `read_text`; `File.read_text` must
+    delegate here rather than call `_run(["cat", ...])` directly.
     """
 
     def __init__(self) -> None:

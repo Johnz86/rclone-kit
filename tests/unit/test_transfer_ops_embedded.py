@@ -1,5 +1,5 @@
-"""Unit tests for the embedded RC-backed transfer operations (CLI-to-C-ABI
-migration ledger rows T01, T02, T06, T07, T08).
+"""Unit tests for the embedded RC-backed transfer operations (`copy_to`,
+`copy_files`, `delete_files`, `purge`, `cleanup`, `copy_bytes`).
 
 Drives `_JobMonitor` with a fake `RcJobClient` (the same harness
 `tests/unit/test_job.py` uses), so these tests exercise request mapping and

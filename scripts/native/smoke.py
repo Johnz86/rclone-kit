@@ -1,12 +1,12 @@
 """Native C ABI smoke test for one built `librclone_kit` shared library.
 
-Exercises every proof point required by Phase 2/3 of
-`reference/rclone_c_abi_implementation_plan.md` directly through `ctypes`,
-without importing any `rclone_kit` Python runtime layer (that layer does not
-exist yet — this script *is* part of proving its eventual ctypes contract is
-sound): ABI version, build info, fixed-config initialization, repeated RPC
-calls, `rc/list`, a memory-backend CRUD round trip, an unknown-method 404,
-allocation/free correctness, and no spawned child process.
+Exercises every proof point a working native library must satisfy directly
+through `ctypes`, without importing any `rclone_kit` Python runtime layer -
+this keeps the smoke test valid evidence of the raw ABI contract,
+independent of the Python wrapper built on top of it: ABI version, build
+info, fixed-config initialization, repeated RPC calls, `rc/list`, a
+memory-backend CRUD round trip, an unknown-method 404, allocation/free
+correctness, and no spawned child process.
 
 `scripts/native/build.py` is the canonical caller: it runs this against every
 freshly built library and writes the result as `smoke-results.json` inside
