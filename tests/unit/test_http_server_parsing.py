@@ -6,11 +6,13 @@ containing a `<span class="name"><a href="...">NAME</a></span>`, with a
 trailing slash on the name distinguishing a directory from a file.
 """
 
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from types import TracebackType
 from typing import Self
 
+import httpx
 import pytest
 
 from rclone_kit import http_server as http_server_module
@@ -155,12 +157,12 @@ def test_download_rejects_short_ranged_response(
     server = HttpServer("http://localhost:8080", "", process=_stub_process())
     destination = tmp_path / "download"
     monkeypatch.setattr(
-        http_server_module.httpx,
+        httpx,
         "stream",
         lambda *_args, **_kwargs: _ShortRangeResponse(),
     )
     monkeypatch.setattr(http_server_module, "_range", lambda _count: iter((0,)))
-    monkeypatch.setattr(http_server_module.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
 
     with pytest.warns(UserWarning), pytest.raises(HttpFetchError):
         server.download("file.bin", destination, Range(0, 4))

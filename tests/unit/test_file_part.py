@@ -4,12 +4,12 @@ idempotent (silent-on-repeat) `dispose()`, and registering the module's
 `atexit` handler at most once no matter how many chunk files are staged.
 """
 
+import atexit
 from pathlib import Path
 
 import pytest
 
 from rclone_kit import file_part as file_part_module
-from rclone_kit import util as util_module
 from rclone_kit.file_part import FilePart
 from rclone_kit.s3.multipart.file_info import S3FileInfo
 
@@ -64,7 +64,7 @@ def test_add_for_cleanup_registers_atexit_handler_at_most_once(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     register_calls: list[object] = []
-    monkeypatch.setattr(util_module.atexit, "register", register_calls.append)
+    monkeypatch.setattr(atexit, "register", register_calls.append)
     monkeypatch.setattr(file_part_module._register_exit_cleanup_handlers, "__dict__", {})
 
     first_chunk = tmp_path / "first.chunk"

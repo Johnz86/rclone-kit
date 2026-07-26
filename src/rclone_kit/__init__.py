@@ -22,7 +22,7 @@ from rclone_kit.embedded_file_stream import EmbeddedFilesStream
 from rclone_kit.file import File, FileItem
 from rclone_kit.filelist import FileList
 from rclone_kit.fs.filesystem import FSPath, RealFS, RemoteFS
-from rclone_kit.http_server import HttpFetcher, HttpServer, Range
+from rclone_kit.http_server import HttpFetcher, HttpServer
 from rclone_kit.job import JobHandle
 from rclone_kit.log import configure_logging
 from rclone_kit.log import setup_default_logging as setup_default_logging
@@ -43,7 +43,7 @@ from rclone_kit.rpath import RPath
 from rclone_kit.s3.types import MultiUploadResult
 from rclone_kit.serve_handle import ServeHandle
 from rclone_kit.settings import LogSettings, rclone_verbose
-from rclone_kit.types import ListingOption, Order, PartInfo, SizeResult, SizeSuffix
+from rclone_kit.types import ListingOption, Order, PartInfo, Range, SizeResult, SizeSuffix
 
 logging.getLogger(__name__).addHandler(logging.NullHandler())
 

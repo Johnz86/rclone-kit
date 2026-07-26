@@ -54,7 +54,7 @@ package-dir = {"" = "src"}
 where = ["src"]
 
 [tool.setuptools.package-data]
-rclone_kit = ["assets/*", "assets/**/*"]
+rclone_kit = ["py.typed", "assets/*", "assets/**/*"]
 
 [tool.ruff]
 target-version = "py313"

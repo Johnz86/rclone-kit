@@ -21,12 +21,13 @@ from rclone_kit.authorization.exceptions import (
     AuthorizationUnsupportedPromptError,
 )
 from rclone_kit.authorization.manager import AuthorizationManager
-from rclone_kit.authorization.relay import RelayRequest, RelayResponse
 from rclone_kit.authorization.session import AuthorizationSession
 from rclone_kit.authorization.types import (
     AuthorizationRequest,
     AuthorizationResult,
     AuthorizationStatus,
+    RelayRequest,
+    RelayResponse,
     RemoteConflictPolicy,
     Secret,
 )

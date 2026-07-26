@@ -15,7 +15,8 @@ import pytest
 from rclone_kit import Rclone
 from rclone_kit.env_file import load_env_file
 from rclone_kit.exceptions import HttpFetchError
-from rclone_kit.http_server import HttpServer, Range
+from rclone_kit.http_server import HttpServer
+from rclone_kit.types import Range
 
 load_env_file()
 
