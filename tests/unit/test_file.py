@@ -44,6 +44,28 @@ def test_relative_to_ordinary_nested_path() -> None:
     assert f.relative_to("remote:Bucket") == "subdir/file.txt"
 
 
+def test_to_string_on_a_local_path_has_no_leading_colon() -> None:
+    """A local File (no remote at all - see util.split_remote_name_and_path)
+    has nothing to prefix; the previous `f"{remote.name}:{path}"`
+    reconstruction produced a leading ":" (e.g. ":/tmp/a.txt") that
+    doesn't round-trip back through `RcPath.parse`.
+    """
+    remote = Remote(name="", rclone=_FAKE_RCLONE)
+    rpath = RPath(
+        remote=remote,
+        path="/srv/data/a.txt",
+        name="a.txt",
+        size=1,
+        mime_type="text/plain",
+        mod_time="",
+        is_dir=False,
+    )
+    rpath.set_rclone(_FAKE_RCLONE)
+    f = File(rpath)
+
+    assert f.to_string(include_remote=True) == "/srv/data/a.txt"
+
+
 def test_file_item_from_json_preserves_literal_backslash_in_parent() -> None:
     item = FileItem.from_json(
         "remote",

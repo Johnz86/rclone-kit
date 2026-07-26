@@ -1,7 +1,6 @@
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 
-_MIN_QUALIFIED_PATH_PARTS = 2
 _MAX_CHILDREN_FOR_INDIVIDUAL_MERGE = 2
 
 
@@ -34,15 +33,19 @@ class FilePathParts:
 
 
 def parse_file(file_path: str) -> FilePathParts:
-    """Parse file path into parts."""
+    """Parse file path into parts.
+
+    A colonless `file_path` (a local filesystem path, not `remote:path`)
+    parses with `remote=""` rather than raising - `delete_files_embedded`
+    calls this on real local paths too (via `RemoteFS.remove()`), and on
+    Linux those never contain a colon at all. A Windows path still parses
+    the same as before: its drive letter's own colon (`C:\\...`) is
+    indistinguishable from `remote:path` here, which happens to reproduce
+    correctly once reassembled - see `to_string`.
+    """
     assert not file_path.endswith("/"), "This looks like a directory path"
-    parts = file_path.split(":")
-    if len(parts) < _MIN_QUALIFIED_PATH_PARTS:
-        raise ValueError(
-            f"Invalid file path: {file_path}, expected fully qualified path like dst:Bucket/subdir/file.txt"
-        )
-    remote = parts[0]
-    path = parts[1]
+    head, colon, tail = file_path.partition(":")
+    remote, path = (head, tail) if colon else ("", head)
     if path.startswith("/"):
         path = path[1:]
     parents = path.split("/")
@@ -147,14 +150,25 @@ def _make_tree(files: list[str]) -> dict[str, TreeNode]:
     return tree
 
 
+def _colonify(path: str) -> str:
+    """Turn one `/`-stripped tree path into its final `group_files()` key.
+
+    A doubled leading "/" means the top-level node's name was "" - a
+    local, colonless path from `parse_file`, not a real remote name - so
+    `path` is already a plain absolute local path with no remote segment
+    to colon-ify; return it unchanged. Otherwise the first "/" marks the
+    end of the remote name and becomes ":".
+    """
+    if path.startswith("/"):
+        return path
+    return path.replace("/", ":", 1)
+
+
 def _fixup_rclone_paths(outpaths: dict[str, list[str]]) -> dict[str, list[str]]:
     out: dict[str, list[str]] = {}
     for path, files in outpaths.items():
         assert path.startswith("/"), "Path should start with /"
-        fixed_path = path[1:]
-
-        fixed_path = fixed_path.replace("/", ":", 1)
-        out[fixed_path] = files
+        out[_colonify(path[1:])] = files
     return out
 
 

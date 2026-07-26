@@ -176,13 +176,17 @@ class File:
         return self.path.to_json()
 
     def to_string(self, include_remote: bool = True) -> str:
-        """Convert the File to a string."""
+        """Convert the File to a string.
 
-        remote = self.path.remote
-        rest = self.path.path
+        `include_remote=True` delegates to `RPath.__str__` rather than
+        reconstructing `f"{remote.name}:{path}"` directly: a local file
+        has no remote component at all, and that reconstruction would
+        produce a leading ":" (e.g. ":/tmp/foo/bar") that doesn't
+        round-trip back through `RcPath.parse`.
+        """
         if include_remote:
-            return f"{remote.name}:{rest}"
-        return rest
+            return str(self.path)
+        return self.path.path
 
     def relative_to(self, prefix: str) -> str:
         """Return the relative path to the other directory.

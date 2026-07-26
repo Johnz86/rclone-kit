@@ -136,6 +136,21 @@ class GroupFilestest(unittest.TestCase):
         ]
         self.assertIn(expected_files[0], groups["dst:TorrentBooks/libgenrs_nonfiction/204000"])
 
+    def test_fully_qualified_local_path_has_no_colon(self) -> None:
+        """`delete_files_embedded` calls `group_files(files)` (fully_qualified
+        defaults to True) on real local filesystem paths too, via
+        `RemoteFS.remove()` - on Linux those never contain a colon at all.
+        A colonless path must group under its own absolute directory, not
+        raise or get a stray leading ':' - see `parse_file`/
+        `_fixup_rclone_paths`."""
+        files = [
+            "/srv/data/subdir/manifest.txt",
+        ]
+
+        groups: dict[str, list[str]] = _group_files(files, fully_qualified=True)
+
+        self.assertEqual(groups, {"/srv/data/subdir": ["manifest.txt"]})
+
     def test_group_under_one_prefix(self) -> None:
         files = [
             "Bucket/subdir/file1.txt",
