@@ -138,7 +138,6 @@ def _to_rclone_conf(config: Config | Path | None) -> Config:
 class Rclone:
     """Curated high-level API for rclone operations."""
 
-    _rc_client: RcClient | None = None
     _job_monitor: _JobMonitor | None = None
 
     def __init__(
@@ -165,9 +164,9 @@ class Rclone:
         if runtime is not None and library_path is not None:
             raise ValueError("supply at most one of runtime and library_path")
 
-        self._embedded_runtime: RcloneRuntime | None = None
+        self._embedded_runtime: RcloneRuntime
+        self._rc_client: RcClient
         self._owns_embedded_runtime = False
-        self._rc_client: RcClient | None = None
         self._job_monitor: _JobMonitor | None = None
         self._serve_client: RcServeClient | None = None
         self._serve_handles: set[ServeHandle] = set()
@@ -239,7 +238,7 @@ class Rclone:
                     f"one or more jobs did not settle within "
                     f"{_JOB_SHUTDOWN_DEADLINE_SECONDS}s of close(); runtime left open"
                 )
-        if self._owns_embedded_runtime and self._embedded_runtime is not None:
+        if self._owns_embedded_runtime:
             self._embedded_runtime.close()
 
     def __enter__(self) -> Self:
@@ -253,7 +252,6 @@ class Rclone:
         ABI version, rclone version/commit, Go version, build tags, and
         target platform (Wave I design, C02).
         """
-        assert self._embedded_runtime is not None
         return self._embedded_runtime.build_info()
 
     def filesystem(self, src: str) -> RemoteFS:
@@ -264,7 +262,6 @@ class Rclone:
 
     def obscure(self, password: str) -> str:
         """Obscure a password for use in rclone config files."""
-        assert self._rc_client is not None
         return self._rc_client.call("core/obscure", clear=password)["obscured"]
 
     def ls_stream(
@@ -283,7 +280,6 @@ class Rclone:
 
         Backed by `rclonekit/liststream/*` rather than a subprocess.
         """
-        assert self._rc_client is not None
         stream = fetch_ls_stream_embedded(
             RcloneRcListStreamClient(self._rc_client), src, max_depth, fast_list
         )
@@ -335,7 +331,6 @@ class Rclone:
         Returns:
             List of File objects found at the path
         """
-        assert self._rc_client is not None
         return fetch_ls_embedded(
             self._rc_client,
             self,
@@ -355,7 +350,6 @@ class Rclone:
 
         Raises FileNotFoundError if `src` does not exist.
         """
-        assert self._rc_client is not None
         return fetch_stat_embedded(self._rc_client, self, src)
 
     def modtime(self, src: str) -> str:
@@ -367,7 +361,6 @@ class Rclone:
         return fetch_modtime_dt(self, src)
 
     def listremotes(self) -> list[Remote]:
-        assert self._rc_client is not None
         return fetch_listremotes_embedded(self._rc_client, self)
 
     def diff(
@@ -383,7 +376,6 @@ class Rclone:
     ) -> Generator[DiffItem]:
         """Be extra careful with the src and dst values. If you are off by one
         parent directory, you will get a huge amount of false diffs."""
-        assert self._rc_client is not None
         yield from stream_diff_embedded(
             self._rc_client,
             src,
@@ -539,13 +531,11 @@ class Rclone:
 
     def _ensure_job_monitor(self) -> _JobMonitor:
         if self._job_monitor is None:
-            assert self._rc_client is not None
             self._job_monitor = _JobMonitor(RcloneRcJobClient(self._rc_client))
         return self._job_monitor
 
     def _ensure_serve_client(self) -> RcServeClient:
         if self._serve_client is None:
-            assert self._rc_client is not None
             self._serve_client = RcloneRcServeClient(self._rc_client)
         return self._serve_client
 
@@ -562,7 +552,6 @@ class Rclone:
 
     def _ensure_mount_client(self) -> RcMountClient:
         if self._mount_client is None:
-            assert self._rc_client is not None
             self._mount_client = RcloneRcMountClient(self._rc_client)
         return self._mount_client
 
@@ -607,7 +596,6 @@ class Rclone:
         Only a relay deployment (a web service driving auth on behalf of a
         browser elsewhere) needs `public_callback_url`.
         """
-        assert self._embedded_runtime is not None
         manager = AuthorizationManager.for_runtime(self._embedded_runtime)
         request = AuthorizationRequest(
             remote_name=remote_name,
@@ -744,12 +732,10 @@ class Rclone:
 
     def exists(self, src: Dir | Remote | str | File) -> bool:
         """Check if a file or directory exists."""
-        assert self._rc_client is not None
         return check_exists_embedded(self._rc_client, self, convert_to_str(src))
 
     def is_synced(self, src: str | Dir, dst: str | Dir) -> bool:
         """Check if two directories are in sync."""
-        assert self._rc_client is not None
         return check_is_synced_embedded(self._rc_client, src, dst)
 
     def _s3_client(self, src: str, verbose: bool | None = None) -> S3Client:
@@ -871,7 +857,6 @@ class Rclone:
         Raises FileNotFoundError if no file matches `src`, or ValueError
         if more than one file matches.
         """
-        assert self._rc_client is not None
         return fetch_size_file_embedded(self._rc_client, self, src)
 
     def get_s3_credentials(self, remote: str, verbose: bool | None = None) -> S3Credentials:
@@ -1026,12 +1011,10 @@ class Rclone:
         config file, cache directory, and temp directory, in that fixed
         order.
         """
-        assert self._rc_client is not None
         return fetch_config_paths_embedded(self._rc_client)
 
     def config_show(self, remote: str | None = None) -> str:
         """Return the configuration text reported by `rclone config show`."""
-        assert self._rc_client is not None
         return fetch_config_show_embedded(self._rc_client, remote=remote)
 
     def size_files(
@@ -1042,7 +1025,6 @@ class Rclone:
         check: bool | None = False,
     ) -> SizeResult:
         """Get the size of a list of files. Example of files items: "remote:bucket/to/file"."""
-        assert self._rc_client is not None
         return fetch_size_files_embedded(
             self._rc_client,
             self,
