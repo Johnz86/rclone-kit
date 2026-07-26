@@ -201,7 +201,10 @@ def group_under_remote_bucket(
     files: list[str], fully_qualified: bool = True
 ) -> dict[str, list[str]]:
     """split between filename and bucket"""
-    assert fully_qualified is True, "Not implemented for fully_qualified=False"
+    if not fully_qualified:
+        raise NotImplementedError(
+            "group_under_remote_bucket does not support fully_qualified=False"
+        )
     out: dict[str, list[str]] = {}
     for file in files:
         parsed = parse_file(file)

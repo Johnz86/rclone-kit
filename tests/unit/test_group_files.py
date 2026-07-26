@@ -5,7 +5,7 @@ Unit test file.
 import unittest
 
 from rclone_kit.group_files import group_files as _group_files
-from rclone_kit.group_files import group_under_one_prefix
+from rclone_kit.group_files import group_under_one_prefix, group_under_remote_bucket
 
 
 def group_files(files: list[str], fully_qualified: bool | None = None) -> dict[str, list[str]]:
@@ -165,6 +165,28 @@ class GroupFilestest(unittest.TestCase):
         groups: dict[str, list[str]] = _group_files(files, fully_qualified=True)
 
         self.assertEqual(groups, {"C:/Users/jan/data/subdir": ["manifest.txt"]})
+
+    def test_group_under_remote_bucket_splits_by_bucket(self) -> None:
+        files = [
+            "dst:Bucket/subdir/file1.txt",
+            "dst:Bucket/subdir2/file2.txt",
+        ]
+
+        groups = group_under_remote_bucket(files)
+
+        self.assertEqual(
+            groups,
+            {
+                "dst:Bucket": [
+                    "subdir/file1.txt",
+                    "subdir2/file2.txt",
+                ]
+            },
+        )
+
+    def test_group_under_remote_bucket_rejects_fully_qualified_false(self) -> None:
+        with self.assertRaises(NotImplementedError):
+            group_under_remote_bucket(["file1.txt"], fully_qualified=False)
 
     def test_group_under_one_prefix(self) -> None:
         files = [
