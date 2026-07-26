@@ -24,6 +24,18 @@ _executor = ThreadPoolExecutor(max_workers=_FS_WALK_THREAD_MAX_BACKLOG)
 
 
 def _list_dir(path: FSPath):
+    """List one directory, or log and skip it on failure rather than
+    aborting the whole walk.
+
+    Deliberately different from `rclone_kit.operations.walk`'s RC-backed
+    walker, which propagates a listing failure to the caller instead:
+    `FSPath`/`RealFS` walks a local (or already-open remote) filesystem,
+    where a single permission-denied or since-deleted subdirectory
+    partway through a large tree is the common, expected failure mode
+    (the same default `os.walk` itself takes) - not a sign the whole
+    source is unreachable, which is the failure `operations.walk` is
+    built to surface loudly instead.
+    """
     try:
         filenames, dirnames = path.ls()
     except Exception as e:

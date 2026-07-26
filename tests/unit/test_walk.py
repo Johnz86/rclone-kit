@@ -82,6 +82,24 @@ class _FakeTreeRclone:
         return DirListing(rpaths)
 
 
+class _FailingAtPathRclone(_FakeTreeRclone):
+    """Fails `Dir.ls()` for one specific path, to exercise walker error
+    handling - both walkers must still queue the sentinel and propagate
+    the failure rather than swallowing it, since a swallowed non-
+    `KeyboardInterrupt` failure used to leave `walk()`'s consumer blocked
+    on `out_queue.get()` forever.
+    """
+
+    def __init__(self, tree: dict, fail_path: str) -> None:
+        super().__init__(tree)
+        self._fail_path = fail_path
+
+    def ls(self, src: Dir, *args, **kwargs) -> DirListing:
+        if src.path.path == self._fail_path:
+            raise RuntimeError("simulated listing failure")
+        return super().ls(src, *args, **kwargs)
+
+
 def _drain(out_queue: Queue[DirListing | None]) -> list[DirListing]:
     listings: list[DirListing] = []
     while (item := out_queue.get_nowait()) is not None:
@@ -127,6 +145,37 @@ def test_walker_respects_max_depth(walker) -> None:
 
     discovered_names = {d.name for listing in listings for d in listing.dirs}
     assert discovered_names == {"A", "A1", "A2", "B", "B1"}
+
+
+@pytest.mark.parametrize(
+    "walker",
+    [walk_runner_depth_first, walk_runner_breadth_first],
+    ids=["depth_first", "breadth_first"],
+)
+def test_walker_queues_sentinel_and_reraises_on_a_listing_failure(walker) -> None:
+    root = _FailingAtPathRclone(_TREE, fail_path="root/A").root()
+    out_queue: Queue[DirListing | None] = Queue()
+
+    with pytest.raises(RuntimeError, match="simulated listing failure"):
+        walker(root, max_depth=-1, out_queue=out_queue, order=Order.NORMAL)
+
+    # The sentinel must still be queued so a consumer never blocks forever
+    # on out_queue.get(), even though the walk failed partway through.
+    listings = _drain(out_queue)
+    assert len(listings) >= 1
+
+
+@pytest.mark.parametrize("breadth_first", [True, False], ids=["breadth_first", "depth_first"])
+def test_walk_generator_reraises_a_background_listing_failure(breadth_first: bool) -> None:
+    # Regression test: a non-KeyboardInterrupt failure in the background
+    # walk thread used to propagate straight out of the walker without ever
+    # queuing the sentinel, leaving walk()'s consumer loop blocked on
+    # out_queue.get() forever. It must now both terminate and surface the
+    # real failure to the caller, not swallow it.
+    root = _FailingAtPathRclone(_TREE, fail_path="root/A").root()
+
+    with pytest.raises(RuntimeError, match="simulated listing failure"):
+        list(walk(root, breadth_first=breadth_first, max_depth=-1))
 
 
 @pytest.mark.parametrize("breadth_first", [True, False], ids=["breadth_first", "depth_first"])

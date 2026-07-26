@@ -27,7 +27,8 @@ def parse_file(file_path: str) -> RcPathParts:
     `group_files` reassembles a Windows drive's parent path once split
     this way).
     """
-    assert not file_path.endswith("/"), "This looks like a directory path"
+    if file_path.endswith("/"):
+        raise ValueError(f"This looks like a directory path: {file_path!r}")
     return RcPath.parse_parts(file_path)
 
 

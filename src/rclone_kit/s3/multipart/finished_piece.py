@@ -48,7 +48,9 @@ class FinishedPiece:
     def from_json(data: Mapping[str, object] | None) -> "FinishedPiece | EndOfStream":
         if data is None:
             return EndOfStream()
-        part_number = data.get("PartNumber") or data.get("part_number")
+        part_number = data.get("PartNumber")
+        if part_number is None:
+            part_number = data.get("part_number")
         etag = data.get("ETag") or data.get("etag")
         assert isinstance(etag, str)
 

@@ -40,3 +40,28 @@ def test_to_json_array_does_not_warn_with_a_single_end_of_stream(
     FinishedPiece.to_json_array(parts)
 
     assert len(recwarn) == 0
+
+
+def test_from_json_returns_end_of_stream_for_none() -> None:
+    assert isinstance(FinishedPiece.from_json(None), EndOfStream)
+
+
+def test_from_json_parses_standard_field_names() -> None:
+    result = FinishedPiece.from_json({"PartNumber": 3, "ETag": '"etag-3"'})
+
+    assert result == FinishedPiece(part_number=3, etag="etag-3")
+
+
+def test_from_json_parses_lowercase_field_names() -> None:
+    result = FinishedPiece.from_json({"part_number": 4, "etag": "etag-4"})
+
+    assert result == FinishedPiece(part_number=4, etag="etag-4")
+
+
+def test_from_json_does_not_treat_a_part_number_of_zero_as_absent() -> None:
+    # Regression test: `data.get("PartNumber") or data.get("part_number")`
+    # used to fall through on any falsy value, not just a missing key, so a
+    # PartNumber of 0 would be silently replaced by the fallback lookup.
+    result = FinishedPiece.from_json({"PartNumber": 0, "ETag": "etag-0"})
+
+    assert result == FinishedPiece(part_number=0, etag="etag-0")

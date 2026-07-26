@@ -5,7 +5,7 @@ Unit test file.
 import unittest
 
 from rclone_kit.group_files import group_files as _group_files
-from rclone_kit.group_files import group_under_one_prefix, group_under_remote_bucket
+from rclone_kit.group_files import group_under_one_prefix, group_under_remote_bucket, parse_file
 
 
 def group_files(files: list[str], fully_qualified: bool | None = None) -> dict[str, list[str]]:
@@ -218,6 +218,14 @@ class GroupFilestest(unittest.TestCase):
 
         self.assertEqual(prefix, "src:Bucket/subdir")
         self.assertEqual(grouped_files, [backslash_name])
+
+    def test_parse_file_rejects_a_directory_path(self) -> None:
+        # Regression test: this precondition used to be a bare assert,
+        # silently stripped under python -O, unlike every sibling
+        # validation this module now raises for (see
+        # group_under_remote_bucket's NotImplementedError above).
+        with self.assertRaises(ValueError):
+            parse_file("remote:some/dir/")
 
 
 if __name__ == "__main__":

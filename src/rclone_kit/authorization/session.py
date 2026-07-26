@@ -52,6 +52,11 @@ _WATCHER_JOIN_TIMEOUT_SECONDS = 5.0
 # cancelled (`lib/oauthutil/oauthutil.go`), wrapped by `*oauth-do` into
 # "config failed to refresh token: oauth authentication was cancelled".
 # Distinguishes an intentional stop (cancel/expiry) from a real failure.
+# Verified current as of the native/rclone submodule's pinned commit
+# (`scripts/native/verify_submodule_pin.py`) - re-check this string against
+# lib/oauthutil/oauthutil.go's actual wording whenever that pin is bumped:
+# a silent mismatch would report a legitimately cancelled/expired session
+# as FAILED instead, not raise or fail loudly anywhere.
 _OAUTH_CANCELLED_MARKER = "oauth authentication was cancelled"
 
 

@@ -108,9 +108,25 @@ class RcloneRuntime:
         return self._closed
 
     def build_info(self) -> NativeBuildInfo:
-        """Query build info. Safe to call before `initialize()`."""
-        self._require_open()
-        status, output = self._binding.build_info()
+        """Query build info. Safe to call before `initialize()`.
+
+        Tracked as an in-flight call the same way `call()` is (see that
+        method's docstring): without this, `close()` could observe
+        `_active_calls == 0` and invoke `finalize()` while this method's own
+        `RcloneKitBuildInfo` call is still running on the Go side - unlike
+        `rpc()`, `RcloneKitBuildInfo`/`RcloneKitFinalize` concurrency isn't
+        covered by the bridge mutex argument in the class docstring.
+        """
+        with self._state_lock:
+            self._require_open()
+            self._active_calls += 1
+        try:
+            status, output = self._binding.build_info()
+        finally:
+            with self._no_calls_in_flight:
+                self._active_calls -= 1
+                if self._active_calls == 0:
+                    self._no_calls_in_flight.notify_all()
         _raise_for_lifecycle_status(status, output)
         return parse_build_info(output)
 

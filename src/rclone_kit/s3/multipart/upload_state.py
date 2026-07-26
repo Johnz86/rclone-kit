@@ -59,7 +59,16 @@ class UploadState:
             return
         with self.lock:
             self.parts.append(part)
-            self._save_no_lock()
+            # Goes through save() - not _save_no_lock() directly - so a part
+            # completion is protected by the same module-level
+            # _SAVE_STATE_LOCK and fingerprint check as any other save. This
+            # instance's own self.lock only serializes concurrent appends
+            # to self.parts on this instance; it does nothing to prevent
+            # two separate UploadState instances pointed at the same
+            # persisted path (e.g. a stale runner process left running
+            # alongside a freshly resumed one) from silently overwriting
+            # each other's on-disk state.
+            self.save()
 
     def __post_init__(self):
         if self.peristant is None:

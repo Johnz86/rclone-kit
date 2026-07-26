@@ -27,7 +27,6 @@ class FileEntry(SQLModel, ABC):
     size: int = Field(sa_column=Column(BigInteger))
     mime_type: str
     mod_time: str
-    hash: str | None = Field(default=None)
 
     @abstractmethod
     def table_name(self) -> str:

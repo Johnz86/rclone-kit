@@ -5,7 +5,7 @@ UUnit test file for the DB class.
 import os
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from rclone_kit import FileItem as DBFile
 from rclone_kit.db import DB
@@ -89,6 +89,33 @@ class RcloneDBTests(unittest.TestCase):
         for entry in out_file_entries:
             print(entry)
             self.assertIn(entry, new_files, f"Unexpected entry: {entry}")
+
+    def test_init_disposes_a_failed_engine_before_retrying(self) -> None:
+        """Regression test: __init__'s retry loop used to call
+        create_engine() again on retry without disposing the previous
+        failed attempt's engine, leaking it.
+        """
+        first_engine = MagicMock(name="first_engine")
+        second_engine = MagicMock(name="second_engine")
+        engines = iter([first_engine, second_engine])
+
+        call_count = 0
+
+        def fake_create_all(*_args, **_kwargs) -> None:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise RuntimeError("simulated connection failure")
+
+        with (
+            patch("rclone_kit.db.db.create_engine", side_effect=lambda *_a, **_k: next(engines)),
+            patch("rclone_kit.db.db.SQLModel.metadata.create_all", side_effect=fake_create_all),
+        ):
+            db = DB("sqlite:///:memory:")
+
+        first_engine.dispose.assert_called_once()
+        second_engine.dispose.assert_not_called()
+        self.assertIs(db.engine, second_engine)
 
 
 if __name__ == "__main__":

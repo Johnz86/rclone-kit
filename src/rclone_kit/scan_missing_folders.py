@@ -1,4 +1,3 @@
-import _thread
 import contextlib
 import random
 import warnings
@@ -99,9 +98,6 @@ def async_diff_dir_walk_task(
         _async_diff_dir_walk_task(
             src=src, dst=dst, max_depth=max_depth, out_queue=out_queue, order=order
         )
-    except Exception:
-        _thread.interrupt_main()
-        raise
     finally:
         out_queue.put(None)
 
@@ -146,15 +142,26 @@ def scan_missing_folders(
     """
 
     out_queue: Queue[Dir | None] = Queue(maxsize=_MAX_OUT_QUEUE_SIZE)
+    errors: list[BaseException] = []
 
     def task() -> None:
-        async_diff_dir_walk_task(
-            src=src,
-            dst=dst,
-            max_depth=max_depth,
-            out_queue=out_queue,
-            order=order,
-        )
+        try:
+            async_diff_dir_walk_task(
+                src=src,
+                dst=dst,
+                max_depth=max_depth,
+                out_queue=out_queue,
+                order=order,
+            )
+        except BaseException as exc:
+            # Captured and re-raised from the consumer below instead of via
+            # _thread.interrupt_main(): that call schedules an async
+            # KeyboardInterrupt that fires at the main thread's next bytecode
+            # boundary, which may already be past this generator (e.g. after
+            # it exhausted normally on the sentinel) - the interrupt then
+            # surfaces as a misleading KeyboardInterrupt in unrelated later
+            # code instead of this real failure.
+            errors.append(exc)
 
     worker = Thread(
         target=task,
@@ -182,3 +189,5 @@ def scan_missing_folders(
                 f"{_WORKER_JOIN_TIMEOUT_SECONDS}s of generator teardown",
                 stacklevel=2,
             )
+    if errors:
+        raise errors[0]

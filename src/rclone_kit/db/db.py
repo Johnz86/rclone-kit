@@ -29,15 +29,20 @@ class DB:
         self.db_path_url = db_path_url
 
         retries = 2
+        engine = None
         for _ in range(retries):
             try:
-                self.engine = create_engine(db_path_url)
-                SQLModel.metadata.create_all(self.engine)
+                engine = create_engine(db_path_url)
+                SQLModel.metadata.create_all(engine)
                 break
             except Exception as e:
                 logger.warning("Failed to connect to database. Retrying... %s", e)
+                if engine is not None:
+                    engine.dispose()
+                    engine = None
         else:
             raise Exception("Failed to connect to database.")
+        self.engine = engine
         self._cache: dict[str, DBRepo] = {}
         self._cache_lock = Lock()
 

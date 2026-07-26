@@ -274,3 +274,13 @@ def test_parse_parts_decomposes_a_bare_filename() -> None:
     parts = RcPath.parse_parts("manifest.txt")
 
     assert parts == RcPathParts(remote="", parents=[], name="manifest.txt")
+
+
+@pytest.mark.parametrize("raw", ["C:", "C:\\"])
+def test_parse_parts_rejects_a_bare_windows_drive_root(raw: str) -> None:
+    # Regression test: this used to raise a bare, undocumented
+    # "not enough values to unpack" ValueError from the `*parents, name =
+    # ()` destructuring instead of the same descriptive message
+    # as_parent_and_name() raises for the analogous case.
+    with pytest.raises(ValueError, match="has no path component to split"):
+        RcPath.parse_parts(raw)

@@ -279,6 +279,41 @@ def test_close_waits_for_in_flight_calls_before_finalizing() -> None:
     assert binding.finalize_calls == 1
 
 
+def test_close_waits_for_an_in_flight_build_info_before_finalizing() -> None:
+    # Regression test: build_info() used to be untracked as an in-flight
+    # call, so close() could observe _active_calls == 0 and invoke
+    # finalize() while build_info()'s own RcloneKitBuildInfo call was still
+    # running on the Go side.
+    binding = FakeBinding()
+    runtime = RcloneRuntime(binding)
+    runtime.initialize()
+
+    call_started = threading.Event()
+    call_release = threading.Event()
+
+    def _blocking_build_info() -> tuple[int, bytes]:
+        call_started.set()
+        call_release.wait(timeout=2.0)
+        return 0, _SAMPLE_BUILD_INFO_JSON
+
+    binding.build_info = _blocking_build_info  # type: ignore[method-assign]
+
+    call_thread = threading.Thread(target=runtime.build_info)
+    call_thread.start()
+    assert call_started.wait(timeout=2.0)
+
+    close_thread = threading.Thread(target=runtime.close)
+    close_thread.start()
+    time.sleep(0.05)
+    assert binding.finalize_calls == 0  # still waiting on the in-flight build_info()
+
+    call_release.set()
+    call_thread.join(timeout=2.0)
+    close_thread.join(timeout=2.0)
+
+    assert binding.finalize_calls == 1
+
+
 def test_new_calls_are_rejected_once_close_has_begun() -> None:
     binding = FakeBinding()
     runtime = RcloneRuntime(binding)

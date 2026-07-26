@@ -163,7 +163,10 @@ class RcPath:
         """
         if is_windows_drive_prefix(path):
             pure = PureWindowsPath(path)
-            *parents, name = pure.parts[1:]
+            remaining = pure.parts[1:]
+            if not remaining:
+                raise ValueError(f"{path!r} has no path component to split into parent and name")
+            *parents, name = remaining
             return RcPathParts(remote=pure.drive.rstrip(":"), parents=parents, name=name)
         remote_name, rest = split_remote_and_path(path)
         posix_path = PurePosixPath(rest)
