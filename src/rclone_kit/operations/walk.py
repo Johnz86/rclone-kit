@@ -133,19 +133,22 @@ def walk(
     errors: list[BaseException] = []
 
     def _task() -> None:
+        """Run the chosen walker, capturing any exception into `errors`
+        instead of letting it die as an uncaught background-thread
+        exception. Re-raised from the consumer loop below rather than
+        signaled via `_thread.interrupt_main()`: that call delivers an
+        async `KeyboardInterrupt` at the main thread's next bytecode
+        boundary, which can land after this generator has already
+        exhausted normally (sentinel already consumed) - surfacing as a
+        misleading `KeyboardInterrupt` in unrelated later code instead of
+        this real failure.
+        """
         try:
             if breadth_first:
                 walk_runner_breadth_first(dir, max_depth, out_queue, order)
             else:
                 walk_runner_depth_first(dir, max_depth, out_queue, order)
         except BaseException as exc:
-            # Captured here and re-raised from the consumer loop below,
-            # rather than via _thread.interrupt_main(): that call schedules
-            # an async KeyboardInterrupt delivered at the main thread's next
-            # bytecode boundary, which can land after this generator has
-            # already exhausted normally (sentinel already consumed) -
-            # surfacing as a misleading KeyboardInterrupt in unrelated later
-            # code instead of this real failure.
             errors.append(exc)
 
     worker = Thread(

@@ -145,6 +145,16 @@ def scan_missing_folders(
     errors: list[BaseException] = []
 
     def task() -> None:
+        """Run the diff walk, capturing any exception into `errors` instead
+        of letting it die as an uncaught background-thread exception.
+        Re-raised from the consumer below rather than signaled via
+        `_thread.interrupt_main()`: that call delivers an async
+        `KeyboardInterrupt` at the main thread's next bytecode boundary,
+        which may already be past this generator (e.g. after it exhausted
+        normally on the sentinel) - surfacing as a misleading
+        `KeyboardInterrupt` in unrelated later code instead of this real
+        failure.
+        """
         try:
             async_diff_dir_walk_task(
                 src=src,
@@ -154,13 +164,6 @@ def scan_missing_folders(
                 order=order,
             )
         except BaseException as exc:
-            # Captured and re-raised from the consumer below instead of via
-            # _thread.interrupt_main(): that call schedules an async
-            # KeyboardInterrupt that fires at the main thread's next bytecode
-            # boundary, which may already be past this generator (e.g. after
-            # it exhausted normally on the sentinel) - the interrupt then
-            # surfaces as a misleading KeyboardInterrupt in unrelated later
-            # code instead of this real failure.
             errors.append(exc)
 
     worker = Thread(

@@ -14,16 +14,18 @@ from rclone_kit.types import (
     SizeSuffix,
 )
 
-# The exact naming format `upload_parts_resumable._gen_name` produces
-# (`part.<part_number>_<offset>-<end>`); kept as one named pattern with a
-# clear error rather than ad hoc string-splitting, so a future change to
-# that format which isn't mirrored here fails with an obvious ValueError
-# instead of an opaque IndexError/ValueError from splitting a shape this
-# no longer recognizes.
 _PART_NAME_PATTERN = re.compile(r"^part\.(\d+)_\d+-\d+$")
 
 
 def _parse_part_number(name: str) -> int:
+    """Parse the part number out of one `part.<N>_<offset>-<end>` name -
+    the exact format `upload_parts_resumable._gen_name` produces. Kept as
+    one named pattern with a clear error rather than ad hoc string-
+    splitting, so a future change to that format which isn't mirrored here
+    fails with an obvious `ValueError` instead of an opaque
+    `IndexError`/`ValueError` from splitting a shape this no longer
+    recognizes.
+    """
     match = _PART_NAME_PATTERN.match(name)
     if match is None:
         raise ValueError(

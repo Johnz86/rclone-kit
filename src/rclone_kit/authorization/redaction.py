@@ -20,10 +20,6 @@ _REDACTED = "<redacted>"
 _MAX_LENGTH = 500
 _TRUNCATED_SUFFIX = "...<truncated>"
 
-# RFC 6749 error-response fields (plus token/secret values) that must never
-# reach a caller verbatim, matched as either a JSON string value
-# (`"error_description":"..."`) or a URL-query value
-# (`error_description=...`), whichever shape rclone/oauth2 happened to embed.
 _SENSITIVE_KEYS = (
     "error_description",
     "error_uri",
@@ -44,9 +40,12 @@ _QUERY_VALUE_PATTERNS = [
 
 
 def redact_provider_text(text: str) -> str:
-    """Return `text` with every recognized sensitive field's value replaced,
-    and an overall length cap so an oversized payload can't be embedded
-    wholesale even if it uses a shape this function doesn't recognize.
+    """Return `text` with every `_SENSITIVE_KEYS` field's value replaced -
+    matched as either a JSON string value (`"error_description":"..."`) or
+    a URL-query value (`error_description=...`), whichever shape
+    rclone/oauth2 happened to embed - and an overall length cap so an
+    oversized payload can't be embedded wholesale even if it uses a shape
+    this function doesn't recognize.
     """
     redacted = text
     for pattern in _JSON_VALUE_PATTERNS:
