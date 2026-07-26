@@ -155,10 +155,10 @@ class File:
         return self.path.mod_time_dt()
 
     def read_text(self) -> str:
-        """Read the file contents as bytes.
+        """Read the file contents as text.
 
         Returns:
-            bytes: The file contents
+            str: The file contents
 
         Raises:
             RuntimeError: If no rclone instance is associated with this file
@@ -169,21 +169,24 @@ class File:
         if self.path.is_dir:
             raise RuntimeError("Cannot read a directory as bytes")
 
-        result = self.path.rclone._run(["cat", self.path.path], check=True)
-        return result.stdout
+        return self.path.rclone.read_text(str(self))
 
     def to_json(self) -> RcloneJsonEntry:
         """Convert the File to a JSON serializable dictionary."""
         return self.path.to_json()
 
     def to_string(self, include_remote: bool = True) -> str:
-        """Convert the File to a string."""
+        """Convert the File to a string.
 
-        remote = self.path.remote
-        rest = self.path.path
+        `include_remote=True` delegates to `RPath.__str__` rather than
+        reconstructing `f"{remote.name}:{path}"` directly: a local file
+        has no remote component at all, and that reconstruction would
+        produce a leading ":" (e.g. ":/tmp/foo/bar") that doesn't
+        round-trip back through `RcPath.parse`.
+        """
         if include_remote:
-            return f"{remote.name}:{rest}"
-        return rest
+            return str(self.path)
+        return self.path.path
 
     def relative_to(self, prefix: str) -> str:
         """Return the relative path to the other directory.

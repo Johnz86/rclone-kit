@@ -5,7 +5,7 @@ import unittest
 import pytest
 
 from helpers import CLOUD_TEST_KEY_PREFIX, CLOUD_TEST_REMOTE_ROOT
-from rclone_kit import Config, Rclone
+from rclone_kit import Rclone
 from rclone_kit.fs.filesystem import FSPath
 
 
@@ -14,12 +14,12 @@ class RcloneRemoteFSTester(unittest.TestCase):
     """Tests for RemoteFS functionality."""
 
     @pytest.fixture(autouse=True)
-    def _inject_do_spaces_config(self, do_spaces_config: Config) -> None:
-        self.config = do_spaces_config
+    def _inject_cloud_rclone(self, cloud_rclone: Rclone) -> None:
+        self.rclone = cloud_rclone
 
     def test_create_and_move_remote_fs(self) -> None:
         """Test create and move functionality."""
-        fs = Rclone(self.config).filesystem(CLOUD_TEST_REMOTE_ROOT)
+        fs = self.rclone.filesystem(CLOUD_TEST_REMOTE_ROOT)
         with fs.cwd() as cwd:
             remote_tester: FSPath = cwd / f"{CLOUD_TEST_KEY_PREFIX}remote_tester"
             remote_tester.rmtree(ignore_errors=True)
@@ -28,7 +28,8 @@ class RcloneRemoteFSTester(unittest.TestCase):
                 new_file_path.write_bytes(b"test")
 
                 moved_file_path = remote_tester / "moved_test.txt"
-                new_file_path.move_to(moved_file_path)
+                new_file_path.fs.copy(new_file_path.path, moved_file_path.path)
+                new_file_path.remove()
                 self.assertTrue(moved_file_path.exists())
                 self.assertFalse(new_file_path.exists())
             finally:
@@ -43,7 +44,7 @@ class RcloneRemoteFSTester(unittest.TestCase):
     )
     def test_create_and_remove_remote_fs(self) -> None:
         """Test create and remove functionality."""
-        fs = Rclone(self.config).filesystem(CLOUD_TEST_REMOTE_ROOT)
+        fs = self.rclone.filesystem(CLOUD_TEST_REMOTE_ROOT)
         with fs.cwd() as cwd:
             remote_tester: FSPath = cwd / f"{CLOUD_TEST_KEY_PREFIX}remote_tester"
             try:

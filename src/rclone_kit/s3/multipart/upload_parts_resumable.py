@@ -106,6 +106,10 @@ class UploadPart:
 
 
 def _gen_name(part_number: int, offset: SizeSuffix, end: SizeSuffix) -> str:
+    """Format one part's file name; `info_json._PART_NAME_PATTERN`/
+    `_parse_part_number` are the parsing counterpart of this exact format -
+    keep both in sync if this ever changes.
+    """
     return f"part.{part_number:05d}_{offset.as_int()}-{end.as_int()}"
 
 

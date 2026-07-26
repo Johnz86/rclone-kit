@@ -44,6 +44,28 @@ def test_relative_to_ordinary_nested_path() -> None:
     assert f.relative_to("remote:Bucket") == "subdir/file.txt"
 
 
+def test_to_string_on_a_local_path_has_no_leading_colon() -> None:
+    """A local File (no remote at all - see rc.paths.split_remote_and_path)
+    has nothing to prefix; the previous `f"{remote.name}:{path}"`
+    reconstruction produced a leading ":" (e.g. ":/tmp/a.txt") that
+    doesn't round-trip back through `RcPath.parse`.
+    """
+    remote = Remote(name="", rclone=_FAKE_RCLONE)
+    rpath = RPath(
+        remote=remote,
+        path="/srv/data/a.txt",
+        name="a.txt",
+        size=1,
+        mime_type="text/plain",
+        mod_time="",
+        is_dir=False,
+    )
+    rpath.set_rclone(_FAKE_RCLONE)
+    f = File(rpath)
+
+    assert f.to_string(include_remote=True) == "/srv/data/a.txt"
+
+
 def test_file_item_from_json_preserves_literal_backslash_in_parent() -> None:
     item = FileItem.from_json(
         "remote",
@@ -75,3 +97,40 @@ def test_file_item_from_json_ordinary_nested_path() -> None:
 
     assert item is not None
     assert item.parent == "Bucket/subdir"
+
+
+class _RecordingRclone:
+    """Records the `src` passed to `read_text`; `File.read_text` must
+    delegate here rather than call `_run(["cat", ...])` directly.
+    """
+
+    def __init__(self) -> None:
+        self.read_text_calls: list[str] = []
+
+    def read_text(self, src: str) -> str:
+        self.read_text_calls.append(src)
+        return "file contents"
+
+    def _run(self, *_args: object, **_kwargs: object):
+        raise AssertionError("File.read_text must not call _run directly")
+
+
+def test_file_read_text_delegates_to_associated_rclone() -> None:
+    recording_rclone = _RecordingRclone()
+    remote = Remote(name="remote", rclone=cast(Rclone, recording_rclone))
+    rpath = RPath(
+        remote=remote,
+        path="Bucket/file.txt",
+        name="file.txt",
+        size=1,
+        mime_type="text/plain",
+        mod_time="",
+        is_dir=False,
+    )
+    rpath.set_rclone(cast(Rclone, recording_rclone))
+    f = File(rpath)
+
+    result = f.read_text()
+
+    assert result == "file contents"
+    assert recording_rclone.read_text_calls == ["remote:Bucket/file.txt"]

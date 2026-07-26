@@ -102,7 +102,11 @@ class Dir:
         """Convert the File to a string."""
         out = str(self.path)
         if not include_remote:
-            _, out = out.split(":", 1)
+            _, colon, rest = out.partition(":")
+            # A local path (no remote prefix at all) has nothing to strip -
+            # `partition` finding no ":" must leave it unchanged, not
+            # collapse it to "" the way an unconditional split would.
+            out = rest if colon else out
         return out
 
     def __truediv__(self, other: str) -> Dir:

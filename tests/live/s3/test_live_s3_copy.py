@@ -38,14 +38,14 @@ def test_copy_transfers_a_directory_tree(
 def test_copy_files_transfers_a_selected_subset(
     live_rclone: Rclone, live_test_prefix: str, local_source_tree: Path
 ) -> None:
-    results = live_rclone.copy_files(
+    result = live_rclone.copy_files(
         src=str(local_source_tree),
         dst=live_test_prefix,
         files=["a.txt", "nested/c.txt"],
         check=True,
     )
 
-    assert all(result.ok for result in results)
+    assert result.ok
     assert live_rclone.exists(f"{live_test_prefix}/a.txt")
     assert live_rclone.exists(f"{live_test_prefix}/nested/c.txt")
     assert not live_rclone.exists(f"{live_test_prefix}/b.txt")

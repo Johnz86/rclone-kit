@@ -19,6 +19,7 @@ with status 1 if any check failed.
 import argparse
 import configparser
 import hashlib
+import json
 import shutil
 import subprocess
 import sys
@@ -33,8 +34,14 @@ from packaging.specifiers import SpecifierSet
 from packaging.tags import Tag
 from packaging.utils import parse_wheel_filename
 
+from rclone_kit.native.runtime import EXPECTED_ABI_VERSION
 from rclone_kit.runtime.exceptions import ArchiveMemberUnsafeError, UnsupportedPlatformError
-from rclone_kit.runtime.platform import SUPPORTED_ARTIFACTS, RcloneArtifact, resolve_rclone_artifact
+from rclone_kit.runtime.native_platform import (
+    SUPPORTED_NATIVE_TARGETS,
+    NativeTarget,
+    resolve_native_target,
+)
+from rclone_kit.runtime.platform import OperatingSystem
 
 _WHEEL_GLOB_PATTERN = "*.whl"
 _SDIST_GLOB_PATTERN = "*.tar.gz"
@@ -44,9 +51,12 @@ _EXPECTED_WHEEL_PYTHON_TAG = "py3"
 _EXPECTED_WHEEL_ABI_TAG = "none"
 
 _PACKAGED_PACKAGE_NAME = "rclone_kit"
-_PACKAGED_ASSETS_RELATIVE_DIR = "assets/rclone"
-_EXECUTABLE_MANIFEST_SUFFIX = ".sha256"
+_PACKAGED_ASSETS_RELATIVE_DIR = "assets/native"
+_NATIVE_MANIFEST_FILENAME = "native-manifest.json"
+_SHA256SUMS_FILENAME = "SHA256SUMS"
+_ABI_HEADER_FILENAME = "rclonekit_abi.h"
 _RCLONE_LICENSE_FILENAME = "RCLONE_LICENSE"
+_MOUNT_BUILD_TAG = "cmount"
 _RCLONE_KIT_LICENSE_MEMBER_SUFFIX = ".dist-info/licenses/LICENSE"
 _METADATA_MEMBER_SUFFIX = ".dist-info/METADATA"
 _ENTRY_POINTS_MEMBER_SUFFIX = ".dist-info/entry_points.txt"
@@ -172,9 +182,7 @@ def _reject_unsafe_member_path(member_filename: str) -> None:
 def _safe_extract_zip(archive_path: Path, destination: Path) -> None:
     """Extract every member of the zip at `archive_path` into `destination`.
 
-    Validates each member's recorded path before writing anything, applying
-    the same path-traversal invariant as
-    `rclone_kit.runtime.archive_extract.extract_single_member`. Raises
+    Validates each member's recorded path before writing anything. Raises
     `ArchiveMemberUnsafeError` when a member's path is absolute or escapes
     `destination` through a parent-directory segment.
     """
@@ -211,10 +219,10 @@ def _wheel_platform_tags(wheel_path: Path) -> tuple[str, ...]:
     return tuple(tag.platform for tag in _wheel_tags(wheel_path))
 
 
-def _expected_artifact_for_wheel(wheel_path: Path) -> RcloneArtifact | None:
-    """Resolve the certified `RcloneArtifact` a wheel's own platform tag
-    implies, using `rclone_kit.runtime.platform`'s existing platform model
-    instead of a second hardcoded platform table.
+def _expected_native_target_for_wheel(wheel_path: Path) -> NativeTarget | None:
+    """Resolve the certified `NativeTarget` a wheel's own platform tag
+    implies, using `rclone_kit.runtime.native_platform`'s existing platform
+    model instead of a second hardcoded platform table.
 
     Returns `None` when the wheel's platform tag does not map to any
     certified build target (including a pure-Python tag).
@@ -242,30 +250,30 @@ def _expected_artifact_for_wheel(wheel_path: Path) -> RcloneArtifact | None:
     if system is None or machine is None:
         return None
     try:
-        return resolve_rclone_artifact(system=system, machine=machine)
+        return resolve_native_target(system=system, machine=machine)
     except UnsupportedPlatformError:
         return None
 
 
-def _asset_member_path(artifact: RcloneArtifact, filename: str) -> str:
+def _asset_member_path(native_target: NativeTarget, filename: str) -> str:
     """Return the wheel-internal member path for a file staged under
-    `<package>/assets/rclone/<wheel_platform_tag>/` for `artifact`.
+    `<package>/assets/native/<wheel_platform_tag>/` for `native_target`.
 
     Mirrors the staging convention written by
-    `scripts/prepare_rclone_artifact.py` and read at runtime by
-    `rclone_kit.runtime.rclone_binary.default_packaged_assets_root`.
+    `scripts/build_distribution.py` and read at runtime by
+    `rclone_kit.native.library.default_packaged_assets_root`.
     """
     return (
         f"{_PACKAGED_PACKAGE_NAME}/{_PACKAGED_ASSETS_RELATIVE_DIR}/"
-        f"{artifact.wheel_platform_tag}/{filename}"
+        f"{native_target.wheel_platform_tag}/{filename}"
     )
 
 
 def check_platform_independent_tag(wheel_path: Path) -> list[str]:
     """Fail when `wheel_path` is tagged platform-independent (`py3-none-any`).
 
-    `rclone-kit` wheels always bundle a platform-specific rclone executable,
-    so a pure-Python tag means the build backend's platform-forcing shim
+    `rclone-kit` wheels always bundle a platform-specific native library, so
+    a pure-Python tag means the build backend's platform-forcing shim
     (`_build_backend.py`) did not take effect.
     """
     return [
@@ -278,22 +286,26 @@ def check_platform_independent_tag(wheel_path: Path) -> list[str]:
 
 def check_exact_wheel_tag(wheel_path: Path) -> list[str]:
     """Fail unless `wheel_path`'s full tag is exactly `(py3, none,
-    <artifact.wheel_platform_tag>)` for the certified target its platform
-    component implies.
+    <native_target.wheel_platform_tag>)` for the certified target its
+    platform component implies.
 
     `_build_backend.py` forces a platform-specific wheel with no CPython ABI
     dependency; a concrete interpreter/ABI tag such as `cp313-cp313` means
     its `bdist_wheel.get_tag` override did not take effect.
     """
-    artifact = _expected_artifact_for_wheel(wheel_path)
-    if artifact is None:
+    native_target = _expected_native_target_for_wheel(wheel_path)
+    if native_target is None:
         return []
     tags = _wheel_tags(wheel_path)
     if len(tags) != 1:
         return []
     tag = tags[0]
     actual = (tag.interpreter, tag.abi, tag.platform.lower())
-    expected = (_EXPECTED_WHEEL_PYTHON_TAG, _EXPECTED_WHEEL_ABI_TAG, artifact.wheel_platform_tag)
+    expected = (
+        _EXPECTED_WHEEL_PYTHON_TAG,
+        _EXPECTED_WHEEL_ABI_TAG,
+        native_target.wheel_platform_tag,
+    )
     if actual != expected:
         return [
             f"{wheel_path.name}: wheel tag {actual!r} does not match the expected "
@@ -302,78 +314,154 @@ def check_exact_wheel_tag(wheel_path: Path) -> list[str]:
     return []
 
 
-def check_bundled_executable_present(wheel_path: Path, members: tuple[str, ...]) -> list[str]:
-    """Fail when the rclone executable implied by `wheel_path`'s platform tag
-    is absent from `members`.
+def check_bundled_library_present(wheel_path: Path, members: tuple[str, ...]) -> list[str]:
+    """Fail when the native library implied by `wheel_path`'s platform tag,
+    or any of its required companion files, are absent from `members`.
     """
-    artifact = _expected_artifact_for_wheel(wheel_path)
-    if artifact is None:
+    native_target = _expected_native_target_for_wheel(wheel_path)
+    if native_target is None:
         return [
-            f"{wheel_path.name}: platform tag does not map to a certified rclone "
-            "build target; cannot verify a bundled executable is present."
+            f"{wheel_path.name}: platform tag does not map to a certified native "
+            "build target; cannot verify a bundled library is present."
         ]
-    expected_member = _asset_member_path(artifact, artifact.executable_name)
-    if expected_member not in members:
-        return [
-            f"{wheel_path.name}: missing expected bundled executable "
-            f"{expected_member!r} for platform {artifact.wheel_platform_tag!r}."
-        ]
-    return []
-
-
-def check_no_foreign_platform_executable(wheel_path: Path, members: tuple[str, ...]) -> list[str]:
-    """Fail when `wheel_path` bundles an executable staged for a different
-    certified platform than the one its own tag implies.
-    """
-    artifact = _expected_artifact_for_wheel(wheel_path)
-    if artifact is None:
-        return []
+    required_filenames = (
+        native_target.library_filename,
+        _NATIVE_MANIFEST_FILENAME,
+        _SHA256SUMS_FILENAME,
+        _RCLONE_LICENSE_FILENAME,
+        _ABI_HEADER_FILENAME,
+    )
     violations: list[str] = []
-    for other_artifact in SUPPORTED_ARTIFACTS:
-        if other_artifact.wheel_platform_tag == artifact.wheel_platform_tag:
-            continue
-        foreign_member = _asset_member_path(other_artifact, other_artifact.executable_name)
-        if foreign_member in members:
+    for filename in required_filenames:
+        expected_member = _asset_member_path(native_target, filename)
+        if expected_member not in members:
             violations.append(
-                f"{wheel_path.name}: a {artifact.wheel_platform_tag} wheel unexpectedly "
-                f"bundles another platform's executable {foreign_member!r}."
+                f"{wheel_path.name}: missing expected bundled file {expected_member!r} "
+                f"for platform {native_target.wheel_platform_tag!r}."
             )
     return violations
 
 
-def check_bundled_executable_hash(wheel_path: Path, members: tuple[str, ...]) -> list[str]:
-    """Fail when the bundled executable's SHA-256 disagrees with either its
-    shipped `.sha256` manifest or `rclone_kit.runtime.platform`'s
-    repository-controlled expected digest for that executable.
-
-    Checking both catches two distinct failures: a corrupted executable
-    whose manifest was (correctly) staged against a different, valid build,
-    and a manifest that is internally consistent with a corrupted executable
-    but disagrees with the independently known-good digest.
+def check_no_foreign_platform_library(wheel_path: Path, members: tuple[str, ...]) -> list[str]:
+    """Fail when `wheel_path` bundles a native library staged for a
+    different certified platform than the one its own tag implies.
     """
-    artifact = _expected_artifact_for_wheel(wheel_path)
-    if artifact is None:
+    native_target = _expected_native_target_for_wheel(wheel_path)
+    if native_target is None:
         return []
-    executable_member = _asset_member_path(artifact, artifact.executable_name)
-    manifest_member = executable_member + _EXECUTABLE_MANIFEST_SUFFIX
-    if executable_member not in members or manifest_member not in members:
-        return []
-    actual_digest = hashlib.sha256(_read_zip_member(wheel_path, executable_member)).hexdigest()
-    manifest_digest = _read_zip_member(wheel_path, manifest_member).decode("utf-8").strip()
-
     violations: list[str] = []
-    if actual_digest != manifest_digest:
-        violations.append(
-            f"{wheel_path.name}: bundled executable SHA-256 {actual_digest} does not "
-            f"match its shipped manifest {manifest_member!r} ({manifest_digest})."
-        )
-    if actual_digest != artifact.executable_sha256_digest:
-        violations.append(
-            f"{wheel_path.name}: bundled executable SHA-256 {actual_digest} does not "
-            "match rclone_kit.runtime.platform's expected digest "
-            f"({artifact.executable_sha256_digest}) for {artifact.wheel_platform_tag!r}."
-        )
+    for other_target in SUPPORTED_NATIVE_TARGETS:
+        if other_target.wheel_platform_tag == native_target.wheel_platform_tag:
+            continue
+        foreign_member = _asset_member_path(other_target, other_target.library_filename)
+        if foreign_member in members:
+            violations.append(
+                f"{wheel_path.name}: a {native_target.wheel_platform_tag} wheel unexpectedly "
+                f"bundles another platform's library {foreign_member!r}."
+            )
     return violations
+
+
+def _read_native_manifest(wheel_path: Path, native_target: NativeTarget, members: tuple[str, ...]):
+    manifest_member = _asset_member_path(native_target, _NATIVE_MANIFEST_FILENAME)
+    if manifest_member not in members:
+        return None
+    return json.loads(_read_zip_member(wheel_path, manifest_member).decode("utf-8"))
+
+
+def check_bundled_library_hash(wheel_path: Path, members: tuple[str, ...]) -> list[str]:
+    """Fail when the bundled library's SHA-256 disagrees with its own
+    shipped `native-manifest.json`'s recorded digest for that filename.
+
+    Catches a corrupted library staged alongside a manifest generated for a
+    different (valid) build.
+    """
+    native_target = _expected_native_target_for_wheel(wheel_path)
+    if native_target is None:
+        return []
+    library_member = _asset_member_path(native_target, native_target.library_filename)
+    manifest = _read_native_manifest(wheel_path, native_target, members)
+    if library_member not in members or manifest is None:
+        return []
+    manifest_digest = next(
+        (
+            output.get("sha256_digest")
+            for output in manifest.get("outputs", [])
+            if output.get("filename") == native_target.library_filename
+        ),
+        None,
+    )
+    if manifest_digest is None:
+        return [
+            f"{wheel_path.name}: {_NATIVE_MANIFEST_FILENAME} has no digest recorded for "
+            f"{native_target.library_filename!r}."
+        ]
+    actual_digest = hashlib.sha256(_read_zip_member(wheel_path, library_member)).hexdigest()
+    if actual_digest != manifest_digest:
+        return [
+            f"{wheel_path.name}: bundled library SHA-256 {actual_digest} does not match "
+            f"its shipped manifest ({manifest_digest})."
+        ]
+    return []
+
+
+def check_bundled_library_has_mount_support(
+    wheel_path: Path, members: tuple[str, ...]
+) -> list[str]:
+    """Fail unless the shipped native library was built with real mount
+    support.
+
+    `mount()`/`mount_s3()` are public API with no CLI fallback; a wheel built
+    without mount support compiled in would silently regress that surface
+    for every installer. What "compiled in" means is platform-specific:
+
+    - Windows only has `cmd/cmount` (WinFsp/cgofuse), gated behind the
+      `cmount` Go build tag - the manifest must record it.
+    - Linux's `cmd/mount` (bazil.org/fuse) is imported unconditionally with
+      no build tag of its own and is always tried first by
+      `mountlib.ResolveMountMethod` - verified empirically inside a
+      `manylinux2014_x86_64` container with no extra build-time package at
+      all - so every Linux build already has mount support; there is
+      nothing to check in the manifest for it.
+    """
+    native_target = _expected_native_target_for_wheel(wheel_path)
+    if native_target is None:
+        return []
+    if native_target.operating_system != OperatingSystem.WINDOWS:
+        return []
+    manifest = _read_native_manifest(wheel_path, native_target, members)
+    if manifest is None:
+        return []
+    if _MOUNT_BUILD_TAG not in manifest.get("go_build_tags", []):
+        return [
+            f"{wheel_path.name}: {_NATIVE_MANIFEST_FILENAME} does not record the "
+            f"{_MOUNT_BUILD_TAG!r} build tag; this wheel's library was not built with "
+            "--profile production and mount()/mount_s3() would not work."
+        ]
+    return []
+
+
+def check_bundled_library_abi_version(wheel_path: Path, members: tuple[str, ...]) -> list[str]:
+    """Fail unless the shipped `native-manifest.json`'s `c_abi_version`
+    matches this Python binding's own `EXPECTED_ABI_VERSION`.
+
+    Catches a Python/native ABI mismatch at build-verification time instead
+    of at the first real `ctypes` call in production.
+    """
+    native_target = _expected_native_target_for_wheel(wheel_path)
+    if native_target is None:
+        return []
+    manifest = _read_native_manifest(wheel_path, native_target, members)
+    if manifest is None:
+        return []
+    actual_abi_version = manifest.get("c_abi_version")
+    if actual_abi_version != EXPECTED_ABI_VERSION:
+        return [
+            f"{wheel_path.name}: {_NATIVE_MANIFEST_FILENAME}'s c_abi_version "
+            f"{actual_abi_version!r} does not match this binding's expected "
+            f"{EXPECTED_ABI_VERSION!r}."
+        ]
+    return []
 
 
 def check_required_licenses_present(wheel_path: Path, members: tuple[str, ...]) -> list[str]:
@@ -386,9 +474,9 @@ def check_required_licenses_present(wheel_path: Path, members: tuple[str, ...]) 
             f"{wheel_path.name}: missing rclone-kit project license "
             f"(no member ending in {_RCLONE_KIT_LICENSE_MEMBER_SUFFIX!r})."
         )
-    artifact = _expected_artifact_for_wheel(wheel_path)
-    if artifact is not None:
-        rclone_license_member = _asset_member_path(artifact, _RCLONE_LICENSE_FILENAME)
+    native_target = _expected_native_target_for_wheel(wheel_path)
+    if native_target is not None:
+        rclone_license_member = _asset_member_path(native_target, _RCLONE_LICENSE_FILENAME)
         if rclone_license_member not in members:
             violations.append(
                 f"{wheel_path.name}: missing rclone MIT license {rclone_license_member!r}."
@@ -582,27 +670,26 @@ def check_sdist_denylisted_members(sdist_path: Path, members: tuple[str, ...]) -
     ]
 
 
-def check_sdist_has_no_staged_platform_executables(
+def check_sdist_has_no_staged_native_libraries(
     sdist_path: Path, members: tuple[str, ...]
 ) -> list[str]:
-    """Fail when `sdist_path` bundles a build-time-staged rclone executable.
+    """Fail when `sdist_path` bundles a build-time-staged native library.
 
     A source distribution must stay platform-independent: platform-specific
-    executables are staged into `src/rclone_kit/assets/rclone/` only as
-    ephemeral, gitignored build state (see
-    `scripts/prepare_rclone_artifact.py` and `.github/workflows/ci.yml`) and
-    must never ship inside an sdist, which `pip` may build into a wheel for
-    any target platform.
+    libraries are staged into `src/rclone_kit/assets/native/` only as
+    ephemeral, gitignored build state (see `scripts/build_distribution.py`
+    and `.github/workflows/ci.yml`) and must never ship inside an sdist,
+    which `pip` may build into a wheel for any target platform.
     """
     violations: list[str] = []
-    for artifact in SUPPORTED_ARTIFACTS:
+    for native_target in SUPPORTED_NATIVE_TARGETS:
         suffix = (
             f"src/{_PACKAGED_PACKAGE_NAME}/{_PACKAGED_ASSETS_RELATIVE_DIR}/"
-            f"{artifact.wheel_platform_tag}/{artifact.executable_name}"
+            f"{native_target.wheel_platform_tag}/{native_target.library_filename}"
         )
         violations.extend(
             f"{sdist_path.name}: source distribution must stay platform-independent "
-            f"but bundles a staged executable at {member!r}."
+            f"but bundles a staged library at {member!r}."
             for member in members
             if member.endswith(suffix)
         )
@@ -615,9 +702,11 @@ def verify_wheel(wheel_path: Path) -> DistributionVerificationResult:
     violations: list[str] = [
         *check_platform_independent_tag(wheel_path),
         *check_exact_wheel_tag(wheel_path),
-        *check_bundled_executable_present(wheel_path, members),
-        *check_no_foreign_platform_executable(wheel_path, members),
-        *check_bundled_executable_hash(wheel_path, members),
+        *check_bundled_library_present(wheel_path, members),
+        *check_no_foreign_platform_library(wheel_path, members),
+        *check_bundled_library_hash(wheel_path, members),
+        *check_bundled_library_has_mount_support(wheel_path, members),
+        *check_bundled_library_abi_version(wheel_path, members),
         *check_required_licenses_present(wheel_path, members),
         *check_entry_points_resolve(wheel_path, members),
         *check_requires_python_floor(wheel_path, members),
@@ -632,14 +721,15 @@ def verify_sdist(sdist_path: Path) -> DistributionVerificationResult:
     members = _list_tar_members(sdist_path)
     violations: list[str] = [
         *check_sdist_denylisted_members(sdist_path, members),
-        *check_sdist_has_no_staged_platform_executables(sdist_path, members),
+        *check_sdist_has_no_staged_native_libraries(sdist_path, members),
     ]
     return DistributionVerificationResult(sdist_path.name, tuple(violations))
 
 
 def check_release_set(dist_dir: Path) -> list[str]:
     """Fail unless `dist_dir` contains exactly one wheel per certified
-    `SUPPORTED_ARTIFACTS` target, with no duplicate or unrecognized wheel.
+    `SUPPORTED_NATIVE_TARGETS` target, with no duplicate or unrecognized
+    wheel.
 
     Used only by CI's `release-assembly` job after every per-platform wheel
     job's artifact has been downloaded into one directory; a single-wheel
@@ -647,15 +737,15 @@ def check_release_set(dist_dir: Path) -> list[str]:
     no use for this check.
     """
     wheels_by_tag: dict[str, list[Path]] = {
-        artifact.wheel_platform_tag: [] for artifact in SUPPORTED_ARTIFACTS
+        native_target.wheel_platform_tag: [] for native_target in SUPPORTED_NATIVE_TARGETS
     }
     violations: list[str] = []
     for wheel_path in discover_wheels(dist_dir):
-        artifact = _expected_artifact_for_wheel(wheel_path)
-        if artifact is None:
+        native_target = _expected_native_target_for_wheel(wheel_path)
+        if native_target is None:
             violations.append(f"{wheel_path.name}: not a recognized certified-target wheel.")
             continue
-        wheels_by_tag[artifact.wheel_platform_tag].append(wheel_path)
+        wheels_by_tag[native_target.wheel_platform_tag].append(wheel_path)
     for wheel_platform_tag, matching_paths in wheels_by_tag.items():
         if not matching_paths:
             violations.append(f"Missing a wheel for certified target {wheel_platform_tag!r}.")
@@ -690,7 +780,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         action="store_true",
         help=(
             "Additionally require dist_dir to contain exactly one wheel per "
-            "certified SUPPORTED_ARTIFACTS target, with no duplicates. Only "
+            "certified SUPPORTED_NATIVE_TARGETS target, with no duplicates. Only "
             "meaningful once every per-platform wheel has been collected "
             "into one directory (see CI's release-assembly job)."
         ),

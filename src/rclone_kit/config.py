@@ -82,9 +82,9 @@ class Config:
     def materialize(self, make_temp_config_file: Callable[[], Path]) -> Path:
         """Return a temp config file backing `self.text`, writing it at most once.
 
-        Repeated calls (from repeated `rclone_execute`/backend calls sharing
-        this same `Config` instance) reuse the same file instead of
-        mkdtemp-ing and writing identical content every time. Takes
+        Repeated calls (sharing this same `Config` instance) reuse the same
+        file instead of mkdtemp-ing and writing identical content every
+        time. Takes
         `make_temp_config_file` as a parameter rather than importing
         `rclone_kit.util` directly, since `util.py` already imports `Config`
         from this module. The returned path outlives this call - cleanup is

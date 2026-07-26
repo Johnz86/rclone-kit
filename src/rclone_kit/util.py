@@ -13,21 +13,18 @@ import subprocess
 import tempfile
 import threading
 import warnings
-import weakref
 from collections.abc import Callable
 from pathlib import Path
 from threading import Lock
 from typing import TYPE_CHECKING, Any
 
-from rclone_kit.config import Config
 from rclone_kit.dir import Dir
-from rclone_kit.process_tree import terminate_process_tree
+from rclone_kit.rc.paths import split_remote_and_path
 from rclone_kit.remote import Remote
 from rclone_kit.rpath import RPath
-from rclone_kit.runtime.rclone_binary import resolve_rclone_executable
 
 if TYPE_CHECKING:
-    from rclone_kit.access import DomainAccess
+    from rclone_kit.access import ListingAccess
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +36,6 @@ _DO_CLEANUP = os.getenv("RCLONE_KIT_CLEANUP", "1") == "1"
 _REDACTED_VALUE = "<redacted>"
 _SENSITIVE_FLAG_PARTS = frozenset({"auth", "password", "pass", "secret", "token"})
 _SENSITIVE_COMPOUND_FLAGS = ("access-key", "private-key")
-_LIVE_SUBPROCESSES: weakref.WeakSet[subprocess.Popen[str]] = weakref.WeakSet()
 _FREE_PORT_RANGE_START = 10000
 _FREE_PORT_RANGE_END = 20000
 _FREE_PORT_MAX_ATTEMPTS = 20
@@ -94,25 +90,15 @@ def _clean_configs(signum: int | None = None, _frame: object | None = None) -> N
         os.kill(os.getpid(), signum)
 
 
-def _terminate_live_subprocesses() -> None:
-    """Kill every subprocess `rclone_execute` started that is still tracked."""
-    for process in list(_LIVE_SUBPROCESSES):
-        terminate_process_tree(process.pid)
-
-
 _register_exit_cleanup_handlers = make_atexit_registrar(
     _clean_configs,
-    _terminate_live_subprocesses,
     doc="""Register this module's `atexit` handlers, once, the first time
-    either tracked resource is created.
+    a temp config directory is created.
 
-    Called from `make_temp_config_file` and `rclone_execute` - the sole
-    producers of `_RCLONE_CONFIGS_LIST` and `_LIVE_SUBPROCESSES`
-    respectively - rather than at import time, so a process that merely
-    imports `rclone_kit` without ever creating a temp config file or
-    running an rclone subprocess never wires up either handler. Both
-    handlers are registered together, since either kind of tracked
-    resource existing is enough to make both worth draining at exit.
+    Called from `make_temp_config_file`, the sole producer of
+    `_RCLONE_CONFIGS_LIST`, rather than at import time, so a process that
+    merely imports `rclone_kit` without ever creating a temp config file
+    never wires up the handler.
     """,
 )
 
@@ -223,11 +209,9 @@ def find_free_port() -> int:
     return port
 
 
-def to_path(item: Dir | Remote | str, rclone: DomainAccess) -> RPath:
+def to_path(item: Dir | Remote | str, rclone: ListingAccess) -> RPath:
     if isinstance(item, str):
-        parts = item.split(":")
-        remote_name = parts[0]
-        path = ":".join(parts[1:])
+        remote_name, path = split_remote_and_path(item)
         remote = Remote(name=remote_name, rclone=rclone)
         out = RPath(
             remote=remote,
@@ -281,124 +265,6 @@ def validate_config_path_exists(config: Path) -> None:
     """Raise `FileNotFoundError` if `config` does not exist."""
     if not config.exists():
         raise FileNotFoundError(f"Config file not found: {config}")
-
-
-def get_rclone_exe(
-    rclone_exe: Path | None,
-    *,
-    allow_path_lookup: bool = True,
-    allow_verified_download: bool = False,
-) -> Path:
-    """Resolve the rclone executable to use for a session.
-
-    Delegates to `rclone_kit.runtime.rclone_binary.resolve_rclone_executable`.
-    `rclone_exe`, when given, is used as an explicit, authoritative override.
-    Otherwise resolution tries, in order:
-
-    1. The executable bundled with the installed wheel, verified against its
-       packaged SHA-256 manifest. This is the deterministic, offline-capable
-       default for an installed wheel.
-    2. A `PATH` lookup, enabled by default here (`allow_path_lookup=True`) so
-       a source checkout with no bundled wheel asset keeps resolving an
-       already-installed system rclone, matching this function's historical
-       behavior. Pass `allow_path_lookup=False` to require the bundled
-       executable.
-    3. A checksum-verified download into the runtime cache, only when
-       `allow_verified_download=True`. This replaces the previous behavior
-       of silently fetching the unpinned, unverified `rclone-current-*`
-       build; downloading is now opt-in and always verified.
-
-    Raises `RcloneResolutionError` when every enabled strategy fails.
-    """
-    return resolve_rclone_executable(
-        explicit_path=rclone_exe,
-        allow_path_lookup=allow_path_lookup,
-        allow_verified_download=allow_verified_download,
-    )
-
-
-def upgrade_rclone() -> Path:
-    """Install the certified rclone build for this platform into the runtime
-    cache via a checksum-verified download, and return its path.
-
-    Unlike the legacy implementation, this never fetches the mutable
-    `rclone-current-*` build: it downloads and verifies the pinned
-    `rclone_kit.runtime.platform.RCLONE_VERSION` release. When a bundled
-    wheel executable already satisfies that version, the verified bundled
-    copy is returned instead of performing a redundant download.
-    """
-    return resolve_rclone_executable(allow_verified_download=True)
-
-
-def rclone_execute(
-    cmd: list[str],
-    rclone_conf: Path | Config | None,
-    rclone_exe: Path,
-    check: bool,
-    capture: bool | Path | None = None,
-    verbose: bool | None = None,
-) -> subprocess.CompletedProcess[str]:
-    verbose = get_verbose(verbose)
-
-    output_file: Path | None = None
-    if isinstance(capture, Path):
-        output_file = capture
-        capture = False
-    else:
-        capture = capture if isinstance(capture, bool) else True
-
-    file_handle = None
-    process: subprocess.Popen[str] | None = None
-    try:
-        if isinstance(rclone_conf, Config):
-            rclone_conf = rclone_conf.materialize(make_temp_config_file)
-
-        full_cmd = [str(rclone_exe.resolve())]
-        if rclone_conf:
-            full_cmd += ["--config", str(rclone_conf.resolve())]
-        full_cmd += cmd
-        if verbose:
-            cmd_str = format_command(full_cmd)
-            logger.info("Running: %s", cmd_str)
-
-        proc_kwargs: dict[str, Any] = {
-            "encoding": "utf-8",
-            "shell": False,
-            "stderr": subprocess.PIPE,
-        }
-        if output_file:
-            file_handle = output_file.open("w", encoding="utf-8")
-            proc_kwargs["stdout"] = file_handle
-        else:
-            proc_kwargs["stdout"] = subprocess.PIPE if capture else None
-
-        process = subprocess.Popen(full_cmd, **proc_kwargs)
-        _register_exit_cleanup_handlers()
-        _LIVE_SUBPROCESSES.add(process)
-
-        out, err = process.communicate()
-
-        cp: subprocess.CompletedProcess[str] = subprocess.CompletedProcess(
-            args=full_cmd,
-            returncode=process.returncode,
-            stdout=out,
-            stderr=err,
-        )
-
-        if cp.returncode != 0:
-            cmd_str = format_command(full_cmd)
-            warnings.warn(
-                f"Error running: {cmd_str}, returncode: {cp.returncode}\n{cp.stdout}\n{cp.stderr}",
-                stacklevel=2,
-            )
-            if check:
-                raise subprocess.CalledProcessError(cp.returncode, full_cmd, cp.stdout, cp.stderr)
-        return cp
-    finally:
-        if file_handle is not None:
-            file_handle.close()
-        if process is not None:
-            _LIVE_SUBPROCESSES.discard(process)
 
 
 def random_str(length: int) -> str:

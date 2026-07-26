@@ -19,12 +19,10 @@ from queue import Queue
 from threading import Semaphore, Thread
 from typing import Self, cast
 
+from botocore.client import BaseClient
+
 from rclone_kit.exceptions import MergeStateError, S3MergeError
-from rclone_kit.s3.create import (
-    BaseClient,
-    S3Config,
-    create_s3_client,
-)
+from rclone_kit.s3.create import S3Config, create_s3_client
 from rclone_kit.s3.multipart.access import MultipartAccess
 from rclone_kit.s3.multipart.finished_piece import FinishedPiece
 from rclone_kit.s3.multipart.info_json import InfoJson
@@ -312,9 +310,9 @@ def _cleanup_merge(rclone: MultipartAccess, info: InfoJson) -> None:
         raise ValueError(f"Size mismatch: {write_size} != {size}")
 
     logger.info("Upload complete: %s", dst)
-    cp = rclone.purge(parts_dir)
-    if cp.failed():
-        raise S3MergeError(f"Failed to purge parts dir: {cp}")
+    result = rclone.purge(parts_dir)
+    if not result.ok:
+        raise S3MergeError(f"Failed to purge parts dir: {result.error}")
 
 
 def _get_merge_path(info_path: str) -> str:

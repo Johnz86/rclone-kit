@@ -12,9 +12,10 @@ long-running services.
 - Windows amd64;
 - Linux amd64 using the `manylinux2014_x86_64` platform tag.
 
-Each supported wheel contains a pinned, checksum-verified rclone executable.
-A wheel installation therefore does not need a system rclone installation or
-`PATH` configuration.
+Each supported wheel contains a native `librclone_kit` shared library, loaded
+in-process and verified by checksum against its own manifest at import time.
+A wheel installation therefore does not need a system rclone installation,
+`PATH` configuration, or a subprocess.
 
 Pin the application dependency in production:
 
@@ -36,10 +37,10 @@ The `s3` extra adds direct and multipart S3 support. The `database` extra adds
 SQLite and database inventory support, while `postgres` also installs the
 PostgreSQL driver. `full` installs every optional feature.
 
-The bundled executable is copied into a per-user application cache and
-verified again at runtime. Containers should give their runtime user a
-writable home or cache directory. Avoid running the same image under an
-ephemeral, read-only home unless the cache is prepared elsewhere.
+The bundled library loads directly from the installed package location; there
+is no separate download, cache directory, or install step for it. A writable
+home or temp directory is still needed for `Config`'s per-instance temporary
+config file and, if used, the mount VFS cache - see the production checklist.
 
 ## Configuration
 
@@ -96,11 +97,11 @@ config = Config.from_json(
 rclone = Rclone(config)
 ```
 
-When a `Config` object is used, the library creates a private temporary config
-file for each rclone process and removes it after use. Do not print the
-`Config`, place credentials in source control, or pass secrets through
-`other_args`. Command logging redacts recognized credential flags, but the
-safest production pattern is still a secret-backed config file.
+When a `Config` object is used, the library materializes it to a private
+temporary file at most once per `Config` instance. Do not print the
+`Config` or place credentials in source control. Command logging redacts
+recognized credential flags, but the safest production pattern is still a
+secret-backed config file.
 
 Use rclone's obscured password format when a backend requires it:
 
@@ -134,6 +135,102 @@ verify_storage(rclone, {"archive", "source"})
 rclone, in that order. `config_show()` is useful for diagnostics, but its
 output can contain secrets; never include it in routine production logs.
 
+## Runtime lifecycle and multi-client processes
+
+`Rclone(config)` loads and initializes the native library the first time it's
+called with no `runtime=` argument, and owns (closes) that runtime itself.
+That default is all a single-config application - a script, a one-shot job,
+most CLI tools - needs; skip the rest of this section unless the process
+needs more than one `Rclone` client at once.
+
+The native library can be initialized **at most once per process**, not once
+per `Rclone` instance or `RcloneRuntime` object: loading the same shared
+library twice within one process (e.g. two separate `RcloneRuntime.
+from_library_path(...)` calls) returns a handle to the same already-loaded
+module and its process-global Go runtime state, so a second, independent
+`initialize()` call always fails. A service that wants several `Rclone`
+clients - one per request, one per tenant, one per background worker - must
+therefore share a single `RcloneRuntime`, constructed exactly once, rather
+than let each client build its own:
+
+```python
+from pathlib import Path
+
+from rclone_kit import Rclone, shared_runtime
+
+CONFIG_PATH = Path("/run/secrets/rclone.conf")
+
+# Once, at process startup - or lazily on first use; only the first-ever
+# call's config_path actually takes effect (see below).
+shared_runtime(config_path=CONFIG_PATH)
+
+def handle_request() -> None:
+    rclone = Rclone(CONFIG_PATH, runtime=shared_runtime())
+    try:
+        ...
+    finally:
+        rclone.close()
+```
+
+`shared_runtime()` is a thread-safe, lazy, initialize-once accessor: call it
+from anywhere (module import time, a request handler, a worker thread)
+without coordinating which caller goes first - every call returns the same
+instance, and only the first call's `library_path`/`config_path` arguments
+take effect. Each `Rclone` built this way keeps its own job/serve/mount
+tracking and can be closed independently without affecting the others or the
+shared runtime itself, since `Rclone.close()` only finalizes a runtime it
+constructed itself, never one passed in via `runtime=`. Close the shared
+runtime only at process shutdown - `RcloneRuntime.close()` is irreversible
+for the rest of the process's life; process exit is the only complete
+cleanup boundary after that.
+
+Pass the same `rclone_conf` to every `Rclone(...)` call sharing a runtime,
+even though only the first-ever call's native initialization actually takes
+effect - `self.config` (backing `is_s3()`, `get_s3_credentials()`, and
+`encode_fs_spec()`) is always derived from whatever `rclone_conf` a given
+`Rclone` instance was constructed with, independently of the runtime's own
+state. Passing `None` to a client built against an already-initialized
+runtime silently gives that client an *empty* config snapshot - the native
+runtime still has the real remotes loaded, but that client's own S3/
+credential lookups would not see them.
+
+Because the shared runtime has one immutable config for its whole lifetime,
+every client built from it also shares that one underlying config file -
+there's no way to give one client a materially different config than another
+while they share a runtime. Model different logical tenants as different
+remotes within that one shared config (registered dynamically via
+`config/create`/`config/update` RC calls if needed), not as separate
+runtimes. True hard isolation between clients - a security or tenancy
+boundary, not just independent configuration - is not achievable in-process
+at all; it requires separate OS processes, each with its own single call to
+`shared_runtime()`.
+
+## Authorizing a remote through rclone's own OAuth flow
+
+`Rclone.authorize(...)` drives rclone's non-interactive `config/create`/
+`config/update` OAuth state machine and returns an `AuthorizationSession`;
+see `docs/rclone_authorization_design.md` for the full design (session
+lifecycle, the public callback relay, security requirements). Two points
+follow directly from this section's runtime-sharing model and are easy to
+miss:
+
+- **The session queue is per `RcloneRuntime`, not per `Rclone` client.**
+  `AuthorizationManager.for_runtime()` resolves to the same manager for
+  every client sharing a runtime (mirroring `shared_runtime()`'s own
+  "construct exactly once, share everywhere" pattern), because rclone's own
+  OAuth flow state is a process-wide Go global - at most one authorization
+  may be driving it at a time, across every client on that runtime, not just
+  within one client.
+- **A client's `self.config` snapshot does not update itself.** Same
+  caveat as above: a remote an authorization session creates or updates is
+  written straight into the runtime's one shared config file the moment it
+  succeeds, but an existing `Rclone` instance's own `self.config` snapshot
+  (backing `is_s3()`, `get_s3_credentials()`, `encode_fs_spec()`) was
+  captured at that instance's construction time and will not see it. If you
+  need those methods to see a remote a session just authorized, construct a
+  fresh `Rclone(rclone_conf, runtime=shared_runtime())` afterward rather than
+  assuming an existing client picks it up.
+
 ## Paths and result objects
 
 Remote paths use rclone syntax:
@@ -145,7 +242,7 @@ remote:bucket/prefix/file.ext
 Local paths use normal operating-system paths. Do not invent a `local:`
 remote unless one is actually defined in the rclone config.
 
-Short-lived operations return `CompletedProcess` where the command result is
+Short-lived operations return `OperationResult` where the command result is
 useful:
 
 ```python
@@ -155,20 +252,21 @@ result = rclone.copy(
     check=True,
 )
 if not result.ok:
-    raise RuntimeError(result.stderr)
+    raise RuntimeError(result.error)
 ```
 
 Set `check=True` on copy operations when command failure should immediately
-raise. For partitioned operations, inspect every returned result:
+raise. `copy_files()` partitions its file list internally but still folds
+every partition into one result:
 
 ```python
-results = rclone.copy_files(
+result = rclone.copy_files(
     src="source:dataset",
     dst="archive:dataset",
     files=["images/0001.png", "labels/0001.json"],
     check=True,
 )
-if not all(result.ok for result in results):
+if not result.ok:
     raise RuntimeError("One or more copy partitions failed")
 ```
 
@@ -350,10 +448,6 @@ result = rclone.copy_to(
 assert result.ok
 ```
 
-Pass only reviewed rclone flags in `other_args`. Values are executed as an
-argument vector with `shell=False`, but flags can still materially change
-rclone behavior.
-
 ### Copy a selected file set
 
 Names are relative to the supplied source root and must not include a remote
@@ -395,14 +489,14 @@ destination = "archive:completed/run-42"
 
 copy_result = rclone.copy(source, destination, check=True)
 if not copy_result.ok:
-    raise RuntimeError(copy_result.stderr)
+    raise RuntimeError(copy_result.error)
 
 if not rclone.is_synced(source, destination):
     raise RuntimeError("Destination verification failed")
 
 purge_result = rclone.purge(source)
 if not purge_result.ok:
-    raise RuntimeError(purge_result.stderr)
+    raise RuntimeError(purge_result.error)
 ```
 
 `purge()` is destructive: it removes the path and all contents. Keep it
@@ -422,8 +516,100 @@ result = rclone.delete_files(
     rmdirs=True,
 )
 if not result.ok:
-    raise RuntimeError(result.stderr)
+    raise RuntimeError(result.error)
 ```
+
+## Asynchronous copies, partitioned operations, and result types
+
+The client links the bundled native library directly in-process; there is no `rclone` executable and
+no subprocess per call. `copy()`, `copy_to()`, `copy_dir()`, `copy_remote()`, `purge()`, `cleanup()`,
+`copy_files()`, and `delete_files()` all return `OperationResult` (`size_files()` returns `SizeResult`),
+and `check=True` still raises on failure - code that only inspects `.ok`/`.error` needs no special
+handling. `start_copy()` gives direct access to the underlying asynchronous job model when a caller
+needs more than a blocking call.
+
+### Real asynchronous control with `start_copy()`
+
+`copy()`/`copy_dir()`/`copy_remote()` all block internally: they start the transfer as an embedded job
+and immediately wait for it. Call `start_copy()` directly when the caller needs to observe progress,
+apply a bounded wait, or cancel a transfer already in flight:
+
+```python
+handle = rclone.start_copy(
+    "/srv/incoming/run-42",
+    "archive:runs/run-42",
+    transfers=32,
+    checkers=256,
+    low_level_retries=10,
+    retries=3,
+)
+
+try:
+    result = handle.wait(timeout=3600)
+except OperationTimeoutError:
+    # The deadline only bounds observation - the transfer is still running.
+    # Cancel explicitly if it should stop.
+    handle.cancel()
+    result = handle.wait(timeout=60)
+
+if not result.ok:
+    raise RuntimeError(result.error)
+```
+
+`wait(timeout=...)` never cancels the underlying operation by itself - a timeout means "we stopped
+watching," not "it stopped running." Call `cancel()` for that; it returns immediately (`True` if the
+cancellation request was accepted, `False` if the job had already settled) and never blocks, so pair it
+with a bounded `wait()` to observe confirmed termination. `JobHandle` is also a context manager: exiting
+a `with` block cancels an unfinished owned job and waits up to a bounded interval, without raising on
+timeout, so the surrounding job-queue/worker layer decides what an unresponsive job means rather than
+`JobHandle` deciding for it.
+
+Poll progress with `status()`/`stats()` while a transfer runs:
+
+```python
+while not handle.done:
+    stats = handle.stats()
+    print(f"{stats.bytes}/{stats.total_bytes} bytes, {stats.transfers} files")
+    time.sleep(5)
+```
+
+### `copy_files()`/`delete_files()`: partitioned operations under one result
+
+`copy_files()` and `delete_files()` partition their file list by common directory/remote prefix, so
+unrelated transfers run concurrently, but every partition folds into one `OperationResult` before
+returning - not one per partition. A partial failure never aborts collecting the rest: every
+partition runs to completion first, and only then does `check=True` raise (once, for the aggregate)
+if any partition failed.
+
+```python
+result = rclone.copy_files(source, destination, ["a.txt", "b/c.txt"], check=False)
+if not result.ok:
+    for warning in result.warnings:
+        print(warning.message)  # "<partition src> -> <partition dst>: <error>", one per failure
+```
+
+`copy_files()` and `delete_files()` each return a single `OperationResult` whose `job_ids`/`attempts`/
+`stats` span every partition. A file entry that does not exist is not an error in either operation - it
+is simply not visited during the underlying walk.
+
+### `ls_stream()`/`copy_bytes()`: bounded-memory streaming and byte ranges
+
+`ls_stream()` is a context manager exposing `.files()`/`.files_paged()`:
+
+```python
+with rclone.ls_stream("archive:training-data", max_depth=-1) as stream:
+    for page in stream.files_paged(page_size=10_000):
+        persist_inventory_page(page)
+```
+
+It pulls items in small batches from a bounded server-side buffer, so memory stays bounded regardless
+of how many millions of entries the listing has. `save_to_db()` needs no separate handling either,
+since it only ever calls `ls_stream()`. Always use the context manager (as above): exiting it -
+including via an exception partway through iteration - releases the underlying stream immediately
+rather than leaving it open for the life of the runtime.
+
+`copy_bytes()` extends past the end of the object without error - it copies whatever is available.
+`check` is not exposed on it: a failure always raises `RcloneCommandError`.
 
 ## Streaming differences and reconciliation
 
@@ -453,8 +639,10 @@ comparisons; disable it if its memory use is unsuitable for the inventory.
 
 ## Filesystem-style remote access
 
-`RemoteFS` and `FSPath` offer a small `pathlib`-like interface backed by a
-scoped local HTTP server:
+`RemoteFS` and `FSPath` offer a small `pathlib`-like interface. Constructing one binds no port and
+starts no server - `exists()`/`is_dir()`/`is_file()`/`ls()` go straight through RC (`operations/stat`/
+`operations/list`), and `read_bytes()`/`write_binary()`/`copy()`/`remove()` go through the same
+`copy_to()`/`read_bytes()`/`write_bytes()`/`delete_files()` methods described above:
 
 ```python
 with rclone.filesystem("archive:jobs") as remote_fs:
@@ -473,10 +661,11 @@ with rclone.filesystem("archive:jobs") as remote_fs:
             print(current, dirnames, filenames)
 ```
 
-Scope `RemoteFS` with `with`, especially in web services and workers. It owns
-an rclone HTTP process. `FSPath.write_bytes()` buffers its input, and remote
-`mkdir()` is not supported because object stores usually represent
-directories as prefixes.
+Scope `RemoteFS` with `with` regardless - it may still hold other resources (and its `dispose()` must
+run for those) even though the common path starts no server. `FSPath.write_bytes()` buffers its
+input, and remote `mkdir()` is not supported because object stores usually represent directories as
+prefixes. Call `remote_fs.serve(addr=...)` explicitly if some other code genuinely needs a real
+`HttpServer` (e.g. multipart/resumable transfers) - it is never started implicitly.
 
 Local paths can use the same interface without launching rclone:
 
@@ -518,10 +707,11 @@ with rclone.serve_http("archive:models") as server:
 ```
 
 The `Range` end is exclusive. The server context manager shuts down the
-process even if a download raises. Bind to the automatically selected
+server even if a download raises. Bind to the automatically selected
 localhost port unless another process must reach the endpoint. If a fixed
 address is required, restrict it with host firewall and deployment network
-policy.
+policy. The returned `HttpServer` always talks to the running server over
+real HTTP.
 
 ## Mounts and WebDAV
 
@@ -532,15 +722,12 @@ unmounting and optional cache cleanup happen on every exit path:
 from pathlib import Path
 
 mount_path = Path("/mnt/archive")
-cache_path = Path("/var/cache/my-service/rclone-vfs")
 
 with rclone.mount(
     src="archive:datasets",
     outdir=mount_path,
     allow_writes=False,
     vfs_cache_mode="full",
-    cache_dir=cache_path,
-    cache_dir_delete_on_exit=False,
     transfers=32,
 ) as mounted:
     consume_files(mounted.mount_path)
@@ -562,8 +749,24 @@ with rclone.mount_s3(
 Mounts are operational infrastructure: provision disk for the VFS cache,
 monitor its utilization, and run mount-specific smoke tests on the target OS.
 
-`serve_webdav()` returns a long-lived `Process`. Bind it to a private
-interface, require credentials, and scope it:
+`mount()`/`mount_s3()` dispatch to rclone's own `mount/mount` RC method and
+return a `MountHandle`, whose `mount_path`, idempotent `.dispose()`, and
+context-manager close are used the same way above. This requires the native
+library to have been built with `scripts/native/build.py --profile
+production` (Windows: WinFsp's SDK installed and on the build machine's
+`CPATH`; Linux: needs no build-time FUSE headers, only the `fuse3`/`fuse`
+runtime package on the machine that actually mounts - see
+`native/README.md`). Verified against a real mount on Windows; Linux mount
+support compiles in the same way but has not yet been exercised end-to-end
+against a real mount in this repo. A
+`--profile development` build (this project's default) has no real mount
+implementation compiled in at all, and calling `mount()`/`mount_s3()`
+against one raises a plain `RcCallError`, not a confusing crash. The VFS
+cache directory itself is not caller-configurable through this API; rclone
+manages it at its own default location.
+
+`serve_webdav()` returns a long-lived handle. Bind it to a private interface,
+require credentials, and scope it:
 
 ```python
 with rclone.serve_webdav(
@@ -571,10 +774,12 @@ with rclone.serve_webdav(
     user="service-user",
     password=webdav_password,
     addr="127.0.0.1:9080",
-) as process:
-    assert process.poll() is None
+) as handle:
     run_consumer()
 ```
+
+The handle is a `ServeHandle`, supporting the context manager and idempotent
+`.dispose()`.
 
 ## S3-optimized operations
 
@@ -654,29 +859,17 @@ Pass the root-most path that should become one inventory table. The client
 streams the listing in pages rather than loading it all in memory. Keep
 database URLs out of logs because they may contain credentials.
 
-## Remote control processes
+## Build identification
 
-Use rclone remote control only on a trusted network interface. Supply
-authentication whenever the endpoint is reachable outside the process:
+There is no separate `rclone` executable to check the version of - the client already has direct
+in-process RC access, and the native library ships with the package. Query `Rclone.native_build_info()`
+for "which rclone build am I actually running" information (useful in health checks and support
+diagnostics):
 
 ```python
-with rclone.launch_server(
-    addr="127.0.0.1:5572",
-    user="worker",
-    password=rc_password,
-) as server_process:
-    response = rclone.remote_control(
-        addr="127.0.0.1:5572",
-        user="worker",
-        password=rc_password,
-        capture=True,
-        other_args=["core/version"],
-    )
-    if not response.ok:
-        raise RuntimeError(response.stderr)
+info = rclone.native_build_info()
+print(info.rclone_version, info.rclone_commit, info.go_version, info.target)
 ```
-
-The `Process` context terminates the server and its child process tree.
 
 ## Logging and error handling
 
@@ -700,15 +893,12 @@ LogSettings.enable_upload_parts_logging(True)
 
 Verbose command logging is useful during rollout but can be noisy. The
 library redacts recognized credential arguments; the application remains
-responsible for not logging config contents, database URLs, or arbitrary
-`other_args`.
+responsible for not logging config contents or database URLs.
 
 Handle the typed library errors at the boundary where retry or alert policy
 is decided:
 
 ```python
-import subprocess
-
 from rclone_kit.exceptions import HttpFetchError, RcloneKitError
 from rclone_kit.optional_dependency import MissingOptionalDependencyError
 
@@ -721,8 +911,6 @@ except HttpFetchError as error:
     # Network or remote HTTP error: apply the job's bounded retry policy.
     schedule_retry(error)
 except RcloneKitError as error:
-    mark_job_failed(error)
-except subprocess.CalledProcessError as error:
     mark_job_failed(error)
 ```
 
@@ -741,7 +929,6 @@ rclone-kit-save-to-db --config /run/secrets/rclone.conf \
   --db sqlite:///inventory.db archive:dataset
 rclone-kit-copylarge-s3 --config /run/secrets/rclone.conf \
   source:exports/full.tar archive:exports/full.tar
-rclone-kit-install-bins
 ```
 
 Run each command with `--help` before automation. Prefer the Python API when
@@ -754,12 +941,13 @@ Before rollout:
 
 - pin the `rclone-kit` version and the required extras;
 - deploy on a certified OS and architecture with Python 3.13 or newer;
-- provide a writable per-user cache and enough VFS or temporary disk space;
+- provide a writable home or temp directory for `Config`'s temporary config
+  file, and enough VFS or temporary disk space if mounting;
 - mount `rclone.conf` read-only from secret storage;
 - validate required remotes and a representative read during startup;
 - set explicit transfer, checker, partition-worker, and HTTP thread limits;
-- use context managers for `FilesStream`, `RemoteFS`, `HttpServer`, `Mount`,
-  and `Process`;
+- use context managers for `FilesStream`, `RemoteFS`, `HttpServer`,
+  `MountHandle`, and `ServeHandle`;
 - make source data immutable during multipart and verification workflows;
 - copy and verify before any purge or delete;
 - bound retries at both rclone and job-queue layers to avoid retry storms;

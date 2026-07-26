@@ -5,36 +5,51 @@ import stat
 import warnings
 from collections.abc import Generator
 from pathlib import Path, PurePath, PurePosixPath
-from typing import Protocol, Self
+from typing import TYPE_CHECKING, Protocol, Self
 
-from rclone_kit.completed_process import CompletedProcess
-from rclone_kit.exceptions import FilesystemError, HttpFetchError
+from rclone_kit.exceptions import FilesystemError
 from rclone_kit.fs.walk import fs_walk
 from rclone_kit.fs.walk_threaded_walker import FSWalker
 from rclone_kit.http_server import HttpServer
+from rclone_kit.operation import OperationResult
+
+if TYPE_CHECKING:
+    from rclone_kit.dir_listing import DirListing
+    from rclone_kit.file import File
+    from rclone_kit.remote import Remote
 
 
 class RemoteFSAccess(Protocol):
-    """High-level capabilities used by the remote filesystem adapter."""
+    """High-level capabilities used by the remote filesystem adapter.
+
+    `exists`/`stat`/`ls` back `RemoteFS`'s own `exists`/`is_dir`/`is_file`/
+    `ls` directly via RC - `serve_http` is not called by `RemoteFS`
+    construction, only by its own explicit, on-demand `serve()` method.
+    """
 
     def serve_http(
         self,
         src: str,
         addr: str | None = None,
-        other_args: list[str] | None = None,
     ) -> HttpServer: ...
 
     def is_s3(self, dst: str) -> bool: ...
 
     def copy_file_s3(self, src: Path, dst: str, verbose: bool | None = None) -> None: ...
 
-    def copy_to(self, src: str, dst: str) -> CompletedProcess: ...
+    def copy_to(self, src: str, dst: str) -> OperationResult: ...
 
     def read_bytes(self, src: str) -> bytes: ...
 
     def write_bytes(self, data: bytes, dst: str) -> None: ...
 
-    def delete_files(self, files: str) -> CompletedProcess: ...
+    def delete_files(self, files: str) -> OperationResult: ...
+
+    def exists(self, src: "Remote | str | File") -> bool: ...
+
+    def stat(self, src: str) -> "File": ...
+
+    def ls(self, src: str, max_depth: int | None = None) -> "DirListing": ...
 
 
 logger = logging.getLogger(__name__)
@@ -188,13 +203,32 @@ class RealFS(FS):
 
 
 class RemoteFS(FS):
+    """A direct-RC filesystem facade over one rclone client. Construction
+    binds no port and starts no server: `exists`/`is_dir`/`is_file`/`ls`
+    go straight to `operations/stat`/`operations/list` via
+    `rclone.exists()`/`stat()`/`ls()`. `read_bytes`/`write_binary`/`copy`/
+    `remove` are transitive through `rclone`'s own public methods.
+
+    An HTTP server is created only on explicit, on-demand request via
+    `serve()` - for a future consumer that genuinely needs a real listener
+    (e.g. multipart/resumable downloads) - never implicitly.
+    """
+
     def __init__(self, rclone: RemoteFSAccess, src: str) -> None:
         super().__init__()
         self.src = src
         self.shutdown = False
         self.server: HttpServer | None = None
         self.rclone = rclone
-        self.server = self.rclone.serve_http(src=src)
+
+    def serve(self, addr: str | None = None) -> HttpServer:
+        """Start (or return the already-started) HTTP server for this
+        filesystem's root. Not needed for `exists`/`is_dir`/`is_file`/
+        `ls`/`read_bytes`/`write_binary`/`copy`/`remove` - only for a
+        consumer that explicitly needs a real `HttpServer`."""
+        if self.server is None:
+            self.server = self.rclone.serve_http(src=self.src, addr=addr)
+        return self.server
 
     def root(self) -> "FSPath":
         return FSPath(self, self.src)
@@ -241,9 +275,9 @@ class RemoteFS(FS):
         logging.info(f"Copying {src} -> {dst}")
         src_path = src.as_posix()
         dst = dst if isinstance(dst, str) else dst.as_posix()
-        cp: CompletedProcess = self.rclone.copy_to(src_path, dst)
-        if cp.returncode != 0:
-            raise FileNotFoundError(f"File not found: {src}, specified by {cp.stderr}")
+        result: OperationResult = self.rclone.copy_to(src_path, dst)
+        if not result.ok:
+            raise FileNotFoundError(f"File not found: {src}, specified by {result.error}")
 
     def read_bytes(self, path: Path | str) -> bytes:
         path = self._to_str(path)
@@ -259,10 +293,8 @@ class RemoteFS(FS):
         self.rclone.write_bytes(data, path)
 
     def exists(self, path: Path | str) -> bool:
-        assert isinstance(self.server, HttpServer)
         path = self._to_str(path)
-        dst_rel = self._to_remote_path(path)
-        return self.server.exists(dst_rel)
+        return self.rclone.exists(path)
 
     def mkdir(self, path: str, parents=True, exist_ok=True) -> None:
         del path, parents, exist_ok
@@ -270,30 +302,33 @@ class RemoteFS(FS):
         warnings.warn("mkdir is not supported for remote backend", stacklevel=2)
 
     def is_dir(self, path: Path | str) -> bool:
-        assert isinstance(self.server, HttpServer)
-        path = self._to_remote_path(path)
+        path = self._to_str(path)
         try:
-            self.server.list(path)
-        except HttpFetchError:
+            return self.rclone.stat(path).path.is_dir
+        except FileNotFoundError:
             return False
-        return True
 
     def is_file(self, path: Path | str) -> bool:
-        assert isinstance(self.server, HttpServer)
-        remote_path = self._to_remote_path(path)
+        path = self._to_str(path)
         try:
-            self.server.list(remote_path)
-        except HttpFetchError:
-            return self.exists(path)
-        return False
+            return not self.rclone.stat(path).path.is_dir
+        except FileNotFoundError:
+            return False
 
     def ls(self, path: Path | str) -> tuple[list[str], list[str]]:
-        assert isinstance(self.server, HttpServer)
-        remote_path = self._to_remote_path(path)
+        path = self._to_str(path)
         try:
-            return self.server.list(remote_path)
-        except HttpFetchError as error:
+            listing = self.rclone.ls(path, max_depth=0)
+        except KeyboardInterrupt:
+            raise
+        except Exception as error:
             raise FileNotFoundError(f"File not found: {path}, because of {error}") from error
+        files = [f.name for f in listing.files]
+        # Directory names keep a trailing "/" marker - see FS.ls's own
+        # docstring: FSPath.lspaths()/fs_walk depend on this exact
+        # RemoteFS-vs-RealFS asymmetry, not despite it.
+        dirs = [f"{d.name}/" for d in listing.dirs]
+        return files, dirs
 
     def unlink(self, path: Path | str) -> None:
         self.remove(path)
@@ -302,9 +337,9 @@ class RemoteFS(FS):
         """Remove a file or symbolic link."""
 
         path = path if isinstance(path, str) else path.as_posix()
-        cp = self.rclone.delete_files(path)
-        if cp.failed():
-            raise FileNotFoundError(f"File not found: {path}, because of {cp}")
+        result = self.rclone.delete_files(path)
+        if not result.ok:
+            raise FileNotFoundError(f"File not found: {path}, because of {result.error}")
 
     def get_path(self, path: str) -> "FSPath":
         return FSPath(self, path)
@@ -341,13 +376,6 @@ class FSPath:
             assert path is not None, "path must be non None, when not auto converting from Path"
             self.fs = fs
             self.path = path
-        self.fs_holder: FS | None = None
-
-    def set_owner(self) -> None:
-        self.fs_holder = self.fs
-
-    def is_real_fs(self) -> bool:
-        return isinstance(self.fs, RealFS)
 
     def read_text(self) -> str:
         data = self.read_bytes()
@@ -371,14 +399,10 @@ class FSPath:
         return f"FSPath({self.path})"
 
     def __enter__(self) -> Self:
-        if self.fs_holder is not None:
-            warnings.warn("This operation is reserved for the cwd returned by FS", stacklevel=2)
         return self
 
     def __exit__(self, exc_type, exc_value, traceback) -> None:
-        if self.fs_holder is not None:
-            self.fs_holder.dispose()
-            self.fs_holder = None
+        pass
 
     def mkdir(self, parents=True, exist_ok=True) -> None:
         self.fs.mkdir(self.path, parents=parents, exist_ok=exist_ok)
@@ -424,19 +448,13 @@ class FSPath:
             encoding = "utf-8"
         self.write_bytes(data.encode(encoding))
 
-    def move_to(self, dst: "FSPath") -> None:
-        """Move a file or directory."""
-
-        self.fs.copy(self.path, dst.path)
-        self.fs.remove(self.path)
-
     def write_bytes(self, data: bytes) -> None:
         self.fs.write_binary(self.path, data)
 
     def rmtree(self, ignore_errors=False) -> None:
         self_exists = self.exists()
-        if not ignore_errors:
-            assert self_exists, f"Path does not exist: {self.path}"
+        if not ignore_errors and not self_exists:
+            raise FileNotFoundError(f"Path does not exist: {self.path}")
 
         if isinstance(self.fs, RealFS):
             shutil.rmtree(self.path, ignore_errors=ignore_errors)

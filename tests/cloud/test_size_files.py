@@ -7,7 +7,7 @@ import unittest
 
 import pytest
 
-from rclone_kit import Config, DirListing, Rclone, SizeResult
+from rclone_kit import DirListing, Rclone, SizeResult
 from rclone_kit.env_file import load_env_file
 
 load_env_file()
@@ -20,14 +20,14 @@ class RcloneSizeFilesTester(unittest.TestCase):
     """Test rclone functionality."""
 
     @pytest.fixture(autouse=True)
-    def _inject_do_spaces_config(self, do_spaces_config: Config) -> None:
-        self.config = do_spaces_config
+    def _inject_cloud_rclone(self, cloud_rclone: Rclone) -> None:
+        self.rclone = cloud_rclone
 
     def setUp(self) -> None:
         os.environ["RCLONE_KIT_VERBOSE"] = "1"
 
     def test_size(self) -> None:
-        rclone = Rclone(self.config)
+        rclone = self.rclone
 
         dirlisting: DirListing
         is_first = True

@@ -1,7 +1,5 @@
-"""Regression tests proving the five import-reachable `atexit` cleanup
-handlers (`rclone_kit.util._clean_configs`/`_terminate_live_subprocesses`,
-`rclone_kit.process._cleanup_live_processes`,
-`rclone_kit.file_part._on_exit_cleanup`,
+"""Regression tests proving the import-reachable `atexit` cleanup handlers
+(`rclone_kit.util._clean_configs`, `rclone_kit.file_part._on_exit_cleanup`,
 `rclone_kit.s3.multipart.upload_parts_resumable._cleanup_tmp_upload_dirs`)
 register lazily, on first use of the resource they protect, rather than
 unconditionally at `import rclone_kit` time.
@@ -12,19 +10,15 @@ merely by import" requires a fresh subprocess - the same reason
 `scripts/smoke_test_installed_wheel.py` inspects import-time thread/process
 counts from a fresh interpreter rather than the current one. The probe
 script below spies on `atexit.register` before importing `rclone_kit`,
-confirms none of the five target handlers are registered by the bare
+confirms none of the three target handlers are registered by the bare
 import, then exercises each handler's sole registry producer in turn
-(`make_temp_config_file`, constructing a `Process`, constructing a
-`FilePart`, importing `upload_parts_resumable` itself - the module registers
-its handler at its own import time, rather than lazily on first use within
-the module, because that module is only ever imported function-locally at
-its one real call site in `operations/copy_file_parts_resumable.py`, so
-module import and first real use already coincide) and confirms each one
-becomes registered only once its producer actually runs - and not before.
-
-`mount_util._cleanup_mounts` is deliberately out of scope: that module is
-already only ever imported lazily at its one real call site, so its
-registration already coincides with first use without needing this change.
+(`make_temp_config_file`, constructing a `FilePart`, importing
+`upload_parts_resumable` itself - the module registers its handler at its
+own import time, rather than lazily on first use within the module, because
+that module is only ever imported function-locally at its one real call
+site in `operations/copy_file_parts_resumable.py`, so module import and
+first real use already coincide) and confirms each one becomes registered
+only once its producer actually runs - and not before.
 """
 
 import subprocess
@@ -32,9 +26,8 @@ import sys
 from pathlib import Path
 
 from rclone_kit.file_part import _on_exit_cleanup
-from rclone_kit.process import _cleanup_live_processes
 from rclone_kit.s3.multipart.upload_parts_resumable import _cleanup_tmp_upload_dirs
-from rclone_kit.util import _clean_configs, _terminate_live_subprocesses
+from rclone_kit.util import _clean_configs
 
 _SUBPROCESS_TIMEOUT_SECONDS = 30
 _SUCCESS_MARKER = "ATEXIT_LAZY_REGISTRATION_PROBE_OK"
@@ -45,15 +38,11 @@ def _handler_id(handler: object) -> str:
 
 
 _CLEAN_CONFIGS_ID = _handler_id(_clean_configs)
-_TERMINATE_LIVE_SUBPROCESSES_ID = _handler_id(_terminate_live_subprocesses)
-_CLEANUP_LIVE_PROCESSES_ID = _handler_id(_cleanup_live_processes)
 _ON_EXIT_CLEANUP_ID = _handler_id(_on_exit_cleanup)
 _CLEANUP_TMP_UPLOAD_DIRS_ID = _handler_id(_cleanup_tmp_upload_dirs)
 
 _TARGET_HANDLER_IDS = (
     _CLEAN_CONFIGS_ID,
-    _TERMINATE_LIVE_SUBPROCESSES_ID,
-    _CLEANUP_LIVE_PROCESSES_ID,
     _ON_EXIT_CLEANUP_ID,
     _CLEANUP_TMP_UPLOAD_DIRS_ID,
 )
@@ -77,14 +66,11 @@ atexit.register = _spy_register
 import rclone_kit  # noqa: F401
 from rclone_kit import util
 from rclone_kit.file_part import FilePart
-from rclone_kit.process import Process, ProcessArgs
 from rclone_kit.s3.multipart.file_info import S3FileInfo
 
 target_ids = __TARGET_IDS__
 (
     clean_configs_id,
-    terminate_live_subprocesses_id,
-    cleanup_live_processes_id,
     on_exit_cleanup_id,
     cleanup_tmp_upload_dirs_id,
 ) = target_ids
@@ -94,29 +80,8 @@ assert not already_registered, f"registered merely by import: {sorted(already_re
 
 util.make_temp_config_file()
 assert clean_configs_id in registered, "make_temp_config_file did not register _clean_configs"
-assert terminate_live_subprocesses_id in registered, (
-    "make_temp_config_file did not register _terminate_live_subprocesses"
-)
-assert cleanup_live_processes_id not in registered, (
-    "creating a temp config file must not register the Process handler"
-)
 assert on_exit_cleanup_id not in registered, (
     "creating a temp config file must not register the FilePart handler"
-)
-
-proc = Process(
-    ProcessArgs(
-        rclone_conf=None,
-        rclone_exe=Path(sys.executable),
-        cmd_list=["--version"],
-        capture_stdout=True,
-    )
-)
-proc.wait()
-proc.dispose()
-assert cleanup_live_processes_id in registered, "Process construction did not register its handler"
-assert on_exit_cleanup_id not in registered, (
-    "constructing a Process must not register the FilePart handler"
 )
 
 FilePart(payload=b"probe-bytes", extra=S3FileInfo(upload_id="probe", part_number=1))

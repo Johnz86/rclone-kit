@@ -1,4 +1,3 @@
-import _thread
 import contextlib
 import logging
 import os
@@ -270,6 +269,17 @@ def upload_file_multipart(
         cancel_signal=cancel_chunker_event,
         queue_errors=chunker_errors,
     ) -> None:
+        """Run `file_chunker`, recording a failure into `queue_errors` and
+        waking `upload_runner`'s blocking `queue_upload.get()` with an
+        `EndOfStream` - not via `_thread.interrupt_main()`, whose async
+        KeyboardInterrupt can land anywhere in the main thread's control
+        flow (including after `upload_runner` has already returned), isn't
+        caught by the `except Exception` blocks that follow, and would
+        surface as a misleading `KeyboardInterrupt` instead of this real
+        failure. `upload_runner` treats `EndOfStream` as ordinary, non-
+        error completion; the caller learns about this failure from
+        `chunker_errors` after `thread_chunker.join()`, not from that queue.
+        """
         try:
             file_chunker(
                 upload_state=upload_state,
@@ -280,7 +290,7 @@ def upload_file_multipart(
             )
         except Exception as e:
             queue_errors.put(e)
-            _thread.interrupt_main()
+            queue_upload.put(EndOfStream())
             raise
         logger.debug("Chunker task completed")
 

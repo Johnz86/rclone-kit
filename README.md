@@ -5,7 +5,7 @@
 
 A fast, Pythonic API around [rclone](https://rclone.org/), built for moving large volumes of data, originally out of necessity for shipping AI training data around quickly. Aggressive default transfer settings mean this beats a stock rclone invocation out of the box.
 
-The published wheel bundles a pinned, checksum-verified rclone executable for Windows and Linux (amd64), no separate rclone install or PATH setup required.
+The published wheel bundles a native `librclone_kit` shared library for Windows and Linux (amd64), loaded in-process and verified by checksum against its own manifest, no separate rclone install, PATH setup, or subprocess required.
 
 ## Install
 
@@ -68,14 +68,13 @@ Installed alongside the library:
 | `rclone-kit-listfiles` | Walk a remote path and print every file found. |
 | `rclone-kit-copylarge-s3` | Chunked, resumable large-file copy to S3. |
 | `rclone-kit-save-to-db` | Dump a remote's listing into a SQL database. |
-| `rclone-kit-install-bins` | Install the pinned, verified rclone executable for the current platform. |
 
 Run any of them with `--help` for full usage.
 
 ## Configuration
 
-- `RCLONE_CONFIG`, path to an `rclone.conf` file. If unset, `rclone config
-  paths` is used to discover the active config.
+- `RCLONE_CONFIG`, path to an `rclone.conf` file. If unset, the embedded
+  runtime's own default config path is used to discover the active config.
 
 ## Contributing
 
@@ -90,7 +89,6 @@ uv run ruff format --check .
 uv run ruff check .
 uv run pyright _build_backend.py src tests scripts
 uv run pytest tests/unit
-uv run pytest tests/integration
 ```
 
 Run `uv run ruff format .` and `uv run ruff check --fix .` before committing.

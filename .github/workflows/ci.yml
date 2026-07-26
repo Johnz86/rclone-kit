@@ -16,6 +16,15 @@ env:
   # below is pinned by SHA instead. Python's patch version comes from
   # .python-version, resolved separately in each job.
   UV_VERSION: "0.11.29"
+  # Must match native/toolchain.toml exactly (schema=1) - the wheel jobs
+  # install these to build the native library. scripts/native/build.py
+  # independently validates the resolved Go version against that file at
+  # build time, so a drift here fails loudly rather than silently.
+  NATIVE_GO_VERSION: "1.26.5"
+  NATIVE_LLVM_MINGW_RELEASE: "20260616"
+  NATIVE_LLVM_MINGW_ARCHIVE: "llvm-mingw-20260616-ucrt-x86_64"
+  NATIVE_WINFSP_VERSION: "2.1"
+  NATIVE_WINFSP_MSI: "winfsp-2.1.25156.msi"
 
 jobs:
   quality:
@@ -72,9 +81,6 @@ jobs:
       - name: Run unit tests
         run: uv run pytest tests/unit
 
-      - name: Run integration tests
-        run: uv run pytest tests/integration
-
   tests-linux:
     name: Test (ubuntu-latest)
     runs-on: ubuntu-latest
@@ -98,17 +104,16 @@ jobs:
       - name: Run unit tests
         run: uv run pytest tests/unit
 
-      - name: Run integration tests
-        run: uv run pytest tests/integration
-
   wheel-windows:
     name: Wheel (windows-amd64)
     needs: [quality, tests-windows]
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 40
     steps:
       - name: Check out repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          submodules: true
 
       - name: Install uv
         uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990
@@ -121,17 +126,65 @@ jobs:
       - name: Install dependencies
         run: uv sync --locked --all-groups
 
-      - name: Cache rclone release archive
+      - name: Verify native/rclone fork commit is fetchable
+        run: uv run python scripts/native/verify_submodule_pin.py
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.NATIVE_GO_VERSION }}
+
+      - name: Cache llvm-mingw toolchain
+        id: cache-llvm-mingw
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
-          path: ~\AppData\Local\rclone-kit\archives
-          # Invalidates automatically on any RCLONE_VERSION or digest change,
-          # without duplicating either value into this workflow file.
-          key: rclone-archive-windows-amd64-${{ hashFiles('src/rclone_kit/runtime/platform.py') }}
+          path: C:\Programs\llvm-mingw
+          key: llvm-mingw-${{ hashFiles('native/toolchain.toml') }}
+
+      - name: Install llvm-mingw
+        if: steps.cache-llvm-mingw.outputs.cache-hit != 'true'
+        shell: pwsh
+        # Matches native/toolchain.toml's windows_compiler_cc exactly. The
+        # zip's top-level folder name doesn't match the target path, so it
+        # must be extracted then moved/renamed, not extracted in place.
+        run: |
+          $ErrorActionPreference = "Stop"
+          $archive = "${{ env.NATIVE_LLVM_MINGW_ARCHIVE }}.zip"
+          $url = "https://github.com/mstorsjo/llvm-mingw/releases/download/${{ env.NATIVE_LLVM_MINGW_RELEASE }}/$archive"
+          $zipPath = Join-Path $env:RUNNER_TEMP $archive
+          Invoke-WebRequest -Uri $url -OutFile $zipPath
+          $extractDir = Join-Path $env:RUNNER_TEMP "llvm-mingw-extract"
+          Expand-Archive -Path $zipPath -DestinationPath $extractDir
+          $inner = Get-ChildItem -Path $extractDir -Directory | Select-Object -First 1
+          New-Item -ItemType Directory -Force -Path "C:\Programs" | Out-Null
+          Move-Item -Path $inner.FullName -Destination "C:\Programs\llvm-mingw"
+
+      - name: Install WinFsp
+        shell: pwsh
+        # ADDLOCAL=ALL installs the SDK/headers feature too (not just the
+        # runtime), needed at build time by --profile production; sidesteps
+        # having to name WinFsp's internal feature IDs.
+        run: |
+          $ErrorActionPreference = "Stop"
+          $msi = "${{ env.NATIVE_WINFSP_MSI }}"
+          $url = "https://github.com/winfsp/winfsp/releases/download/v${{ env.NATIVE_WINFSP_VERSION }}/$msi"
+          $msiPath = Join-Path $env:RUNNER_TEMP $msi
+          Invoke-WebRequest -Uri $url -OutFile $msiPath
+          Start-Process msiexec.exe -ArgumentList "/i `"$msiPath`" /quiet /qn ADDLOCAL=ALL" -Wait -NoNewWindow
+
+      - name: Build native library
+        # No --out-dir override: lands at the default build/native/windows-amd64/,
+        # exactly where tests/native/conftest.py looks for it.
+        run: uv run python scripts/native/build.py --target windows-amd64 --profile production
+
+      - name: Run native integration tests
+        run: uv run pytest tests/native
 
       - name: Build, verify, and smoke-test the wheel
         # The single canonical build command; see its own docstring and
-        # docs/implementation_and_build_pipeline.md for what it does.
+        # docs/implementation_and_build_pipeline.md for what it does. Builds
+        # the native library a second time, in an isolated temp dir, by
+        # design - see build_distribution.py's own docstring.
         run: uv run python scripts/build_distribution.py --target windows-amd64 --out-dir dist
 
       - name: Upload wheel artifact
@@ -145,10 +198,12 @@ jobs:
     name: Wheel (linux-amd64)
     needs: [quality, tests-linux]
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 45
     steps:
       - name: Check out repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          submodules: true
 
       - name: Install uv
         uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990
@@ -161,14 +216,100 @@ jobs:
       - name: Install dependencies
         run: uv sync --locked --all-groups
 
-      - name: Cache rclone release archive
+      - name: Verify native/rclone fork commit is fetchable
+        run: uv run python scripts/native/verify_submodule_pin.py
+
+      - name: Cache Go toolchain archive
+        id: cache-go-linux
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
-          path: ~/.cache/rclone-kit/archives
-          key: rclone-archive-linux-amd64-${{ hashFiles('src/rclone_kit/runtime/platform.py') }}
+          path: ~/native-toolchain-cache
+          key: go-linux-amd64-${{ hashFiles('native/toolchain.toml') }}
 
-      - name: Build, verify, and smoke-test the wheel
-        run: uv run python scripts/build_distribution.py --target linux-amd64 --out-dir dist
+      - name: Download Go toolchain archive
+        if: steps.cache-go-linux.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p "$HOME/native-toolchain-cache"
+          curl -fsSL -o "$HOME/native-toolchain-cache/go.tar.gz" \
+            "https://go.dev/dl/go${NATIVE_GO_VERSION}.linux-amd64.tar.gz"
+
+      # GHA's job-level `container:` directive is avoided here: JS-based
+      # actions (actions/checkout, etc.) would run inside this old-glibc
+      # (2.17) container via docker exec, a real Node.js compatibility risk.
+      # actions/checkout and astral-sh/setup-uv above already ran on the
+      # normal ubuntu-latest host; only the actual native/wheel build runs
+      # inside the container, mirroring native/README.md's manual recipe.
+      - name: Start manylinux2014 build container
+        run: |
+          docker run -d --name rclone-kit-build \
+            --device /dev/fuse --cap-add SYS_ADMIN \
+            -v "${{ github.workspace }}:/work" \
+            -v "$HOME/native-toolchain-cache:/toolchain-cache" \
+            quay.io/pypa/manylinux2014_x86_64 sleep infinity
+
+      - name: Install Go inside the build container
+        run: docker exec rclone-kit-build tar -C /usr/local -xzf /toolchain-cache/go.tar.gz
+
+      - name: Trust the mounted checkout inside the build container
+        # /work is owned by the runner user on the host but the container
+        # runs as root, so git's dubious-ownership check (protecting
+        # against a different-UID actor's repo) rejects it by default -
+        # `go build -buildvcs=true` shells out to git for VCS stamping and
+        # fails the whole build with "error obtaining VCS status: exit
+        # status 128" as soon as it hits that. Safe here: the container is
+        # ephemeral and /work is this same job's own checkout, not a
+        # different actor's repo.
+        run: docker exec rclone-kit-build git config --global --add safe.directory '*'
+
+      - name: Install FUSE runtime packages inside the build container
+        # Runtime-only package for the mount-support tests
+        # NATIVE_MOUNT_AVAILABLE gates; not needed for the build itself.
+        run: docker exec rclone-kit-build yum install -y fuse3 fuse
+
+      - name: Install Python dependencies inside the build container
+        # A mounted host .venv isn't safely reusable inside the container -
+        # same reasoning native/README.md documents for its manual recipe.
+        run: |
+          docker exec rclone-kit-build bash -lc '
+            export PATH=/usr/local/go/bin:$PATH
+            export UV_PROJECT_ENVIRONMENT=/tmp/venv-linux
+            cd /work && uv sync --locked --all-groups --python 3.13
+          '
+
+      - name: Build native library inside the build container
+        # No --out-dir override: lands at /work/build/native/linux-amd64/,
+        # visible on the host too via the mount - exactly where
+        # tests/native/conftest.py looks for it.
+        run: |
+          docker exec rclone-kit-build bash -lc '
+            export PATH=/usr/local/go/bin:$PATH
+            export UV_PROJECT_ENVIRONMENT=/tmp/venv-linux
+            cd /work && uv run --python 3.13 python scripts/native/build.py --target linux-amd64 --profile production
+          '
+
+      - name: Run native integration tests inside the build container
+        run: |
+          docker exec rclone-kit-build bash -lc '
+            export PATH=/usr/local/go/bin:$PATH
+            export UV_PROJECT_ENVIRONMENT=/tmp/venv-linux
+            cd /work && uv run --python 3.13 pytest tests/native
+          '
+
+      - name: Build, verify, and smoke-test the wheel inside the build container
+        # Builds the native library a second time, in an isolated temp dir,
+        # by design - see build_distribution.py's own docstring.
+        run: |
+          docker exec rclone-kit-build bash -lc '
+            export PATH=/usr/local/go/bin:$PATH
+            export UV_PROJECT_ENVIRONMENT=/tmp/venv-linux
+            cd /work && uv run --python 3.13 python scripts/build_distribution.py --target linux-amd64 --out-dir dist
+          '
+
+      - name: Stop and remove the build container
+        if: always()
+        # `|| true`: a failure before the container was even started (e.g.
+        # the fetch-check step above) must not mask the real earlier error.
+        run: docker rm -f rclone-kit-build || true
 
       - name: Upload wheel artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a

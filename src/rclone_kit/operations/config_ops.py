@@ -1,86 +1,45 @@
 from __future__ import annotations
 
 import logging
-import subprocess
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from rclone_kit.backend import RcloneBackend
 from rclone_kit.config import Config, Parsed, Section
-from rclone_kit.config_discovery import parse_rclone_paths
-from rclone_kit.exceptions import RcloneCommandError
 from rclone_kit.s3.types import S3Credentials, S3Provider
 from rclone_kit.types import S3PathInfo
 from rclone_kit.util import get_verbose
 
+if TYPE_CHECKING:
+    from rclone_kit.rc.client import RcCallable
+
 logger = logging.getLogger(__name__)
 
 
-def obscure_password(backend: RcloneBackend, password: str) -> str:
-    """Obscure a password for use in rclone config files."""
-    cmd_list: list[str] = ["obscure", password]
-    cp = backend.run(tuple(cmd_list))
-    return cp.stdout.strip()
-
-
-def fetch_config_paths(
-    backend: RcloneBackend,
-    remote: str | None = None,
-    obscure: bool = False,
-    no_obscure: bool = False,
-) -> list[Path]:
-    """Return the filesystem paths reported by `rclone config paths`:
-    the config file, cache directory, and temp directory, in that fixed
-    order.
-
-    `remote`, `obscure`, and `no_obscure` are accepted for backward
-    compatibility with this method's public signature. `config paths`
-    takes no such arguments upstream, so they are ignored.
-
-    Raises:
-        RcloneCommandError: if the underlying `rclone config paths`
-            invocation fails.
+def fetch_config_paths_embedded(rc_client: RcCallable) -> list[Path]:
+    """Return the filesystem paths reported by `config/paths`: the config
+    file, cache directory, and temp directory, in that fixed order.
     """
-    del remote, obscure, no_obscure
-    cmd_list: list[str] = ["config", "paths"]
-
-    try:
-        cp = backend.run(tuple(cmd_list), capture=True, check=True)
-    except subprocess.CalledProcessError as error:
-        raise RcloneCommandError("config paths", error.stderr or "", error) from error
-    stdout: str | bytes = cp.stdout
-    if isinstance(stdout, bytes):
-        stdout = stdout.decode("utf-8")
-    return parse_rclone_paths(stdout).present_paths()
+    result = rc_client.call("config/paths")
+    return [
+        Path(value)
+        for value in (result.get("config"), result.get("cache"), result.get("temp"))
+        if value
+    ]
 
 
-def fetch_config_show(
-    backend: RcloneBackend,
-    remote: str | None = None,
-    obscure: bool = False,
-    no_obscure: bool = False,
-) -> str:
-    """Return the configuration text reported by `rclone config show`.
-
-    Raises:
-        ValueError: if both `obscure` and `no_obscure` are set.
-        RcloneCommandError: if the underlying `rclone config show`
-            invocation fails.
+def fetch_config_show_embedded(rc_client: RcCallable, remote: str | None = None) -> str:
+    """Return the configuration text reported by `rclonekit/configshow`,
+    byte-for-byte identical to `rclone config show`/`rclone config show
+    <remote>`'s own plain-text output.
     """
-    if obscure and no_obscure:
-        raise ValueError("obscure and no_obscure cannot both be enabled")
-    cmd_list = ["config", "show"]
+    params: dict[str, object] = {}
     if remote is not None:
-        cmd_list.append(remote)
-    if obscure:
-        cmd_list.append("--obscure")
-    if no_obscure:
-        cmd_list.append("--no-obscure")
-    try:
-        cp = backend.run(tuple(cmd_list), capture=True, check=True)
-    except subprocess.CalledProcessError as error:
-        raise RcloneCommandError("config show", error.stderr or "", error) from error
-    stdout = cp.stdout
-    return stdout.decode("utf-8") if isinstance(stdout, bytes) else stdout
+        params["remote"] = remote
+    result = rc_client.call("rclonekit/configshow", **params)
+    text = result["text"]
+    if not isinstance(text, str):
+        raise ValueError(f"text must be a string, got {text!r}")
+    return text
 
 
 def check_is_s3(config: Config, dst: str) -> bool:

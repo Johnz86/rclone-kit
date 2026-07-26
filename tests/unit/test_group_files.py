@@ -5,7 +5,7 @@ Unit test file.
 import unittest
 
 from rclone_kit.group_files import group_files as _group_files
-from rclone_kit.group_files import group_under_one_prefix
+from rclone_kit.group_files import group_under_one_prefix, group_under_remote_bucket, parse_file
 
 
 def group_files(files: list[str], fully_qualified: bool | None = None) -> dict[str, list[str]]:
@@ -136,6 +136,58 @@ class GroupFilestest(unittest.TestCase):
         ]
         self.assertIn(expected_files[0], groups["dst:TorrentBooks/libgenrs_nonfiction/204000"])
 
+    def test_fully_qualified_local_path_has_no_colon(self) -> None:
+        """`delete_files_embedded` calls `group_files(files)` (fully_qualified
+        defaults to True) on real local filesystem paths too, via
+        `RemoteFS.remove()` - on Linux those never contain a colon at all.
+        A colonless path must group under its own absolute directory, not
+        raise or get a stray leading ':' - see `parse_file`/
+        `_fixup_rclone_paths`."""
+        files = [
+            "/srv/data/subdir/manifest.txt",
+        ]
+
+        groups: dict[str, list[str]] = _group_files(files, fully_qualified=True)
+
+        self.assertEqual(groups, {"/srv/data/subdir": ["manifest.txt"]})
+
+    def test_fully_qualified_windows_local_path_splits_on_backslash(self) -> None:
+        """A Windows local path's own directory separators are backslashes,
+        not "/" - `parse_file`/`group_files` must decompose parents using
+        `RcPath.parse_parts` instead of assuming rclone's forward-slash
+        remote-path convention, and reassemble the drive letter's colon
+        with its separator kept (`C:/Users`, not the drive-relative
+        `C:Users`) - see `_colonify`."""
+        files = [
+            r"C:\Users\jan\data\subdir\manifest.txt",
+        ]
+
+        groups: dict[str, list[str]] = _group_files(files, fully_qualified=True)
+
+        self.assertEqual(groups, {"C:/Users/jan/data/subdir": ["manifest.txt"]})
+
+    def test_group_under_remote_bucket_splits_by_bucket(self) -> None:
+        files = [
+            "dst:Bucket/subdir/file1.txt",
+            "dst:Bucket/subdir2/file2.txt",
+        ]
+
+        groups = group_under_remote_bucket(files)
+
+        self.assertEqual(
+            groups,
+            {
+                "dst:Bucket": [
+                    "subdir/file1.txt",
+                    "subdir2/file2.txt",
+                ]
+            },
+        )
+
+    def test_group_under_remote_bucket_rejects_fully_qualified_false(self) -> None:
+        with self.assertRaises(NotImplementedError):
+            group_under_remote_bucket(["file1.txt"], fully_qualified=False)
+
     def test_group_under_one_prefix(self) -> None:
         files = [
             "Bucket/subdir/file1.txt",
@@ -166,6 +218,14 @@ class GroupFilestest(unittest.TestCase):
 
         self.assertEqual(prefix, "src:Bucket/subdir")
         self.assertEqual(grouped_files, [backslash_name])
+
+    def test_parse_file_rejects_a_directory_path(self) -> None:
+        # Regression test: this precondition used to be a bare assert,
+        # silently stripped under python -O, unlike every sibling
+        # validation this module now raises for (see
+        # group_under_remote_bucket's NotImplementedError above).
+        with self.assertRaises(ValueError):
+            parse_file("remote:some/dir/")
 
 
 if __name__ == "__main__":

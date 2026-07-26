@@ -64,3 +64,35 @@ def test_normal_exhaustion_yields_everything_and_joins_worker() -> None:
     assert results == [f"dir-{i}" for i in range(_MAX_OUT_QUEUE_SIZE * 3)]
     assert len(_CREATED_THREADS) == 1
     assert not _CREATED_THREADS[0].is_alive()
+
+
+def _fake_walk_task_raising(
+    *, src: object, dst: object, max_depth: int, out_queue: Queue, order: Order
+) -> None:
+    _ = (src, dst, max_depth, order)
+    try:
+        out_queue.put("dir-0")
+        raise RuntimeError("simulated diff walk failure")
+    finally:
+        out_queue.put(None)
+
+
+def test_background_failure_is_reraised_to_the_caller_and_worker_still_joins(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Regression test: a background-thread failure used to be signaled via
+    # _thread.interrupt_main(), an async KeyboardInterrupt that can land
+    # anywhere in the main thread's control flow - including after this
+    # generator already exhausted normally - surfacing as a misleading
+    # KeyboardInterrupt in unrelated code instead of the real failure. It
+    # must now be raised deterministically to this generator's own caller.
+    monkeypatch.setattr(
+        scan_missing_folders_module, "async_diff_dir_walk_task", _fake_walk_task_raising
+    )
+    generator = scan_missing_folders(src=cast(Dir, "src"), dst=cast(Dir, "dst"), order=Order.NORMAL)
+
+    with pytest.raises(RuntimeError, match="simulated diff walk failure"):
+        list(generator)
+
+    assert len(_CREATED_THREADS) == 1
+    assert not _CREATED_THREADS[0].is_alive()

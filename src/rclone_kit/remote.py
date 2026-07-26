@@ -3,18 +3,18 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from rclone_kit.access import DomainAccess
+    from rclone_kit.access import ListingAccess
 
 
 class Remote:
     """Remote (root) directory."""
 
-    def __init__(self, name: str, rclone: DomainAccess) -> None:
+    def __init__(self, name: str, rclone: ListingAccess) -> None:
         if ":" in name:
             raise ValueError("Remote name cannot contain ':'")
 
         self.name = name
-        self.rclone: DomainAccess = rclone
+        self.rclone: ListingAccess = rclone
 
     def __str__(self) -> str:
         return f"{self.name}:"

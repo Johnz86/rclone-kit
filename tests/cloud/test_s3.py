@@ -10,10 +10,14 @@ from helpers import BACKBLAZE_B2_ENV_VARS, skip_if_missing_cloud_env
 from rclone_kit.env_file import load_env_file
 from rclone_kit.file_part import FilePart
 from rclone_kit.s3.api import S3Client
-from rclone_kit.s3.create import S3Provider
 from rclone_kit.s3.multipart.file_info import S3FileInfo
-from rclone_kit.s3.multipart.upload_parts_inline import MultiUploadResult
-from rclone_kit.s3.types import S3Credentials, S3MutliPartUploadConfig, S3UploadTarget
+from rclone_kit.s3.types import (
+    MultiUploadResult,
+    S3Credentials,
+    S3MutliPartUploadConfig,
+    S3Provider,
+    S3UploadTarget,
+)
 
 load_env_file()
 

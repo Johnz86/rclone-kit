@@ -9,11 +9,13 @@ from rclone_kit.s3.basic_ops import (
     upload_file,
 )
 from rclone_kit.s3.create import S3Config, create_s3_client
-from rclone_kit.s3.multipart.upload_parts_inline import (
+from rclone_kit.s3.multipart.upload_parts_inline import upload_file_multipart
+from rclone_kit.s3.types import (
     MultiUploadResult,
-    upload_file_multipart,
+    S3Credentials,
+    S3MutliPartUploadConfig,
+    S3UploadTarget,
 )
-from rclone_kit.s3.types import S3Credentials, S3MutliPartUploadConfig, S3UploadTarget
 
 _MIN_THRESHOLD_FOR_CHUNKING = 5 * 1024 * 1024
 

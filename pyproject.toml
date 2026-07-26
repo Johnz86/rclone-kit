@@ -23,7 +23,7 @@ dependencies = [
 ]
 
 # Change this with the version number bump.
-version = "1.0.0"
+version = "1.1.0"
 
 [project.optional-dependencies]
 s3 = ["boto3>=1.43.51"]
@@ -54,12 +54,13 @@ package-dir = {"" = "src"}
 where = ["src"]
 
 [tool.setuptools.package-data]
-rclone_kit = ["assets/*", "assets/**/*"]
+rclone_kit = ["py.typed", "assets/*", "assets/**/*"]
 
 [tool.ruff]
 target-version = "py313"
 line-length = 100
 src = ["src", "tests", "scripts"]
+extend-exclude = ["reference", "native"]
 
 [tool.ruff.lint]
 select = [
@@ -210,7 +211,7 @@ quote-style = "double"
 # reach it. Declaring it here lets `tests/unit/test_verify_distribution.py`
 # do a bare `import verify_distribution`, mirroring the `pythonpath`
 # entry pytest itself uses for the same import at test-run time.
-extraPaths = ["scripts"]
+extraPaths = ["scripts", "scripts/native"]
 strict = [
     "src/rclone_kit/command_flags.py",
     "src/rclone_kit/settings.py",
@@ -221,17 +222,17 @@ strict = [
 addopts = "-ra --strict-markers"
 testpaths = ["tests"]
 # "." lets tests/unit/test_build_backend.py do a bare `import _build_backend`.
-pythonpath = ["tests", "scripts", "."]
+pythonpath = ["tests", "scripts", "scripts/native", "."]
 markers = [
     "cloud: requires external cloud credentials",
     "mount: requires operating-system mount support",
     "network: requires non-loopback network access",
     "live_s3: exercises the real implementation against a real S3/Ceph remote via rclone-test.conf; run explicitly with `pytest -m live_s3`",
     "live_gdrive: exercises the real implementation against a real Google Drive remote via rclone-gdrive.conf; run explicitly with `pytest -m live_gdrive`",
+    "live_gdrive_authorization: drives Rclone.authorize() against a real Google Drive account, blocking on a human approving access in a browser; run explicitly with `pytest -m live_gdrive_authorization`",
 ]
 
 [project.scripts]
 rclone-kit-listfiles = "rclone_kit.cmd.list_files:main"
 rclone-kit-copylarge-s3 = "rclone_kit.cmd.copy_large_s3:main"
 rclone-kit-save-to-db = "rclone_kit.cmd.save_to_db:main"
-rclone-kit-install-bins = "rclone_kit.cmd.install_rclone:main"

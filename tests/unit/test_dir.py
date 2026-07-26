@@ -56,3 +56,29 @@ def test_relative_to_ordinary_nested_path() -> None:
     child = _dir("Bucket/subdir/file.txt", "file.txt", is_dir=False)
 
     assert child.relative_to(parent) == "subdir/file.txt"
+
+
+def test_to_string_without_remote_strips_the_remote_prefix() -> None:
+    dir_obj = _dir("Bucket/subdir", "subdir")
+
+    assert dir_obj.to_string(include_remote=False) == "Bucket/subdir"
+
+
+def test_to_string_without_remote_on_a_local_path_is_unchanged() -> None:
+    # A local Dir (no remote at all - see rc.paths.split_remote_and_path)
+    # has no prefix to strip; the previous unconditional `.split(":", 1)`
+    # would raise ValueError here instead of returning the path as-is.
+    remote = Remote(name="", rclone=_FAKE_RCLONE)
+    rpath = RPath(
+        remote=remote,
+        path="/srv/data",
+        name="data",
+        size=0,
+        mime_type="inode/directory",
+        mod_time="",
+        is_dir=True,
+    )
+    rpath.set_rclone(_FAKE_RCLONE)
+    dir_obj = Dir(rpath)
+
+    assert dir_obj.to_string(include_remote=False) == "/srv/data"

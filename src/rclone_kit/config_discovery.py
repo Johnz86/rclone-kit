@@ -3,15 +3,10 @@
 from __future__ import annotations
 
 import os
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from rclone_kit.runtime.exceptions import RcloneRuntimeError
-from rclone_kit.util import get_rclone_exe
-
 _RCLONE_CONFIG_ENV_VAR = "RCLONE_CONFIG"
-_CONFIG_PATHS_COMMAND = ("config", "paths")
 _CONFIG_FILE_LABEL = "config file"
 _CACHE_DIR_LABEL = "cache dir"
 _TEMP_DIR_LABEL = "temp dir"
@@ -52,40 +47,53 @@ def parse_rclone_paths(stdout: str) -> RclonePaths:
     )
 
 
-def find_conf_file(
+def find_conf_file_embedded(
     *,
     explicit_path: Path | None = None,
-    rclone_exe: Path | None = None,
+    library_path: Path | None = None,
 ) -> Path | None:
-    """Find a config via explicit path, environment, then rclone itself."""
+    """Find a config via explicit path, environment, then the embedded
+    native runtime's own default-path discovery.
+    """
     if explicit_path is not None:
         return explicit_path
 
     if env_value := os.environ.get(_RCLONE_CONFIG_ENV_VAR):
         return Path(env_value)
 
-    config_file = _config_paths_via_executable(rclone_exe).config_file
+    config_file = _config_paths_via_embedded_runtime(library_path).config_file
     if config_file is not None and config_file.exists():
         return config_file
     return None
 
 
-def _config_paths_via_executable(rclone_exe: Path | None) -> RclonePaths:
-    """Invoke ``rclone config paths`` through an explicit or resolved binary."""
-    try:
-        executable = get_rclone_exe(rclone_exe)
-    except RcloneRuntimeError as error:
-        raise ConfigDiscoveryError("resolve an rclone executable") from error
+def _config_paths_via_embedded_runtime(library_path: Path | None) -> RclonePaths:
+    """Ask a transient, throwaway `RcloneRuntime` where rclone's default
+    config path is, by initializing it with no config path and reading back
+    `config/paths`.
+    """
+    from rclone_kit.native.errors import NativeError
+    from rclone_kit.native.library import resolve_library_path
+    from rclone_kit.native.runtime import RcloneRuntime
+    from rclone_kit.rc.client import RcClient
+    from rclone_kit.rc.errors import RcCallError
 
     try:
-        completed = subprocess.run(
-            [str(executable), *_CONFIG_PATHS_COMMAND],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            check=True,
-        )
-    except (OSError, subprocess.CalledProcessError) as error:
-        raise ConfigDiscoveryError(f"invoke {executable} config paths") from error
+        resolved_library = resolve_library_path(library_path)
+    except NativeError as error:
+        raise ConfigDiscoveryError("resolve the native rclone-kit library") from error
 
-    return parse_rclone_paths(completed.stdout)
+    runtime = RcloneRuntime.from_library_path(resolved_library)
+    try:
+        runtime.initialize(config_path=None)
+        paths = RcClient(runtime).call("config/paths")
+    except (NativeError, RcCallError) as error:
+        raise ConfigDiscoveryError("query config/paths from the embedded runtime") from error
+    finally:
+        runtime.close()
+
+    return RclonePaths(
+        config_file=Path(paths["config"]) if paths.get("config") else None,
+        cache_dir=Path(paths["cache"]) if paths.get("cache") else None,
+        temp_dir=Path(paths["temp"]) if paths.get("temp") else None,
+    )

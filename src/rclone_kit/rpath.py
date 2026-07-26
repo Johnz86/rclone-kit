@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, TypedDict, cast
 from rclone_kit.remote import Remote
 
 if TYPE_CHECKING:
-    from rclone_kit.access import DomainAccess
+    from rclone_kit.access import ListingAccess
 
 
 class RcloneJsonEntry(TypedDict):
@@ -43,13 +43,13 @@ class RPath:
         self.mime_type = mime_type
         self.mod_time = mod_time
         self.is_dir = is_dir
-        self.rclone: DomainAccess | None = None
+        self.rclone: ListingAccess | None = None
 
     def mod_time_dt(self) -> datetime:
         """Return the modification time as a datetime object."""
         return datetime.fromisoformat(self.mod_time)
 
-    def set_rclone(self, rclone: DomainAccess | None) -> None:
+    def set_rclone(self, rclone: ListingAccess | None) -> None:
         """Set the rclone object."""
         self.rclone = rclone
 
@@ -99,6 +99,13 @@ class RPath:
         }
 
     def __str__(self) -> str:
+        if not self.remote.name:
+            # No remote component at all (see `util.split_remote_name_and_
+            # path`'s no-colon case) - omitting the colon here is required
+            # for round-tripping: a leading/trailing ":" would make
+            # `RcPath.parse` re-parse this as an (invalid) remote or inline
+            # connection string instead of the original local path.
+            return self.path
         return f"{self.remote.name}:{self.path}"
 
     def __repr__(self):

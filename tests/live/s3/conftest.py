@@ -46,6 +46,7 @@ from pathlib import Path
 import pytest
 
 from rclone_kit import Rclone
+from rclone_kit.rc.client import RcClient
 
 LIVE_CONFIG_PATH = Path(__file__).resolve().parents[3] / "rclone-test.conf"
 LIVE_REMOTE = "kinit-s3"
@@ -113,13 +114,14 @@ def _ensure_live_bucket(live_rclone: Rclone) -> None:
 
     Unlike AWS S3, this Ceph cluster does not auto-create a bucket on the
     first `PutObject` - every write into a missing bucket fails with
-    `NoSuchBucket`. `rclone mkdir` is idempotent, so running it once per
+    `NoSuchBucket`. `operations/mkdir` is idempotent, so running it once per
     session up front is cheap and safe even when the bucket already exists.
-    There is no public `Rclone` method for this, so it goes through the
-    same private `_run` hook `tests/helpers.py` already documents as the
-    sanctioned way for tests to reach the backend directly.
+    There is no public `Rclone` method for a bare mkdir against a remote
+    root (`RemoteFileSystem.mkdir` warns and no-ops), so this goes straight
+    through the embedded runtime's own RC client instead.
     """
-    live_rclone._run(["mkdir", LIVE_TEST_ROOT], check=True)
+    assert live_rclone._embedded_runtime is not None
+    RcClient(live_rclone._embedded_runtime).call("operations/mkdir", fs=LIVE_TEST_ROOT)
 
 
 @pytest.fixture

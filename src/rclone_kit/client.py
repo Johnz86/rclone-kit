@@ -3,69 +3,90 @@
 from __future__ import annotations
 
 import logging
-import subprocess
-import time
-import warnings
+import uuid
 from collections.abc import Generator
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Self
 
-from rclone_kit.backend import CliRcloneBackend, RcloneBackend
-from rclone_kit.command_flags import FLAG_FAST_LIST
-from rclone_kit.completed_process import CompletedProcess
+from rclone_kit.authorization import (
+    AuthorizationManager,
+    AuthorizationRequest,
+    AuthorizationSession,
+    RemoteConflictPolicy,
+    Secret,
+)
 from rclone_kit.config import Config
-from rclone_kit.config_discovery import find_conf_file
+from rclone_kit.convert import convert_to_filestr_list, convert_to_str
 from rclone_kit.diff import DiffItem, DiffOption
 from rclone_kit.dir import Dir
 from rclone_kit.dir_listing import DirListing
-from rclone_kit.exceptions import RcloneCommandError
+from rclone_kit.embedded_file_stream import EmbeddedFilesStream
+from rclone_kit.exceptions import (
+    OperationFailedError,
+    OperationShutdownError,
+    RcloneCommandError,
+)
 from rclone_kit.file import File
-from rclone_kit.file_stream import FilesStream
 from rclone_kit.fs.filesystem import FSPath, RemoteFS
 from rclone_kit.http_server import HttpServer
-from rclone_kit.mount import Mount
+from rclone_kit.job import JobHandle, _JobMonitor
+from rclone_kit.mount_handle import MountHandle
+from rclone_kit.native.build_info import NativeBuildInfo
+from rclone_kit.native.library import resolve_library_path
+from rclone_kit.native.runtime import RcloneRuntime
+from rclone_kit.operation import OperationResult
 from rclone_kit.operations.config_ops import (
     check_is_s3,
-    fetch_config_paths,
-    fetch_config_show,
+    fetch_config_paths_embedded,
+    fetch_config_show_embedded,
     fetch_s3_credentials,
-    obscure_password,
 )
 from rclone_kit.operations.copy_file_parts_resumable import copy_file_parts_resumable
 from rclone_kit.operations.listing_ops import (
-    check_exists,
-    check_is_synced,
-    fetch_listremotes,
-    fetch_ls,
     fetch_modtime,
     fetch_modtime_dt,
-    fetch_size_file,
-    fetch_size_files,
-    fetch_stat,
     print_contents,
-    stream_diff,
 )
-from rclone_kit.operations.mount_ops import launch_mount, launch_s3_mount
-from rclone_kit.operations.serve_ops import launch_http_server, launch_webdav_server
-from rclone_kit.operations.transfer_ops import (
-    copy_between_remotes,
-    copy_byte_range,
-    copy_directory,
-    copy_file_to,
-    copy_files_partitioned,
-    copy_tree,
-    delete_files_partitioned,
-    purge_dir,
+from rclone_kit.operations.listing_ops_embedded import (
+    check_exists_embedded,
+    check_is_synced_embedded,
+    fetch_listremotes_embedded,
+    fetch_ls_embedded,
+    fetch_ls_stream_embedded,
+    fetch_size_file_embedded,
+    fetch_size_files_embedded,
+    fetch_stat_embedded,
+    stream_diff_embedded,
 )
+from rclone_kit.operations.mount_ops_embedded import fetch_mount_embedded, fetch_s3_mount_embedded
+from rclone_kit.operations.serve_ops_embedded import (
+    fetch_serve_http_embedded,
+    fetch_serve_webdav_embedded,
+)
+from rclone_kit.operations.transfer_ops_embedded import (
+    cleanup_embedded,
+    copy_bytes_embedded,
+    copy_file_to_embedded,
+    copy_files_embedded,
+    delete_files_embedded,
+    purge_dir_embedded,
+)
+from rclone_kit.operations.transfer_options import TransferOptions, encode_transfer_options_config
 from rclone_kit.operations.walk import walk
 from rclone_kit.optional_dependency import MissingOptionalDependencyError
-from rclone_kit.process import Process
+from rclone_kit.rc.client import RcClient
+from rclone_kit.rc.fs_spec import encode_fs_spec
+from rclone_kit.rc.jobs import RcloneRcJobClient
+from rclone_kit.rc.list_stream import RcloneRcListStreamClient
+from rclone_kit.rc.mount import RcloneRcMountClient
+from rclone_kit.rc.serve import RcloneRcServeClient
 from rclone_kit.remote import Remote
 from rclone_kit.rpath import RPath
 from rclone_kit.s3.types import S3UploadTarget
 from rclone_kit.scan_missing_folders import scan_missing_folders
+from rclone_kit.serve_handle import ServeHandle
 from rclone_kit.types import (
     ListingOption,
     ModTimeStrategy,
@@ -75,18 +96,33 @@ from rclone_kit.types import (
     SizeResult,
     SizeSuffix,
 )
-from rclone_kit.util import (
-    get_rclone_exe,
-    get_verbose,
-    to_path,
-    upgrade_rclone,
-)
+from rclone_kit.util import get_check, get_verbose, make_temp_config_file, to_path
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
+    from rclone_kit.rc.mount import RcMountClient
+    from rclone_kit.rc.serve import RcServeClient
     from rclone_kit.s3.api import S3Client
     from rclone_kit.s3.types import S3Credentials
 
+_DEFAULT_AUTHORIZATION_EXPIRES_IN = timedelta(minutes=10)
+
 logger = logging.getLogger(__name__)
+
+_JOB_SHUTDOWN_DEADLINE_SECONDS = 10.0
+
+# copy()'s aggressive tuned profile. copy_dir()/copy_remote() must not
+# inherit these - they use rclone's own defaults instead.
+_COPY_DEFAULT_CHECKERS = 1000
+_COPY_DEFAULT_TRANSFERS = 32
+_COPY_DEFAULT_LOW_LEVEL_RETRIES = 10
+_COPY_DEFAULT_RETRIES = 3
+
+
+def _copy_to_failure_detail(error: OperationFailedError) -> str:
+    """Extract a stderr-like diagnostic string from a `copy_to()` failure."""
+    return error.result.error or ""
 
 
 def _to_rclone_conf(config: Config | Path | None) -> Config:
@@ -102,67 +138,121 @@ def _to_rclone_conf(config: Config | Path | None) -> Config:
 class Rclone:
     """Curated high-level API for rclone operations."""
 
-    @staticmethod
-    def upgrade_rclone() -> Path:
-        """Download and install the verified rclone executable."""
-        return upgrade_rclone()
-
-    @staticmethod
-    def find_rclone_conf() -> Path | None:
-        """Find the rclone configuration file using standard discovery."""
-        return find_conf_file()
+    _job_monitor: _JobMonitor | None = None
 
     def __init__(
         self,
         rclone_conf: Path | Config | None,
-        rclone_exe: Path | None = None,
         *,
-        backend: RcloneBackend | None = None,
+        library_path: Path | None = None,
+        runtime: RcloneRuntime | None = None,
     ) -> None:
-        """Bind a config and executable, or accept a caller-supplied backend.
+        """Bind a config and initialize (or accept) an embedded native runtime.
 
-        ``self.config`` is always derived from ``rclone_conf`` directly, not
-        from ``backend``. ``RcloneBackend`` is intentionally narrow (``run``/
-        ``launch`` only) and does not expose its own configuration, so when a
-        custom ``backend`` is supplied the caller is responsible for passing
-        the matching ``rclone_conf`` alongside it.
+        ``self.config`` is always derived from ``rclone_conf`` directly.
+        Loads (or accepts) one ``RcloneRuntime`` and initializes it with an
+        immutable config path derived from ``rclone_conf``. The native ABI
+        permits initializing a given runtime exactly once per process - a
+        caller that wants several ``Rclone`` clients to share one config
+        must construct and initialize one ``RcloneRuntime`` itself and pass
+        it as ``runtime`` to each client; the second client's own
+        ``rclone_conf`` is then ignored, since the runtime is already
+        initialized.
         """
         if isinstance(rclone_conf, Path) and not rclone_conf.exists():
             raise ValueError(f"Rclone config file not found: {rclone_conf}")
-        if backend is None:
-            resolved_executable = get_rclone_exe(rclone_exe)
-            if rclone_conf is None:
-                maybe_path = find_conf_file(rclone_exe=resolved_executable)
-                if not isinstance(maybe_path, Path):
-                    warnings.warn("Rclone config file not found", stacklevel=2)
-                rclone_conf = _to_rclone_conf(maybe_path)
-            backend = CliRcloneBackend(rclone_conf, resolved_executable)
+        if runtime is not None and library_path is not None:
+            raise ValueError("supply at most one of runtime and library_path")
 
-        self._backend = backend
-        self.config: Config = _to_rclone_conf(rclone_conf)
+        self._embedded_runtime: RcloneRuntime
+        self._rc_client: RcClient
+        self._owns_embedded_runtime = False
+        self._job_monitor: _JobMonitor | None = None
+        self._serve_client: RcServeClient | None = None
+        self._serve_handles: set[ServeHandle] = set()
+        self._mount_client: RcMountClient | None = None
+        self._mount_handles: set[MountHandle] = set()
+        self._file_streams: set[EmbeddedFilesStream] = set()
+        self._authorization_sessions: set[AuthorizationSession] = set()
 
-    def _run(
-        self, cmd: list[str], check: bool = False, capture: bool | Path | None = None
-    ) -> subprocess.CompletedProcess[str]:
-        return self._backend.run(tuple(cmd), check=check, capture=capture)
+        self.config = _to_rclone_conf(rclone_conf)
+        self._client_id = uuid.uuid4()
+        config_path = self._embedded_config_path(rclone_conf)
+        if runtime is not None:
+            self._embedded_runtime = runtime
+        else:
+            self._embedded_runtime = RcloneRuntime.from_library_path(
+                resolve_library_path(library_path)
+            )
+            self._owns_embedded_runtime = True
+        if not self._embedded_runtime.initialized:
+            self._embedded_runtime.initialize(config_path=config_path)
+        self._rc_client = RcClient(self._embedded_runtime)
 
-    def _launch_process(
-        self, cmd: list[str], capture: bool | None = None, log: Path | None = None
-    ) -> Process:
-        return self._backend.launch(tuple(cmd), capture=capture, log=log)
+    @staticmethod
+    def _embedded_config_path(rclone_conf: Path | Config | None) -> Path | None:
+        """Resolve the immutable config path passed to `RcloneRuntime.initialize`.
 
-    def _get_tmp_mount_dir(self) -> Path:
-        return Path("tmp_mnts")
+        `None` and an explicit `Path` are used directly. A `Config` value is
+        materialized to its own temp file at most once per `Config` instance.
+        """
+        if rclone_conf is None:
+            return None
+        if isinstance(rclone_conf, Path):
+            return rclone_conf
+        return rclone_conf.materialize(make_temp_config_file)
 
-    def _get_cache_dir(self) -> Path:
-        return Path("cache")
+    def close(self) -> None:
+        """Release resources this client owns. Idempotent.
 
-    def webgui(self, other_args: list[str] | None = None) -> Process:
-        """Launch the Rclone web GUI."""
-        cmd = ["rcd", "--rc-web-gui"]
-        if other_args:
-            cmd += other_args
-        return self._launch_process(cmd, capture=False)
+        Cancels and waits for every job this client started (regardless of
+        who owns the embedded runtime - the runtime may be injected and
+        outlive this client, but jobs this client started are still its own
+        responsibility) before finalizing the runtime. Raises
+        `OperationShutdownError` and leaves the runtime open, rather than
+        reporting a false close, if a job cannot be confirmed settled
+        within the shutdown deadline. Also stops every `serve/start`
+        instance, unmounts every `mount/mount` instance, closes every
+        `ls_stream()` cursor, and cancels every authorization session this
+        client started but never explicitly disposed: this client tracks
+        only the resources it owns.
+
+        Only closes the embedded runtime itself if this client created it;
+        an injected `runtime` outlives this client, matching
+        `RcloneRuntime`'s own single-owner closing rule.
+        """
+        for handle in list(self._serve_handles):
+            handle.dispose()
+        for mount_handle in list(self._mount_handles):
+            mount_handle.dispose()
+        for stream in list(self._file_streams):
+            stream.close()
+        for session in list(self._authorization_sessions):
+            session.close()
+        if self._job_monitor is not None:
+            all_settled = self._job_monitor.shutdown(
+                deadline_seconds=_JOB_SHUTDOWN_DEADLINE_SECONDS
+            )
+            if not all_settled:
+                raise OperationShutdownError(
+                    f"one or more jobs did not settle within "
+                    f"{_JOB_SHUTDOWN_DEADLINE_SECONDS}s of close(); runtime left open"
+                )
+        if self._owns_embedded_runtime:
+            self._embedded_runtime.close()
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *_exc_info: object) -> None:
+        self.close()
+
+    def native_build_info(self) -> NativeBuildInfo:
+        """Report which native rclone build this embedded client links:
+        ABI version, rclone version/commit, Go version, build tags, and
+        target platform.
+        """
+        return self._embedded_runtime.build_info()
 
     def filesystem(self, src: str) -> RemoteFS:
         return RemoteFS(self, src)
@@ -170,75 +260,30 @@ class Rclone:
     def cwd(self, src: str) -> FSPath:
         return self.filesystem(src).cwd()
 
-    def launch_server(
-        self,
-        addr: str,
-        user: str | None = None,
-        password: str | None = None,
-        other_args: list[str] | None = None,
-    ) -> Process:
-        """Launch the Rclone server so it can receive commands"""
-        cmd = ["rcd"]
-        if addr is not None:
-            cmd += ["--rc-addr", addr]
-        if user is not None:
-            cmd += ["--rc-user", user]
-        if password is not None:
-            cmd += ["--rc-pass", password]
-        if other_args:
-            cmd += other_args
-        out = self._launch_process(cmd, capture=False)
-        time.sleep(1)
-        return out
-
-    def remote_control(
-        self,
-        addr: str,
-        user: str | None = None,
-        password: str | None = None,
-        capture: bool | None = None,
-        other_args: list[str] | None = None,
-    ) -> CompletedProcess:
-        cmd = ["rc"]
-        if addr:
-            cmd += ["--rc-addr", addr]
-        if user is not None:
-            cmd += ["--rc-user", user]
-        if password is not None:
-            cmd += ["--rc-pass", password]
-        if other_args:
-            cmd += other_args
-        cp = self._run(cmd, capture=capture)
-        return CompletedProcess.from_subprocess(cp)
-
     def obscure(self, password: str) -> str:
         """Obscure a password for use in rclone config files."""
-        return obscure_password(self._backend, password)
+        return self._rc_client.call("core/obscure", clear=password)["obscured"]
 
     def ls_stream(
         self,
         src: str,
         max_depth: int = -1,
         fast_list: bool = False,
-    ) -> FilesStream:
+    ) -> EmbeddedFilesStream:
         """
-        List files in the given path
+        List files in the given path, as a bounded-memory pull stream.
 
         Args:
             src: Remote path to list
             max_depth: Maximum recursion depth (-1 for unlimited)
             fast_list: Use fast list (only use when getting THE entire data repository from the root/bucket, or it's small)
+
+        Backed by `rclonekit/liststream/*` rather than a subprocess.
         """
-        cmd = ["lsjson", src, "--files-only"]
-        recurse = max_depth < 0 or max_depth > 1
-        if recurse:
-            cmd.append("-R")
-            if max_depth > 1:
-                cmd += ["--max-depth", str(max_depth)]
-        if fast_list:
-            cmd.append(FLAG_FAST_LIST)
-        streamer = FilesStream(src, self._launch_process(cmd, capture=True))
-        return streamer
+        stream = fetch_ls_stream_embedded(
+            RcloneRcListStreamClient(self._rc_client), src, max_depth, fast_list
+        )
+        return self._track_file_stream(stream)
 
     def save_to_db(
         self,
@@ -286,8 +331,8 @@ class Rclone:
         Returns:
             List of File objects found at the path
         """
-        return fetch_ls(
-            self._backend,
+        return fetch_ls_embedded(
+            self._rc_client,
             self,
             src,
             max_depth=max_depth,
@@ -305,7 +350,7 @@ class Rclone:
 
         Raises FileNotFoundError if `src` does not exist.
         """
-        return fetch_stat(self, src)
+        return fetch_stat_embedded(self._rc_client, self, src)
 
     def modtime(self, src: str) -> str:
         """Get the modification time of a file or directory."""
@@ -316,7 +361,7 @@ class Rclone:
         return fetch_modtime_dt(self, src)
 
     def listremotes(self) -> list[Remote]:
-        return fetch_listremotes(self._backend, self)
+        return fetch_listremotes_embedded(self._rc_client, self)
 
     def diff(
         self,
@@ -328,12 +373,11 @@ class Rclone:
         fast_list: bool = True,
         size_only: bool | None = None,
         checkers: int | None = None,
-        other_args: list[str] | None = None,
     ) -> Generator[DiffItem]:
         """Be extra careful with the src and dst values. If you are off by one
         parent directory, you will get a huge amount of false diffs."""
-        yield from stream_diff(
-            self._backend,
+        yield from stream_diff_embedded(
+            self._rc_client,
             src,
             dst,
             min_size=min_size,
@@ -342,7 +386,6 @@ class Rclone:
             fast_list=fast_list,
             size_only=size_only,
             checkers=checkers,
-            other_args=other_args,
         )
 
     def walk(
@@ -414,14 +457,9 @@ class Rclone:
         dst_dir = Dir(to_path(dst, self))
         yield from scan_missing_folders(src=src_dir, dst=dst_dir, max_depth=max_depth, order=order)
 
-    def cleanup(self, src: str, other_args: list[str] | None = None) -> CompletedProcess:
+    def cleanup(self, src: str) -> OperationResult:
         """Cleanup any resources used by the Rclone instance."""
-
-        cmd = ["cleanup", src]
-        if other_args:
-            cmd += other_args
-        out = self._run(cmd)
-        return CompletedProcess.from_subprocess(out)
+        return cleanup_embedded(self._ensure_job_monitor(), self._client_id, src)
 
     def get_verbose(self) -> bool:
         return get_verbose(None)
@@ -431,21 +469,19 @@ class Rclone:
         src: File | str,
         dst: File | str,
         check: bool | None = None,
-        verbose: bool | None = None,
-        other_args: list[str] | None = None,
-    ) -> CompletedProcess:
+    ) -> OperationResult:
         """Copy one file from source to destination.
 
         Warning - slow.
 
         """
-        return copy_file_to(
-            self._backend,
+        return copy_file_to_embedded(
+            self._ensure_job_monitor(),
+            self._client_id,
+            self.config,
             src,
             dst,
             check=check,
-            verbose=verbose,
-            other_args=other_args,
         )
 
     def copy_files(
@@ -455,7 +491,6 @@ class Rclone:
         files: list[str] | Path,
         check: bool | None = None,
         max_backlog: int | None = None,
-        verbose: bool | None = None,
         checkers: int | None = None,
         transfers: int | None = None,
         low_level_retries: int | None = None,
@@ -465,21 +500,23 @@ class Rclone:
         timeout: str | None = None,
         max_partition_workers: int | None = None,
         multi_thread_streams: int | None = None,
-        other_args: list[str] | None = None,
-    ) -> list[CompletedProcess]:
+    ) -> OperationResult:
         """Copy multiple files from source to destination.
 
         Args:
             payload: Dictionary of source and destination file paths
+
+        Returns one aggregated `OperationResult` spanning every partition.
         """
-        return copy_files_partitioned(
-            self._backend,
+        return copy_files_embedded(
+            self._ensure_job_monitor(),
+            self._client_id,
+            self.config,
             src,
             dst,
             files,
             check=check,
             max_backlog=max_backlog,
-            verbose=verbose,
             checkers=checkers,
             transfers=transfers,
             low_level_retries=low_level_retries,
@@ -489,7 +526,156 @@ class Rclone:
             timeout=timeout,
             max_partition_workers=max_partition_workers,
             multi_thread_streams=multi_thread_streams,
-            other_args=other_args,
+        )
+
+    def _ensure_job_monitor(self) -> _JobMonitor:
+        if self._job_monitor is None:
+            self._job_monitor = _JobMonitor(RcloneRcJobClient(self._rc_client))
+        return self._job_monitor
+
+    def _ensure_serve_client(self) -> RcServeClient:
+        if self._serve_client is None:
+            self._serve_client = RcloneRcServeClient(self._rc_client)
+        return self._serve_client
+
+    def _track_serve_handle(self, handle: ServeHandle) -> ServeHandle:
+        """Track `handle` so `close()` disposes it if the caller never
+        does - this client tracks only the resources it owns.
+        `_on_dispose` removes it again as soon as it's disposed (by the
+        caller or by `close()`), so a client that starts and disposes many
+        short-lived serve sessions over its lifetime does not leak one
+        tracked entry per session forever."""
+        self._serve_handles.add(handle)
+        handle._on_dispose = lambda: self._serve_handles.discard(handle)
+        return handle
+
+    def _ensure_mount_client(self) -> RcMountClient:
+        if self._mount_client is None:
+            self._mount_client = RcloneRcMountClient(self._rc_client)
+        return self._mount_client
+
+    def _track_mount_handle(self, handle: MountHandle) -> MountHandle:
+        """Track `handle` so `close()` disposes it if the caller never
+        does, mirroring `_track_serve_handle`'s rationale and its
+        `_on_dispose` untracking."""
+        self._mount_handles.add(handle)
+        handle._on_dispose = lambda: self._mount_handles.discard(handle)
+        return handle
+
+    def authorize(
+        self,
+        remote_name: str,
+        backend: str,
+        public_callback_url: str | None = None,
+        backend_options: Mapping[str, str] | None = None,
+        client_id: str | None = None,
+        client_secret: Secret | None = None,
+        on_conflict: RemoteConflictPolicy = RemoteConflictPolicy.REJECT,
+        expires_in: timedelta = _DEFAULT_AUTHORIZATION_EXPIRES_IN,
+        private_listen_addr: str | None = None,
+    ) -> AuthorizationSession:
+        """Start authorizing a remote through rclone's own OAuth flow.
+
+        A thin wrapper: resolves the `AuthorizationManager` shared by
+        every `Rclone` client on this client's runtime
+        (`AuthorizationManager.for_runtime`), so at most one authorization
+        session across every client sharing that runtime is ever driving
+        rclone's OAuth step at a time - see
+        `docs/rclone_authorization_design.md`. The returned session is
+        tracked the same way `mount()`/`serve_webdav()` track their
+        handles: `close()` cancels it if this client disposes without the
+        caller resolving it first.
+
+        Leave `public_callback_url` (and `client_id`/`client_secret`)
+        unset for the common local case - a script or CLI tool running on
+        the same machine as the browser that completes consent - which
+        works the same way plain interactive `rclone config create` does,
+        no provider application registration required; see
+        `AuthorizationRequest`'s docstring for why the two are linked.
+        Only a relay deployment (a web service driving auth on behalf of a
+        browser elsewhere) needs `public_callback_url`.
+        """
+        manager = AuthorizationManager.for_runtime(self._embedded_runtime)
+        request = AuthorizationRequest(
+            remote_name=remote_name,
+            backend=backend,
+            public_callback_url=public_callback_url,
+            backend_options=backend_options or {},
+            client_id=client_id,
+            client_secret=client_secret,
+            on_conflict=on_conflict,
+            expires_in=expires_in,
+            private_listen_addr=private_listen_addr,
+        )
+        session = manager.start(request, owner=str(self._client_id))
+        return self._track_authorization_session(session)
+
+    def _track_authorization_session(self, session: AuthorizationSession) -> AuthorizationSession:
+        """Track `session` so `close()` cancels it if the caller never
+        disposes it, mirroring `_track_serve_handle`'s rationale and its
+        `_on_dispose` untracking."""
+        self._authorization_sessions.add(session)
+        session._on_dispose = lambda: self._authorization_sessions.discard(session)
+        return session
+
+    def _track_file_stream(self, stream: EmbeddedFilesStream) -> EmbeddedFilesStream:
+        """Track `stream` so `close()` closes it if the caller never does,
+        mirroring `_track_serve_handle`'s rationale and its `_on_close`
+        untracking."""
+        self._file_streams.add(stream)
+        stream._on_close = lambda: self._file_streams.discard(stream)
+        return stream
+
+    def start_copy(
+        self,
+        src: Dir | Remote | str,
+        dst: Dir | Remote | str,
+        *,
+        transfers: int | None = None,
+        checkers: int | None = None,
+        multi_thread_streams: int | None = None,
+        low_level_retries: int | None = None,
+        retries: int | None = None,
+        create_empty_src_dirs: bool = False,
+        check: bool | None = None,
+    ) -> JobHandle:
+        """Start an asynchronous directory copy and return a `JobHandle`.
+
+        `check` is stored on the returned handle and governs
+        `JobHandle.wait()`'s raise-on-failure behavior; it is never sent to
+        rclone. Uses the retry-aware `rclonekit/copy` RC method (not a bare
+        `sync/copy`), which preserves the same high-level retry loop
+        `rclone copy` itself uses.
+        """
+        check = get_check(check)
+        src_str = convert_to_str(src)
+        dst_str = convert_to_str(dst)
+        options = TransferOptions(
+            checkers=checkers,
+            transfers=transfers,
+            low_level_retries=low_level_retries,
+            retries=retries,
+            multi_thread_streams=multi_thread_streams,
+            create_empty_src_dirs=create_empty_src_dirs,
+        )
+        params: dict[str, object] = {
+            "srcFs": encode_fs_spec(self.config, src_str),
+            "dstFs": encode_fs_spec(self.config, dst_str),
+            "createEmptySrcDirs": create_empty_src_dirs,
+        }
+        config_overlay = encode_transfer_options_config(options)
+        if config_overlay:
+            params["_config"] = config_overlay
+        monitor = self._ensure_job_monitor()
+        group = f"rclone-kit/{self._client_id}/{uuid.uuid4()}"
+        return monitor.start_job(
+            "rclonekit/copy",
+            params,
+            group=group,
+            operation="copy",
+            source=src_str,
+            destination=dst_str,
+            check=check,
         )
 
     def copy(
@@ -502,58 +688,54 @@ class Rclone:
         multi_thread_streams: int | None = None,
         low_level_retries: int | None = None,
         retries: int | None = None,
-        other_args: list[str] | None = None,
-    ) -> CompletedProcess:
+    ) -> OperationResult:
         """Copy files from source to destination.
 
         Args:
             src: Source directory
             dst: Destination directory
         """
-        return copy_tree(
-            self._backend,
+        handle = self.start_copy(
             src,
             dst,
-            check=check,
-            transfers=transfers,
-            checkers=checkers,
+            transfers=transfers or _COPY_DEFAULT_TRANSFERS,
+            checkers=checkers or _COPY_DEFAULT_CHECKERS,
+            low_level_retries=low_level_retries or _COPY_DEFAULT_LOW_LEVEL_RETRIES,
+            retries=retries or _COPY_DEFAULT_RETRIES,
             multi_thread_streams=multi_thread_streams,
-            low_level_retries=low_level_retries,
-            retries=retries,
-            other_args=other_args,
+            check=check,
         )
+        return handle.wait()
 
-    def purge(self, src: Dir | str) -> CompletedProcess:
+    def purge(self, src: Dir | str) -> OperationResult:
         """Purge a directory"""
-        return purge_dir(self._backend, src)
+        return purge_dir_embedded(self._ensure_job_monitor(), self._client_id, src)
 
     def delete_files(
         self,
         files: str | File | list[str] | list[File],
         check: bool | None = None,
         rmdirs=False,
-        verbose: bool | None = None,
         max_partition_workers: int | None = None,
-        other_args: list[str] | None = None,
-    ) -> CompletedProcess:
-        """Delete a directory"""
-        return delete_files_partitioned(
-            self._backend,
-            files,
+    ) -> OperationResult:
+        """Delete a directory."""
+        return delete_files_embedded(
+            self._ensure_job_monitor(),
+            self._client_id,
+            self.config,
+            convert_to_filestr_list(files),
             check=check,
             rmdirs=rmdirs,
-            verbose=verbose,
             max_partition_workers=max_partition_workers,
-            other_args=other_args,
         )
 
     def exists(self, src: Dir | Remote | str | File) -> bool:
         """Check if a file or directory exists."""
-        return check_exists(self, src)
+        return check_exists_embedded(self._rc_client, self, convert_to_str(src))
 
     def is_synced(self, src: str | Dir, dst: str | Dir) -> bool:
         """Check if two directories are in sync."""
-        return check_is_synced(self._backend, src, dst)
+        return check_is_synced_embedded(self._rc_client, src, dst)
 
     def _s3_client(self, src: str, verbose: bool | None = None) -> S3Client:
         """Get an S3 client."""
@@ -642,8 +824,8 @@ class Rclone:
 
             try:
                 self.copy_to(str(tmpfile), dst, check=True)
-            except subprocess.CalledProcessError as error:
-                raise RcloneCommandError("copyto", error.stderr or "", error) from error
+            except OperationFailedError as error:
+                raise RcloneCommandError("copyto", _copy_to_failure_detail(error), error) from error
 
     def read_bytes(self, src: str) -> bytes:
         """Read bytes from a file.
@@ -655,8 +837,8 @@ class Rclone:
             tmpfile = Path(tmpdir) / "file.bin"
             try:
                 self.copy_to(src, str(tmpfile), check=True)
-            except subprocess.CalledProcessError as error:
-                raise RcloneCommandError("copyto", error.stderr or "", error) from error
+            except OperationFailedError as error:
+                raise RcloneCommandError("copyto", _copy_to_failure_detail(error), error) from error
 
             if not tmpfile.exists():
                 raise RcloneCommandError(
@@ -674,7 +856,7 @@ class Rclone:
         Raises FileNotFoundError if no file matches `src`, or ValueError
         if more than one file matches.
         """
-        return fetch_size_file(self, src)
+        return fetch_size_file_embedded(self._rc_client, self, src)
 
     def get_s3_credentials(self, remote: str, verbose: bool | None = None) -> S3Credentials:
         return fetch_s3_credentials(self.config, remote, verbose=verbose)
@@ -685,25 +867,33 @@ class Rclone:
         offset: int | SizeSuffix,
         length: int | SizeSuffix,
         outfile: Path,
-        other_args: list[str] | None = None,
     ) -> None:
         """Copy a slice of bytes from the src file to outfile.
 
         Raises RcloneCommandError if the underlying rclone command fails.
         """
-        copy_byte_range(self._backend, src, offset, length, outfile, other_args=other_args)
+        try:
+            copy_bytes_embedded(
+                self._ensure_job_monitor(), self._client_id, src, offset, length, outfile
+            )
+        except OperationFailedError as error:
+            raise RcloneCommandError("cat", error.result.error or "", error) from error
 
-    def copy_dir(
-        self, src: str | Dir, dst: str | Dir, args: list[str] | None = None
-    ) -> CompletedProcess:
-        """Copy a directory from source to destination."""
-        return copy_directory(self._backend, src, dst, args=args)
+    def copy_dir(self, src: str | Dir, dst: str | Dir) -> OperationResult:
+        """Copy a directory from source to destination.
 
-    def copy_remote(
-        self, src: Remote, dst: Remote, args: list[str] | None = None
-    ) -> CompletedProcess:
-        """Copy a remote to another remote."""
-        return copy_between_remotes(self._backend, src, dst, args=args)
+        Never raises. Unlike `copy()`, uses rclone's own tuning defaults
+        rather than `copy()`'s aggressive tuned profile.
+        """
+        return self.start_copy(src, dst, check=False).wait()
+
+    def copy_remote(self, src: Remote, dst: Remote) -> OperationResult:
+        """Copy a remote to another remote.
+
+        Never raises. Unlike `copy()`, uses rclone's own tuning defaults
+        rather than `copy()`'s aggressive tuned profile.
+        """
+        return self.start_copy(src, dst, check=False).wait()
 
     def mount(
         self,
@@ -713,41 +903,23 @@ class Rclone:
         transfers: int | None = None,
         use_links: bool | None = None,
         vfs_cache_mode: str | None = None,
-        verbose: bool | None = None,
-        cache_dir: Path | None = None,
-        cache_dir_delete_on_exit: bool | None = None,
-        log: Path | None = None,
-        other_args: list[str] | None = None,
-    ) -> Mount:
+    ) -> MountHandle:
         """Mount a remote or directory to a local path.
 
         Args:
             src: Remote or directory to mount
             outdir: Local path to mount to
-
-        Returns:
-            CompletedProcess from the mount command execution
-
-        Raises:
-            subprocess.CalledProcessError: If the mount operation fails
-            MountPrerequisiteError: If the current platform lacks the
-                operating-system mount facility rclone's `mount` subcommand
-                requires (WinFsp on Windows, FUSE on Linux)
         """
-        return launch_mount(
-            self._backend,
-            src,
+        handle = fetch_mount_embedded(
+            self._ensure_mount_client(),
+            convert_to_str(src),
             outdir,
             allow_writes=allow_writes,
             transfers=transfers,
             use_links=use_links,
             vfs_cache_mode=vfs_cache_mode,
-            verbose=verbose,
-            cache_dir=cache_dir,
-            cache_dir_delete_on_exit=cache_dir_delete_on_exit,
-            log=log,
-            other_args=other_args,
         )
+        return self._track_mount_handle(handle)
 
     def mount_s3(
         self,
@@ -764,16 +936,16 @@ class Rclone:
         vfs_read_chunk_size: str | None = "4M",
         vfs_fast_fingerprint: bool = True,
         vfs_refresh: bool = True,
-        other_args: list[str] | None = None,
-    ) -> Mount:
-        """Mount a remote or directory to a local path.
+    ) -> MountHandle:
+        """Mount a remote or directory to a local path with S3-tuned VFS
+        defaults.
 
         Args:
             src: Remote or directory to mount
             outdir: Local path to mount to
         """
-        return launch_s3_mount(
-            self,
+        handle = fetch_s3_mount_embedded(
+            self._ensure_mount_client(),
             url,
             outdir,
             allow_writes=allow_writes,
@@ -787,8 +959,8 @@ class Rclone:
             vfs_read_chunk_size=vfs_read_chunk_size,
             vfs_fast_fingerprint=vfs_fast_fingerprint,
             vfs_refresh=vfs_refresh,
-            other_args=other_args,
         )
+        return self._track_mount_handle(handle)
 
     def serve_webdav(
         self,
@@ -797,36 +969,28 @@ class Rclone:
         password: str,
         addr: str = "localhost:2049",
         allow_other: bool = False,
-        other_args: list[str] | None = None,
-    ) -> Process:
-        """Serve a remote or directory via NFS.
+    ) -> ServeHandle:
+        """Serve a remote or directory via WebDAV.
 
         Args:
             src: Remote or directory to serve
             addr: Network address and port to serve on (default: localhost:2049)
             allow_other: Allow other users to access the share
-
-        Returns:
-            Process: The running webdev server process
-
-        Raises:
-            ValueError: If the NFS server fails to start
         """
-        return launch_webdav_server(
-            self._backend,
-            src,
+        handle = fetch_serve_webdav_embedded(
+            self._ensure_serve_client(),
+            convert_to_str(src),
             user,
             password,
-            addr=addr,
+            addr,
             allow_other=allow_other,
-            other_args=other_args,
         )
+        return self._track_serve_handle(handle)
 
     def serve_http(
         self,
         src: str,
         addr: str | None = None,
-        other_args: list[str] | None = None,
     ) -> HttpServer:
         """Serve a remote or directory via HTTP.
 
@@ -834,70 +998,37 @@ class Rclone:
             src: Remote or directory to serve
             addr: Network address and port to serve on (default: localhost:8080)
         """
-        return launch_http_server(
-            self._backend,
-            src,
-            "minimal",
-            addr=addr,
-            other_args=other_args,
+        http_server = fetch_serve_http_embedded(
+            self._ensure_serve_client(), src, "minimal", addr=addr
         )
+        assert isinstance(http_server.process, ServeHandle)
+        self._track_serve_handle(http_server.process)
+        return http_server
 
-    def config_paths(
-        self, remote: str | None = None, obscure: bool = False, no_obscure: bool = False
-    ) -> list[Path]:
-        """Return the filesystem paths reported by `rclone config paths`:
-        the config file, cache directory, and temp directory, in that fixed
+    def config_paths(self) -> list[Path]:
+        """Return the filesystem paths reported by `config/paths`: the
+        config file, cache directory, and temp directory, in that fixed
         order.
-
-        `remote`, `obscure`, and `no_obscure` are accepted for backward
-        compatibility with this method's public signature. `config paths`
-        takes no such arguments upstream, so they are ignored.
-
-        Raises:
-            RcloneCommandError: if the underlying `rclone config paths`
-                invocation fails.
         """
-        return fetch_config_paths(
-            self._backend,
-            remote=remote,
-            obscure=obscure,
-            no_obscure=no_obscure,
-        )
+        return fetch_config_paths_embedded(self._rc_client)
 
-    def config_show(
-        self, remote: str | None = None, obscure: bool = False, no_obscure: bool = False
-    ) -> str:
-        """Return the configuration text reported by `rclone config show`.
-
-        Raises:
-            ValueError: if both `obscure` and `no_obscure` are set.
-            RcloneCommandError: if the underlying `rclone config show`
-                invocation fails.
-        """
-        return fetch_config_show(
-            self._backend,
-            remote=remote,
-            obscure=obscure,
-            no_obscure=no_obscure,
-        )
+    def config_show(self, remote: str | None = None) -> str:
+        """Return the configuration text reported by `rclone config show`."""
+        return fetch_config_show_embedded(self._rc_client, remote=remote)
 
     def size_files(
         self,
         src: str,
         files: list[str],
         fast_list: bool = False,
-        other_args: list[str] | None = None,
         check: bool | None = False,
-        verbose: bool | None = None,
     ) -> SizeResult:
         """Get the size of a list of files. Example of files items: "remote:bucket/to/file"."""
-        return fetch_size_files(
-            self._backend,
+        return fetch_size_files_embedded(
+            self._rc_client,
             self,
             src,
             files,
             fast_list=fast_list,
-            other_args=other_args,
             check=check,
-            verbose=verbose,
         )

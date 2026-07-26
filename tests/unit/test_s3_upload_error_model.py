@@ -1,6 +1,6 @@
-"""Unit tests for the error-model migration of the S3 upload-side modules:
-`file_part`, `s3.basic_ops`, `s3.multipart.upload_parts_resumable`, and
-`s3.multipart.info_json`.
+"""Unit tests for the error-handling behavior of the S3 upload-side
+modules: `file_part`, `s3.basic_ops`, `s3.multipart.upload_parts_resumable`,
+and `s3.multipart.info_json`.
 """
 
 from typing import Any, cast

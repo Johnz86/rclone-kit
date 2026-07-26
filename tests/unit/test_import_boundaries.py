@@ -22,9 +22,9 @@ def test_package_and_operation_imports_are_side_effect_free() -> None:
 
         import rclone_kit.operations.config_ops
         import rclone_kit.operations.listing_ops
-        import rclone_kit.operations.mount_ops
-        import rclone_kit.operations.serve_ops
-        import rclone_kit.operations.transfer_ops
+        import rclone_kit.operations.mount_ops_embedded
+        import rclone_kit.operations.serve_ops_embedded
+        import rclone_kit.operations.transfer_ops_embedded
         import rclone_kit
 
         assert "boto3" not in sys.modules

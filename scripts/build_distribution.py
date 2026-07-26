@@ -1,7 +1,7 @@
 """Canonical build orchestration for one certified `rclone-kit` wheel.
 
-Composes the existing staging (`scripts/prepare_rclone_artifact.py`),
-verification (`scripts/verify_distribution.py`), and smoke-test
+Composes native library building (`scripts/native/build.py`), verification
+(`scripts/verify_distribution.py`), and smoke-test
 (`scripts/smoke_test_installed_wheel.py`) steps into the single command
 `docs/implementation_and_build_pipeline.md` documents, so a caller cannot
 produce an unverified or incomplete wheel by skipping a step of an
@@ -11,12 +11,20 @@ neither reproduces the staging/build/verify/smoke-test sequence separately.
 Per `docs/implementation_and_build_pipeline.md`'s distribution policy, this
 script builds and verifies exactly one platform wheel and never
 builds a source distribution: a plain `pip wheel` build from an sdist has no
-staging step and would silently produce a wheel without rclone.
+staging step and would silently produce a wheel without the native library.
+
+Always builds with `--profile production` (mount support via WinFsp/FUSE
+compiled in): `mount()`/`mount_s3()` are public API with no CLI fallback, so
+a wheel shipped without mount support would silently regress that surface
+for every installer.
 
 Every step after resolving the target runs against an isolated temporary
 copy of the source tree, never the tracked checkout, so a successful or
 failed build leaves the repository's `src/` byte-identical to before the
-build started.
+build started. The native library build itself runs against the real
+`native/rclone` submodule checkout (not the isolated copy): it is a build
+input that produces artifacts, not part of what the isolated tree's own
+`uv build` step reads.
 
 Usage:
     uv run python scripts/build_distribution.py --target windows-amd64 --out-dir dist
@@ -25,6 +33,7 @@ Usage:
 
 import argparse
 import os
+import platform as _platform
 import shutil
 import subprocess
 import sys
@@ -32,18 +41,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory, mkdtemp
 
-import prepare_rclone_artifact
 import verify_distribution
 from rclone_kit.runtime.exceptions import RcloneRuntimeError
 from rclone_kit.runtime.hashing import sha256_of_file
-from rclone_kit.runtime.platform import (
-    SUPPORTED_ARTIFACTS,
-    RcloneArtifact,
-    resolve_artifact_for_running_platform,
-    resolve_rclone_artifact,
+from rclone_kit.runtime.native_platform import (
+    NativeTarget,
+    native_target_choices,
+    resolve_native_target,
 )
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
+_NATIVE_BUILD_SCRIPT = _REPO_ROOT / "scripts" / "native" / "build.py"
 _PYTHON_VERSION_FILE = _REPO_ROOT / ".python-version"
 _SMOKE_TEST_SCRIPT = Path(__file__).resolve().parent / "smoke_test_installed_wheel.py"
 
@@ -58,10 +66,12 @@ _SOURCE_TREE_IGNORED_DIR_NAMES = frozenset({"__pycache__", "rclone_kit.egg-info"
 
 _BUILD_ROOT_TEMP_PREFIX = "rclone-kit-build-"
 _DIST_TEMP_DIR_PREFIX = "rclone-kit-dist-"
-_STAGING_SUBDIRECTORY_NAME = "rclone-artifacts"
+_NATIVE_BUILD_SUBDIRECTORY_NAME = "native-artifacts"
 _SOURCE_TREE_DIRECTORY_NAME = "source"
 _SMOKE_ENV_DIRECTORY_NAME = "smoke-env"
-_ASSETS_RELATIVE_DIR = Path("src") / "rclone_kit" / "assets" / "rclone"
+_ASSETS_RELATIVE_DIR = Path("src") / "rclone_kit" / "assets" / "native"
+_PRODUCTION_PROFILE = "production"
+_NATIVE_STAGING_EXCLUDED_NAMES = frozenset({"smoke-results.json"})
 
 _HTTP_PROXY_POISON_URL = "http://127.0.0.1:1"
 _HTTP_PROXY_ENV_VAR = "HTTP_PROXY"
@@ -85,39 +95,38 @@ class BuiltWheel:
 
 def _target_choices() -> tuple[str, ...]:
     """Return every `<os>-<arch>` target string accepted by `--target`,
-    derived from `SUPPORTED_ARTIFACTS` so this script never hardcodes a
+    derived from `SUPPORTED_NATIVE_TARGETS` so this script never hardcodes a
     second platform table.
     """
-    return tuple(
-        f"{artifact.operating_system.value}-{artifact.architecture.value}"
-        for artifact in SUPPORTED_ARTIFACTS
-    )
+    return native_target_choices()
 
 
-def _resolve_target_artifact(target: str) -> RcloneArtifact:
+def _resolve_target_native_target(target: str) -> NativeTarget:
     system, separator, machine = target.partition("-")
     if not separator:
         raise BuildDistributionError(f"Malformed --target {target!r}; expected '<os>-<arch>'.")
     try:
-        return resolve_rclone_artifact(system=system, machine=machine)
+        return resolve_native_target(system=system, machine=machine)
     except RcloneRuntimeError as error:
         raise BuildDistributionError(f"Unsupported --target {target!r}: {error}") from error
 
 
-def _require_running_on_target_platform(artifact: RcloneArtifact) -> None:
-    """Fail fast when `artifact` does not match the platform this process is
-    running on.
+def _resolve_running_native_target() -> NativeTarget:
+    return resolve_native_target(system=_platform.system(), machine=_platform.machine())
 
-    `_build_backend.py` tags a wheel using the *building host's* platform;
-    it does not cross-compile. Requesting a target that does not match the
-    running host would otherwise silently produce a mismatched wheel instead
-    of failing loudly at the earliest point.
+
+def _require_running_on_target_platform(native_target: NativeTarget) -> None:
+    """Fail fast when `native_target` does not match the running host.
+
+    This script does not cross-compile: `scripts/native/build.py` itself
+    requires a matching toolchain installed on the running machine (WinFsp
+    SDK and llvm-mingw on Windows; a manylinux2014 CGO toolchain on Linux).
     """
-    running_artifact = resolve_artifact_for_running_platform()
-    if running_artifact.wheel_platform_tag != artifact.wheel_platform_tag:
+    running_target = _resolve_running_native_target()
+    if running_target.wheel_platform_tag != native_target.wheel_platform_tag:
         raise BuildDistributionError(
-            f"Requested target {artifact.wheel_platform_tag!r} does not match the "
-            f"running platform {running_artifact.wheel_platform_tag!r}; this script "
+            f"Requested target {native_target.wheel_platform_tag!r} does not match the "
+            f"running platform {running_target.wheel_platform_tag!r}; this script "
             "does not cross-compile. Run it on a matching host."
         )
 
@@ -164,23 +173,48 @@ def _ignore_build_cruft(_directory: str, names: list[str]) -> set[str]:
     return {name for name in names if name in _SOURCE_TREE_IGNORED_DIR_NAMES}
 
 
-def _stage_artifact_into_source_tree(
-    artifact: RcloneArtifact, staging_root: Path, source_tree: Path
-) -> None:
-    """Stage and verify `artifact`'s executable, then copy the staged
-    directory into `source_tree`'s package-data location.
+def _build_native_bundle(native_target: NativeTarget, native_build_dir: Path) -> None:
+    """Build the native library for `native_target` via `scripts/native/
+    build.py --profile production`, writing outputs to `native_build_dir`.
 
-    Reuses `prepare_rclone_artifact`'s staging functions directly rather
-    than duplicating the download/verify/extract sequence.
+    Runs against the real `native/rclone` submodule checkout (the script's
+    own path, not the isolated source tree) - the native build is a build
+    input, not part of the Python source tree `uv build` reads.
     """
-    target_staging_dir = prepare_rclone_artifact.staging_directory(staging_root, artifact)
-    target_staging_dir.mkdir(parents=True, exist_ok=True)
-    prepare_rclone_artifact.stage_executable(artifact, target_staging_dir)
-    prepare_rclone_artifact.stage_license(target_staging_dir)
+    target_string = f"{native_target.operating_system.value}-{native_target.architecture.value}"
+    subprocess.run(
+        [
+            sys.executable,
+            str(_NATIVE_BUILD_SCRIPT),
+            "--target",
+            target_string,
+            "--profile",
+            _PRODUCTION_PROFILE,
+            "--out-dir",
+            str(native_build_dir),
+        ],
+        check=True,
+    )
 
-    assets_destination = source_tree / _ASSETS_RELATIVE_DIR / artifact.wheel_platform_tag
-    assets_destination.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(target_staging_dir, assets_destination)
+
+def _stage_native_bundle_into_source_tree(
+    native_target: NativeTarget, native_build_dir: Path, source_tree: Path
+) -> None:
+    """Copy the native build's package-data subset into `source_tree`'s
+    wheel package-data location.
+
+    Excludes the diagnostic `rclone`/`rclone.exe` executable (a build-time
+    diagnostic artifact, not a wheel asset) and `smoke-results.json` (this
+    build's own smoke-test output, unrelated to the wheel it staged); every
+    other file (library, manifest, hashes, license, ABI header) ships.
+    """
+    assets_destination = source_tree / _ASSETS_RELATIVE_DIR / native_target.wheel_platform_tag
+    assets_destination.mkdir(parents=True, exist_ok=True)
+    excluded_names = _NATIVE_STAGING_EXCLUDED_NAMES | {native_target.executable_filename}
+    for entry in native_build_dir.iterdir():
+        if entry.name in excluded_names or not entry.is_file():
+            continue
+        shutil.copyfile(entry, assets_destination / entry.name)
 
 
 def _require_uv_executable() -> str:
@@ -256,14 +290,15 @@ def _smoke_test_wheel(wheel_path: Path, smoke_env: Path) -> None:
     )
 
 
-def _build_and_verify_wheel(artifact: RcloneArtifact, out_dir: Path) -> BuiltWheel:
+def _build_and_verify_wheel(native_target: NativeTarget, out_dir: Path) -> BuiltWheel:
     with TemporaryDirectory(prefix=_BUILD_ROOT_TEMP_PREFIX) as raw_build_root:
         build_root = Path(raw_build_root)
         source_tree = build_root / _SOURCE_TREE_DIRECTORY_NAME
-        staging_root = build_root / _STAGING_SUBDIRECTORY_NAME
+        native_build_dir = build_root / _NATIVE_BUILD_SUBDIRECTORY_NAME
 
         _copy_source_tree(_REPO_ROOT, source_tree)
-        _stage_artifact_into_source_tree(artifact, staging_root, source_tree)
+        _build_native_bundle(native_target, native_build_dir)
+        _stage_native_bundle_into_source_tree(native_target, native_build_dir, source_tree)
         wheel_path = _build_wheel(source_tree, out_dir)
         _verify_wheel(wheel_path)
         _smoke_test_wheel(wheel_path, build_root / _SMOKE_ENV_DIRECTORY_NAME)
@@ -303,10 +338,10 @@ def main(argv: list[str] | None = None) -> int:
     """
     args = _parse_args(sys.argv[1:] if argv is None else argv)
     try:
-        artifact = _resolve_target_artifact(args.target)
-        _require_running_on_target_platform(artifact)
+        native_target = _resolve_target_native_target(args.target)
+        _require_running_on_target_platform(native_target)
         out_dir = _prepare_output_directory(args.out_dir)
-        built_wheel = _build_and_verify_wheel(artifact, out_dir)
+        built_wheel = _build_and_verify_wheel(native_target, out_dir)
     except (RcloneRuntimeError, BuildDistributionError, subprocess.CalledProcessError) as error:
         print(f"Build failed: {error}", file=sys.stderr)
         return 1

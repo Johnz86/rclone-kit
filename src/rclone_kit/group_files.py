@@ -1,7 +1,8 @@
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 
-_MIN_QUALIFIED_PATH_PARTS = 2
+from rclone_kit.rc.paths import RcPath, RcPathParts, is_windows_drive_prefix
+
 _MAX_CHILDREN_FOR_INDIVIDUAL_MERGE = 2
 
 
@@ -11,45 +12,38 @@ class PrefixResult:
     files: list[str]
 
 
-@dataclass
-class FilePathParts:
-    """File path dataclass."""
+def parse_file(file_path: str) -> RcPathParts:
+    """Parse file path into parts.
 
-    remote: str
-    parents: list[str]
-    name: str
-
-    def to_string(self, include_remote: bool, include_bucket: bool) -> str:
-        """Convert to string, may throw for not include_bucket=False."""
-        parents = list(self.parents)
-        if not include_bucket:
-            parents.pop(0)
-        path = "/".join(parents)
-        if path:
-            path += "/"
-        path += self.name
-        if include_remote:
-            return f"{self.remote}{path}"
-        return path
+    A colonless `file_path` (a local filesystem path, not `remote:path`)
+    parses with `remote=""` rather than raising - `delete_files_embedded`
+    calls this on real local paths too (via `RemoteFS.remove()`), and on
+    Linux those never contain a colon at all. A Windows path also parses
+    with `remote=""` and its drive letter (`C:\\...`) folded into
+    `parents`/`name` via `RcPath.parse_parts` - not the pre-existing
+    accidental `remote="C"` split this used to do by hand, which never
+    split on `\\` at all and so collapsed a Windows path's whole
+    directory structure into one opaque `name` (see `_colonify` for how
+    `group_files` reassembles a Windows drive's parent path once split
+    this way).
+    """
+    if file_path.endswith("/"):
+        raise ValueError(f"This looks like a directory path: {file_path!r}")
+    return RcPath.parse_parts(file_path)
 
 
-def parse_file(file_path: str) -> FilePathParts:
-    """Parse file path into parts."""
-    assert not file_path.endswith("/"), "This looks like a directory path"
-    parts = file_path.split(":")
-    if len(parts) < _MIN_QUALIFIED_PATH_PARTS:
-        raise ValueError(
-            f"Invalid file path: {file_path}, expected fully qualified path like dst:Bucket/subdir/file.txt"
-        )
-    remote = parts[0]
-    path = parts[1]
-    if path.startswith("/"):
-        path = path[1:]
-    parents = path.split("/")
-    if len(parents) == 1:
-        return FilePathParts(remote=remote, parents=[], name=parents[0])
-    name = parents.pop()
-    return FilePathParts(remote=remote, parents=parents, name=name)
+def _to_string(parts: RcPathParts, include_remote: bool, include_bucket: bool) -> str:
+    """Convert `parts` back to a string, may throw for not include_bucket=False."""
+    parents = list(parts.parents)
+    if not include_bucket:
+        parents.pop(0)
+    path = "/".join(parents)
+    if path:
+        path += "/"
+    path += parts.name
+    if include_remote:
+        return f"{parts.remote}{path}"
+    return path
 
 
 class TreeNode:
@@ -147,14 +141,35 @@ def _make_tree(files: list[str]) -> dict[str, TreeNode]:
     return tree
 
 
+def _colonify(path: str) -> str:
+    """Turn one `/`-stripped tree path into its final `group_files()` key.
+
+    A doubled leading "/" means the top-level node's name was "" - a
+    local, colonless path from `parse_file`, not a real remote name - so
+    `path` is already a plain absolute local path with no remote segment
+    to colon-ify; return it unchanged. Otherwise the first "/" marks the
+    end of the remote name and becomes ":" - except when that remote name
+    is a Windows drive letter (`parse_file` folds `C:\\...` into
+    `remote="C"`, `parents=[...]`), where the "/" must be *kept* rather
+    than consumed: "C:/Users" is an absolute path, but "C:Users" is a
+    valid, entirely different Windows path meaning "relative to the
+    current directory on the C: drive."
+    """
+    if path.startswith("/"):
+        return path
+    head, sep, rest = path.partition("/")
+    if not sep:
+        return path
+    if is_windows_drive_prefix(f"{head}:"):
+        return f"{head}:/{rest}"
+    return f"{head}:{rest}"
+
+
 def _fixup_rclone_paths(outpaths: dict[str, list[str]]) -> dict[str, list[str]]:
     out: dict[str, list[str]] = {}
     for path, files in outpaths.items():
         assert path.startswith("/"), "Path should start with /"
-        fixed_path = path[1:]
-
-        fixed_path = fixed_path.replace("/", ":", 1)
-        out[fixed_path] = files
+        out[_colonify(path[1:])] = files
     return out
 
 
@@ -187,7 +202,10 @@ def group_under_remote_bucket(
     files: list[str], fully_qualified: bool = True
 ) -> dict[str, list[str]]:
     """split between filename and bucket"""
-    assert fully_qualified is True, "Not implemented for fully_qualified=False"
+    if not fully_qualified:
+        raise NotImplementedError(
+            "group_under_remote_bucket does not support fully_qualified=False"
+        )
     out: dict[str, list[str]] = {}
     for file in files:
         parsed = parse_file(file)
@@ -196,7 +214,7 @@ def group_under_remote_bucket(
         bucket = parts[0]
         remote_bucket = f"{remote}{bucket}"
         file_list = out.setdefault(remote_bucket, [])
-        file_list.append(parsed.to_string(include_remote=False, include_bucket=False))
+        file_list.append(_to_string(parsed, include_remote=False, include_bucket=False))
     return out
 
 

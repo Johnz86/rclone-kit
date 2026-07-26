@@ -55,11 +55,21 @@ class UploadState:
         return num_chunks - count
 
     def add_finished(self, part: FinishedPiece | EndOfStream) -> None:
+        """Record one completed part and persist immediately, through
+        `save()` - not `_save_no_lock()` directly - so this is protected by
+        the same module-level `_SAVE_STATE_LOCK` and fingerprint check as
+        any other save. `self.lock` only serializes concurrent appends to
+        `self.parts` on this instance; it does nothing to prevent two
+        separate `UploadState` instances pointed at the same persisted path
+        (e.g. a stale runner process left running alongside a freshly
+        resumed one) from overwriting each other's on-disk state - `save()`
+        is what catches that.
+        """
         if part is None:
             return
         with self.lock:
             self.parts.append(part)
-            self._save_no_lock()
+            self.save()
 
     def __post_init__(self):
         if self.peristant is None:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import warnings
 from datetime import datetime
 
@@ -12,6 +13,25 @@ from rclone_kit.types import (
     PartInfo,
     SizeSuffix,
 )
+
+_PART_NAME_PATTERN = re.compile(r"^part\.(\d+)_\d+-\d+$")
+
+
+def _parse_part_number(name: str) -> int:
+    """Parse the part number out of one `part.<N>_<offset>-<end>` name -
+    the exact format `upload_parts_resumable._gen_name` produces. Kept as
+    one named pattern with a clear error rather than ad hoc string-
+    splitting, so a future change to that format which isn't mirrored here
+    fails with an obvious `ValueError` instead of an opaque
+    `IndexError`/`ValueError` from splitting a shape this no longer
+    recognizes.
+    """
+    match = _PART_NAME_PATTERN.match(name)
+    if match is None:
+        raise ValueError(
+            f"{name!r} does not match the expected part.<N>_<offset>-<end> naming format"
+        )
+    return int(match.group(1))
 
 
 def _fetch_all_names(
@@ -113,8 +133,7 @@ class InfoJson:
 
     def fetch_all_finished_part_numbers(self) -> list[int]:
         names = self.fetch_all_finished()
-        part_numbers = [int(name.split("_")[0].split(".")[1]) for name in names]
-        return part_numbers
+        return [_parse_part_number(name) for name in names]
 
     @property
     def parts_dir(self) -> str:

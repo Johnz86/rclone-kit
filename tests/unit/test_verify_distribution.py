@@ -7,10 +7,14 @@ itself is made importable for `helpers.py`.
 Every fake "wheel" and "sdist" here is a small in-memory (or `tmp_path`)
 archive with controlled contents rather than a real build, so these tests
 exercise `verify_distribution`'s file, hash, and metadata-parsing logic
-without depending on a real rclone binary or a real `uv build`.
+without depending on a real native library or a real `uv build`. Unlike the
+now-removed rclone-executable model, `resolve_native_target` needs no
+monkeypatching at all: it is a pure lookup over a static, always-available
+platform table, so these tests rely on the real target resolution directly.
 """
 
 import hashlib
+import json
 import tarfile
 import zipfile
 from dataclasses import dataclass
@@ -19,29 +23,10 @@ from pathlib import Path
 import pytest
 
 import verify_distribution
-from rclone_kit.runtime.platform import (
-    LINUX_AMD64_ARTIFACT,
-    WINDOWS_AMD64_ARTIFACT,
-    MachineArchitecture,
-    OperatingSystem,
-    RcloneArtifact,
-)
 
-_FAKE_EXECUTABLE_CONTENT = b"fake-rclone-executable-bytes-for-tests"
-_FAKE_EXECUTABLE_DIGEST = hashlib.sha256(_FAKE_EXECUTABLE_CONTENT).hexdigest()
-_TAMPERED_EXECUTABLE_CONTENT = b"tampered-rclone-executable-bytes"
-
-_FAKE_WINDOWS_ARTIFACT = RcloneArtifact(
-    operating_system=OperatingSystem.WINDOWS,
-    architecture=MachineArchitecture.AMD64,
-    archive_filename="rclone-fake-windows-amd64.zip",
-    download_url="https://example.invalid/rclone-fake-windows-amd64.zip",
-    sha256_digest="1" * 64,
-    executable_member_name="rclone-fake/rclone.exe",
-    executable_name="rclone.exe",
-    executable_sha256_digest=_FAKE_EXECUTABLE_DIGEST,
-    wheel_platform_tag="win_amd64",
-)
+_FAKE_LIBRARY_CONTENT = b"fake-librclone-kit-bytes-for-tests"
+_FAKE_LIBRARY_DIGEST = hashlib.sha256(_FAKE_LIBRARY_CONTENT).hexdigest()
+_TAMPERED_LIBRARY_CONTENT = b"tampered-librclone-kit-bytes"
 
 _WINDOWS_WHEEL_NAME = "rclone_kit-1.0.0-py3-none-win_amd64.whl"
 _LINUX_WHEEL_NAME = "rclone_kit-1.0.0-py3-none-manylinux2014_x86_64.whl"
@@ -76,37 +61,59 @@ def _metadata_text(
     return "\n".join(lines) + "\n"
 
 
+def _native_manifest_bytes(
+    library_filename: str,
+    digest: str,
+    *,
+    go_build_tags: tuple[str, ...] = ("cmount",),
+    c_abi_version: int = 1,
+) -> bytes:
+    return json.dumps(
+        {
+            "c_abi_version": c_abi_version,
+            "go_build_tags": list(go_build_tags),
+            "outputs": [{"filename": library_filename, "sha256_digest": digest, "size_bytes": 123}],
+        }
+    ).encode("utf-8")
+
+
 def _windows_wheel_members(
     *,
-    executable_content: bytes = _FAKE_EXECUTABLE_CONTENT,
-    manifest_digest: str = _FAKE_EXECUTABLE_DIGEST,
+    library_content: bytes = _FAKE_LIBRARY_CONTENT,
+    manifest_digest: str = _FAKE_LIBRARY_DIGEST,
+    go_build_tags: tuple[str, ...] = ("cmount",),
+    c_abi_version: int = 1,
     include_rclone_kit_license: bool = True,
     include_rclone_license: bool = True,
+    include_manifest: bool = True,
+    include_sha256sums: bool = True,
+    include_abi_header: bool = True,
     requires_python: str | None = ">=3.13",
     requires_dist: list[str] | None = None,
 ) -> dict[str, bytes]:
+    base = "rclone_kit/assets/native/win_amd64"
     members = {
-        "rclone_kit/assets/rclone/win_amd64/rclone.exe": executable_content,
-        "rclone_kit/assets/rclone/win_amd64/rclone.exe.sha256": manifest_digest.encode("utf-8"),
+        f"{base}/librclone_kit.dll": library_content,
         "rclone_kit-1.0.0.dist-info/METADATA": _metadata_text(
             requires_python=requires_python, requires_dist=requires_dist
         ).encode("utf-8"),
     }
+    if include_manifest:
+        members[f"{base}/native-manifest.json"] = _native_manifest_bytes(
+            "librclone_kit.dll",
+            manifest_digest,
+            go_build_tags=go_build_tags,
+            c_abi_version=c_abi_version,
+        )
+    if include_sha256sums:
+        members[f"{base}/SHA256SUMS"] = f"{manifest_digest}  librclone_kit.dll\n".encode()
+    if include_abi_header:
+        members[f"{base}/rclonekit_abi.h"] = b"/* fake header */"
     if include_rclone_kit_license:
         members["rclone_kit-1.0.0.dist-info/licenses/LICENSE"] = b"MIT"
     if include_rclone_license:
-        members["rclone_kit/assets/rclone/win_amd64/RCLONE_LICENSE"] = b"MIT"
+        members[f"{base}/RCLONE_LICENSE"] = b"MIT"
     return members
-
-
-@pytest.fixture
-def fake_windows_artifact(monkeypatch: pytest.MonkeyPatch) -> RcloneArtifact:
-    monkeypatch.setattr(
-        verify_distribution,
-        "resolve_rclone_artifact",
-        lambda **_kwargs: _FAKE_WINDOWS_ARTIFACT,
-    )
-    return _FAKE_WINDOWS_ARTIFACT
 
 
 @dataclass(frozen=True)
@@ -201,12 +208,10 @@ def test_check_platform_independent_tag_passes_platform_specific_wheel() -> None
     assert verify_distribution.check_platform_independent_tag(Path(_WINDOWS_WHEEL_NAME)) == []
 
 
-@pytest.mark.usefixtures("fake_windows_artifact")
 def test_check_exact_wheel_tag_passes_for_abi_independent_wheel() -> None:
     assert verify_distribution.check_exact_wheel_tag(Path(_WINDOWS_WHEEL_NAME)) == []
 
 
-@pytest.mark.usefixtures("fake_windows_artifact")
 def test_check_exact_wheel_tag_flags_concrete_cpython_abi_tag() -> None:
     violations = verify_distribution.check_exact_wheel_tag(Path(_CPYTHON_ABI_WINDOWS_WHEEL_NAME))
 
@@ -284,93 +289,141 @@ def test_check_required_licenses_present_passes_when_both_present(tmp_path: Path
     assert verify_distribution.check_required_licenses_present(wheel_path, tuple(members)) == []
 
 
-def test_check_bundled_executable_present_flags_missing_executable() -> None:
+def test_check_bundled_library_present_flags_missing_library() -> None:
     wheel_path = Path(_WINDOWS_WHEEL_NAME)
-    violations = verify_distribution.check_bundled_executable_present(wheel_path, ())
-    assert len(violations) == 1
-    assert "missing expected bundled executable" in violations[0]
+    violations = verify_distribution.check_bundled_library_present(wheel_path, ())
+    assert len(violations) == 5
+    assert all("missing expected bundled file" in violation for violation in violations)
 
 
-def test_check_bundled_executable_present_passes_when_present() -> None:
-    wheel_path = Path(_WINDOWS_WHEEL_NAME)
-    members = (
-        verify_distribution._asset_member_path(
-            WINDOWS_AMD64_ARTIFACT, WINDOWS_AMD64_ARTIFACT.executable_name
-        ),
-    )
-    assert verify_distribution.check_bundled_executable_present(wheel_path, members) == []
-
-
-def test_check_bundled_executable_present_maps_linux_wheel_tag() -> None:
-    wheel_path = Path(_LINUX_WHEEL_NAME)
-    members = (
-        verify_distribution._asset_member_path(
-            LINUX_AMD64_ARTIFACT, LINUX_AMD64_ARTIFACT.executable_name
-        ),
-    )
-    assert verify_distribution.check_bundled_executable_present(wheel_path, members) == []
-
-
-def test_check_bundled_executable_present_flags_unmappable_platform_tag() -> None:
-    wheel_path = Path(_UNMAPPABLE_WHEEL_NAME)
-    violations = verify_distribution.check_bundled_executable_present(wheel_path, ())
-    assert len(violations) == 1
-    assert "does not map to a certified rclone build target" in violations[0]
-
-
-def test_check_no_foreign_platform_executable_flags_linux_binary_in_windows_wheel() -> None:
-    wheel_path = Path(_WINDOWS_WHEEL_NAME)
-    members = (
-        verify_distribution._asset_member_path(
-            WINDOWS_AMD64_ARTIFACT, WINDOWS_AMD64_ARTIFACT.executable_name
-        ),
-        "rclone_kit/assets/rclone/manylinux2014_x86_64/rclone",
-    )
-    violations = verify_distribution.check_no_foreign_platform_executable(wheel_path, members)
-    assert len(violations) == 1
-    assert "another platform's executable" in violations[0]
-
-
-def test_check_no_foreign_platform_executable_passes_windows_only_wheel() -> None:
-    wheel_path = Path(_WINDOWS_WHEEL_NAME)
-    members = (
-        verify_distribution._asset_member_path(
-            WINDOWS_AMD64_ARTIFACT, WINDOWS_AMD64_ARTIFACT.executable_name
-        ),
-    )
-    assert verify_distribution.check_no_foreign_platform_executable(wheel_path, members) == []
-
-
-@pytest.mark.usefixtures("fake_windows_artifact")
-def test_check_bundled_executable_hash_passes_when_both_digests_agree(tmp_path: Path) -> None:
+def test_check_bundled_library_present_passes_when_present(tmp_path: Path) -> None:
     members = _windows_wheel_members()
     wheel_path = _write_zip(tmp_path / _WINDOWS_WHEEL_NAME, members)
 
-    assert verify_distribution.check_bundled_executable_hash(wheel_path, tuple(members)) == []
+    assert verify_distribution.check_bundled_library_present(wheel_path, tuple(members)) == []
 
 
-@pytest.mark.usefixtures("fake_windows_artifact")
-def test_check_bundled_executable_hash_flags_manifest_mismatch(tmp_path: Path) -> None:
+def test_check_bundled_library_present_maps_linux_wheel_tag() -> None:
+    wheel_path = Path(_LINUX_WHEEL_NAME)
+    base = "rclone_kit/assets/native/manylinux2014_x86_64"
+    members = (
+        f"{base}/librclone_kit.so",
+        f"{base}/native-manifest.json",
+        f"{base}/SHA256SUMS",
+        f"{base}/RCLONE_LICENSE",
+        f"{base}/rclonekit_abi.h",
+    )
+    assert verify_distribution.check_bundled_library_present(wheel_path, members) == []
+
+
+def test_check_bundled_library_present_flags_unmappable_platform_tag() -> None:
+    wheel_path = Path(_UNMAPPABLE_WHEEL_NAME)
+    violations = verify_distribution.check_bundled_library_present(wheel_path, ())
+    assert len(violations) == 1
+    assert "does not map to a certified native build target" in violations[0]
+
+
+def test_check_no_foreign_platform_library_flags_linux_binary_in_windows_wheel(
+    tmp_path: Path,
+) -> None:
+    members = _windows_wheel_members()
+    members["rclone_kit/assets/native/manylinux2014_x86_64/librclone_kit.so"] = b"foreign"
+    wheel_path = _write_zip(tmp_path / _WINDOWS_WHEEL_NAME, members)
+
+    violations = verify_distribution.check_no_foreign_platform_library(wheel_path, tuple(members))
+    assert len(violations) == 1
+    assert "another platform's library" in violations[0]
+
+
+def test_check_no_foreign_platform_library_passes_windows_only_wheel(tmp_path: Path) -> None:
+    members = _windows_wheel_members()
+    wheel_path = _write_zip(tmp_path / _WINDOWS_WHEEL_NAME, members)
+
+    assert verify_distribution.check_no_foreign_platform_library(wheel_path, tuple(members)) == []
+
+
+def test_check_bundled_library_hash_passes_when_digest_agrees(tmp_path: Path) -> None:
+    members = _windows_wheel_members()
+    wheel_path = _write_zip(tmp_path / _WINDOWS_WHEEL_NAME, members)
+
+    assert verify_distribution.check_bundled_library_hash(wheel_path, tuple(members)) == []
+
+
+def test_check_bundled_library_hash_flags_manifest_mismatch(tmp_path: Path) -> None:
     members = _windows_wheel_members(manifest_digest="0" * 64)
     wheel_path = _write_zip(tmp_path / _WINDOWS_WHEEL_NAME, members)
 
-    violations = verify_distribution.check_bundled_executable_hash(wheel_path, tuple(members))
+    violations = verify_distribution.check_bundled_library_hash(wheel_path, tuple(members))
 
     assert any("shipped manifest" in violation for violation in violations)
 
 
-@pytest.mark.usefixtures("fake_windows_artifact")
-def test_check_bundled_executable_hash_flags_expected_digest_mismatch(tmp_path: Path) -> None:
-    tampered_digest = hashlib.sha256(_TAMPERED_EXECUTABLE_CONTENT).hexdigest()
-    members = _windows_wheel_members(
-        executable_content=_TAMPERED_EXECUTABLE_CONTENT, manifest_digest=tampered_digest
-    )
+def test_check_bundled_library_hash_flags_tampered_library(tmp_path: Path) -> None:
+    members = _windows_wheel_members(library_content=_TAMPERED_LIBRARY_CONTENT)
     wheel_path = _write_zip(tmp_path / _WINDOWS_WHEEL_NAME, members)
 
-    violations = verify_distribution.check_bundled_executable_hash(wheel_path, tuple(members))
+    violations = verify_distribution.check_bundled_library_hash(wheel_path, tuple(members))
 
-    assert any("expected digest" in violation for violation in violations)
-    assert not any("shipped manifest" in violation for violation in violations)
+    assert any("shipped manifest" in violation for violation in violations)
+
+
+def test_check_bundled_library_has_mount_support_flags_missing_cmount_tag(tmp_path: Path) -> None:
+    members = _windows_wheel_members(go_build_tags=())
+    wheel_path = _write_zip(tmp_path / _WINDOWS_WHEEL_NAME, members)
+
+    violations = verify_distribution.check_bundled_library_has_mount_support(
+        wheel_path, tuple(members)
+    )
+
+    assert len(violations) == 1
+    assert "cmount" in violations[0]
+
+
+def test_check_bundled_library_has_mount_support_passes_with_cmount_tag(tmp_path: Path) -> None:
+    members = _windows_wheel_members(go_build_tags=("cmount",))
+    wheel_path = _write_zip(tmp_path / _WINDOWS_WHEEL_NAME, members)
+
+    assert (
+        verify_distribution.check_bundled_library_has_mount_support(wheel_path, tuple(members))
+        == []
+    )
+
+
+def test_check_bundled_library_has_mount_support_always_passes_on_linux(tmp_path: Path) -> None:
+    """cmd/mount (bazil.org/fuse) is imported unconditionally on Linux with
+    no build tag of its own, so there is nothing to check in the manifest -
+    a Linux wheel with an empty go_build_tags list still has mount
+    support."""
+    base = "rclone_kit/assets/native/manylinux2014_x86_64"
+    members = {
+        f"{base}/librclone_kit.so": _FAKE_LIBRARY_CONTENT,
+        f"{base}/native-manifest.json": _native_manifest_bytes(
+            "librclone_kit.so", _FAKE_LIBRARY_DIGEST, go_build_tags=()
+        ),
+    }
+    wheel_path = _write_zip(tmp_path / _LINUX_WHEEL_NAME, members)
+
+    assert (
+        verify_distribution.check_bundled_library_has_mount_support(wheel_path, tuple(members))
+        == []
+    )
+
+
+def test_check_bundled_library_abi_version_flags_mismatch(tmp_path: Path) -> None:
+    members = _windows_wheel_members(c_abi_version=999)
+    wheel_path = _write_zip(tmp_path / _WINDOWS_WHEEL_NAME, members)
+
+    violations = verify_distribution.check_bundled_library_abi_version(wheel_path, tuple(members))
+
+    assert len(violations) == 1
+    assert "c_abi_version" in violations[0]
+
+
+def test_check_bundled_library_abi_version_passes_when_matching(tmp_path: Path) -> None:
+    members = _windows_wheel_members(c_abi_version=1)
+    wheel_path = _write_zip(tmp_path / _WINDOWS_WHEEL_NAME, members)
+
+    assert verify_distribution.check_bundled_library_abi_version(wheel_path, tuple(members)) == []
 
 
 def test_check_wheel_denylisted_members_flags_pycache() -> None:
@@ -399,23 +452,18 @@ def test_check_sdist_denylisted_members_flags_git_directory() -> None:
     assert len(violations) == 1
 
 
-def test_check_sdist_has_no_staged_platform_executables_flags_bundled_binary() -> None:
+def test_check_sdist_has_no_staged_native_libraries_flags_bundled_library() -> None:
     sdist_path = Path("rclone_kit-1.0.0.tar.gz")
-    members = ("rclone_kit-1.0.0/src/rclone_kit/assets/rclone/win_amd64/rclone.exe",)
-    violations = verify_distribution.check_sdist_has_no_staged_platform_executables(
-        sdist_path, members
-    )
+    members = ("rclone_kit-1.0.0/src/rclone_kit/assets/native/win_amd64/librclone_kit.dll",)
+    violations = verify_distribution.check_sdist_has_no_staged_native_libraries(sdist_path, members)
     assert len(violations) == 1
     assert "platform-independent" in violations[0]
 
 
-def test_check_sdist_has_no_staged_platform_executables_passes_clean_sdist() -> None:
+def test_check_sdist_has_no_staged_native_libraries_passes_clean_sdist() -> None:
     sdist_path = Path("rclone_kit-1.0.0.tar.gz")
     members = ("rclone_kit-1.0.0/src/rclone_kit/util.py",)
-    assert (
-        verify_distribution.check_sdist_has_no_staged_platform_executables(sdist_path, members)
-        == []
-    )
+    assert verify_distribution.check_sdist_has_no_staged_native_libraries(sdist_path, members) == []
 
 
 def test_check_entry_points_resolve_passes_for_valid_target(tmp_path: Path) -> None:
@@ -468,7 +516,6 @@ def test_check_entry_points_resolve_flags_missing_entry_points_file() -> None:
     assert "entry_points.txt" in violations[0]
 
 
-@pytest.mark.usefixtures("fake_windows_artifact")
 def test_verify_wheel_passes_fully_populated_windows_wheel(tmp_path: Path) -> None:
     members = {
         **_windows_wheel_members(),
@@ -484,12 +531,12 @@ def test_verify_wheel_passes_fully_populated_windows_wheel(tmp_path: Path) -> No
     assert result.passed, result.violations
 
 
-def test_verify_sdist_flags_real_tar_gz_bundling_staged_executable(tmp_path: Path) -> None:
+def test_verify_sdist_flags_real_tar_gz_bundling_staged_library(tmp_path: Path) -> None:
     sdist_path = _write_tar(
         tmp_path / "rclone_kit-1.0.0.tar.gz",
         [
             "rclone_kit-1.0.0/src/rclone_kit/util.py",
-            "rclone_kit-1.0.0/src/rclone_kit/assets/rclone/win_amd64/rclone.exe",
+            "rclone_kit-1.0.0/src/rclone_kit/assets/native/win_amd64/librclone_kit.dll",
         ],
     )
 
