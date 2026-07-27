@@ -677,6 +677,45 @@ back-reference and `set_rclone` - so `Dir.ls`/`Dir.walk`'s
 is a breaking change needing a deprecation cycle, and belongs in its own
 release rather than bolted onto this pass.
 
+A follow-up architecture review of this branch corrected one claim made
+here and found work this pass left open; both are recorded so the next
+session does not re-derive them. The claim: the domain-layer freeze was
+described as unblocking "a large share of the untyped legacy surface the
+`ANN` rollout is waiting on". Measured with `ruff --select ANN src`, the
+domain layer accounts for 3 of 101 findings; the mass is
+`fs/filesystem.py` (16), `s3/multipart/*` (31), and `fs/walk_threaded*`
+(15). Do the freeze for its own reasons - see its roadmap row - not to
+unblock typing, and aim the typing push at `s3/multipart/` and `fs/`,
+which is also where the remaining concurrency hazards live.
+
+The open work, in priority order. Two defects this pass fixed have
+unfixed twins: `operations/walk.py`'s consumer loop still carries the
+`except KeyboardInterrupt: pass` that was removed from
+`scan_missing_folders.py`, and it backs the more prominent
+`Rclone.walk()`; and `scan_missing_folders.py`'s inner
+`walk_runner_depth_first` queue is still unbounded, the defect
+`fs/walk.py` just had fixed. `_JobMonitor` classifies `RuntimeClosedError`
+and `NativeNotInitializedError` as transient, so a client whose injected
+runtime was closed by its owner never settles - the same failure mode as
+the job-identity defect above, newly reachable now that `shared_runtime()`
+is a documented multi-client pattern. `RcloneRuntime.close()` waits on
+in-flight calls with no timeout, so a synchronous `check()` over a large
+tree makes `Rclone.close()` unbounded despite every other step in it being
+deadline-bounded. And the error taxonomy has five disjoint roots with no
+exception exported from `rclone_kit` at all, so `production_usage.md`'s
+own recommended `except RcloneKitError` does not catch `RcCallError`,
+`NativeError`, or `MissingOptionalDependencyError` - all of which that
+same document shows escaping.
+
+Four operations from the original proposal were dropped without a
+recorded decision and are listed here rather than lost: `hashsum()`
+(`operations/hashsum`; `FileItem.hash` exists and is never populated),
+`mkdir()`/`rmdir()` (`operations/mkdir`/`rmdir`; `RemoteFS.mkdir` still
+only warns "not supported"), `about()` (`operations/about`, for quota and
+free space), and runtime `bwlimit` (`core/bwlimit`). So was migrating the
+30 remaining `unittest.TestCase` files to the pytest style
+`docs/code_style.md` prescribes.
+
 The error model phase is done: `rclone_kit.exceptions` now holds a typed
 `RcloneKitError` hierarchy (`FilesystemError`, `ConfigParseError`,
 `RcloneCommandError`, `HttpFetchError`, `MergeStateError`, `S3MergeError`,
@@ -917,7 +956,7 @@ deliberate `print` implementing `Rclone.print()`.
 |---|---|---|---|
 | Typing and linting | `S101`, `ANN`, `TRY`, `FBT001`/`FBT002`/`FBT003`, `A001`/`A002`, `PLR0913`, `PTH`, `PLR0911`/`PLR0912`/`PLR0915` remain globally ignored. Pyright `strict` now covers `command_flags.py`, `settings.py`, and `group_files.py` (all genuinely 0-error, not just near-zero) - every other module trialed (`access.py`, `backend.py`, `chunk_store.py`, `completed_process.py`, `config_discovery.py`) still returns only `reportMissingTypeStubs` cross-module noise from importing a non-strict sibling, so broadening the list further should wait on real `ANN` progress rather than adding more noisy modules. | Make progress on the `ANN` family (even partial) before adding more files to `strict = [...]`; re-trial candidates afterward, since most of the remaining ones are only "near-zero" because of the cross-module noise, not their own quality. | Quality gates pass with a smaller ignore surface and no broad `Any` escape hatches in changed code. |
 | Release publication | Done: `.github/workflows/release.yaml` builds, verifies, and publishes both certified wheels to PyPI via trusted publishing (OIDC, no stored token) on `v*` tags, gated by the `pypi-release` GitHub Environment. See `docs/release_process.md`. Artifact attestations (`actions/attest-build-provenance` or equivalent) are not yet added. | Add build provenance attestations to the `publish` job's uploaded wheels if supply-chain verification beyond trusted publishing becomes a requirement. | A published wheel carries a verifiable attestation, not just a trusted-publishing OIDC trail. |
-| Domain-layer freeze | `RPath` carries a mutable `rclone` back-reference wired in after construction by `set_rclone`, which is why it cannot be a frozen dataclass and why `Dir.__init__`/`Dir.ls`/`Dir.walk` each guard it with `assert self.path.rclone is not None` - a nullable-then-asserted invariant the type system cannot help with. The post-1.1.1 pass gave these types value semantics but left the back-reference in place, because removing it is a breaking change. | Make `RPath` frozen with no client reference and move `Dir.ls`/`Dir.walk`/`File.read_text` onto the client, which already has `rclone.ls(dir)`. Keep deprecated shims for one minor version. This also retires `access.py`'s `DomainAccess`/`ListingAccess` protocols and a large share of the untyped legacy surface the `ANN` rollout is waiting on. | The `assert`-as-invariant pattern is gone from `dir.py`, `RPath` is frozen, and the deprecation shims carry a documented removal version. |
+| Domain-layer freeze | `RPath` carries a mutable `rclone` back-reference wired in after construction by `set_rclone`, which is why it cannot be a frozen dataclass and why `Dir.__init__`/`Dir.ls`/`Dir.walk` each guard it with `assert self.path.rclone is not None` - a nullable-then-asserted invariant the type system cannot help with. The post-1.1.1 pass gave these types value semantics but left the back-reference in place, because removing it is a breaking change. That pass also made the freeze more urgent than it was: `RPath` is now hashable *and* still fully mutable, so mutating any of the seven fields `_value()` reads after inserting one into a set or dict silently corrupts the container - a hazard identity semantics did not have. `operations/listing_ops_embedded.py` already mutates `d.path.path` in place. | Make `RPath` frozen with no client reference and move `Dir.ls`/`Dir.walk`/`File.read_text` onto the client, which already has `rclone.ls(dir)`. Keep deprecated shims for one minor version. `Dir.__truediv__`, `operations/traversal_ops._to_walk_dir`, and `util.to_path` are the three internal constructors that call `set_rclone` and will need rewriting. Note the cheap half is non-breaking and need not wait: replacing `dir.py`'s three `assert self.path.rclone is not None` guards with a raised error restores an invariant that currently vanishes under `python -O`, since `S101` is globally ignored. | The `assert`-as-invariant pattern is gone from `dir.py`, `RPath` is frozen, and the deprecation shims carry a documented removal version. |
 | Retry-aware `sync`/`move` | `sync()`/`move()` call upstream `sync/sync`/`sync/move`, which run once with no command-level retry loop, so their `OperationResult.attempts` is always empty and they expose no `retries` parameter - unlike `copy()`, which uses the fork's `rclonekit/copy`. The loop is deliberately not reimplemented in Python: rclone resets its accounting group's error state between attempts, which an out-of-process caller cannot do, so a naive retry would double-count stats and misattribute an abandoned attempt's errors. | Add `rclonekit/sync` and `rclonekit/move` to the fork alongside `rclonekit/copy`, reusing its `runWithRetries`. Needs a native rebuild and a submodule pin move, so it cannot ride along with a Python-only change. | `sync()`/`move()` report populated `attempts` and honour `retries`/`retries_sleep`, with the same job-level tests `copy()` has. |
 | Build isolation | Smoke tests poison proxies but do not enforce network denial. | Run them in a network-disabled container or namespace where supported. | A deliberate network attempt fails while the bundled executable still runs. |
 | Source distributions | An sdist cannot yet build a complete certified wheel. | Keep wheel-only releases, or add a verified artifact input/download hook and test sdist-to-wheel builds on every target. | A built-from-sdist wheel passes the same verifier and smoke test. |
