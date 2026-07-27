@@ -2,7 +2,14 @@
 
 import pytest
 
-from rclone_kit.operations.transfer_options import TransferOptions, encode_transfer_options_config
+from rclone_kit.operations.transfer_options import (
+    _NON_NEGATIVE_INT_FIELDS,
+    _POSITIVE_INT_FIELDS,
+    TransferOptions,
+    encode_transfer_options_config,
+)
+
+_ALL_INT_FIELDS = [*_POSITIVE_INT_FIELDS, *_NON_NEGATIVE_INT_FIELDS]
 
 
 def test_defaults_encode_to_an_empty_config() -> None:
@@ -48,28 +55,37 @@ def test_create_empty_src_dirs_is_not_part_of_config_encoding() -> None:
     assert options.create_empty_src_dirs is True
 
 
-@pytest.mark.parametrize(
-    "field_name", ["checkers", "transfers", "low_level_retries", "retries", "multi_thread_streams"]
-)
-def test_zero_is_rejected(field_name: str) -> None:
+@pytest.mark.parametrize("field_name", _POSITIVE_INT_FIELDS)
+def test_zero_is_rejected_for_counts_rclone_cannot_act_on(field_name: str) -> None:
     with pytest.raises(ValueError, match="positive integer"):
         TransferOptions(**{field_name: 0})  # type: ignore[arg-type]
 
 
-@pytest.mark.parametrize(
-    "field_name", ["checkers", "transfers", "low_level_retries", "retries", "multi_thread_streams"]
-)
+@pytest.mark.parametrize("field_name", _ALL_INT_FIELDS)
 def test_negative_is_rejected(field_name: str) -> None:
-    with pytest.raises(ValueError, match="positive integer"):
+    with pytest.raises(ValueError, match="integer"):
         TransferOptions(**{field_name: -1})  # type: ignore[arg-type]
 
 
-@pytest.mark.parametrize(
-    "field_name", ["checkers", "transfers", "low_level_retries", "retries", "multi_thread_streams"]
-)
+@pytest.mark.parametrize("field_name", _ALL_INT_FIELDS)
 def test_bool_is_rejected_even_though_it_is_technically_an_int(field_name: str) -> None:
-    with pytest.raises(ValueError, match="positive integer"):
+    with pytest.raises(ValueError, match="integer"):
         TransferOptions(**{field_name: True})  # type: ignore[arg-type]
+
+
+def test_multi_thread_streams_zero_disables_multi_thread_transfers() -> None:
+    """`--multi-thread-streams 0` is rclone's documented way to switch
+    multi-thread transfers off (`fs/operations/multithread.go` bails out on
+    `MultiThreadStreams <= 1`), so zero must reach `_config` instead of
+    being rejected as an invalid count. `MultiThreadSet` stays `True`: the
+    CLI keys it off the flag having been changed, not off its value.
+    """
+    options = TransferOptions(multi_thread_streams=0)
+
+    assert encode_transfer_options_config(options) == {
+        "MultiThreadStreams": 0,
+        "MultiThreadSet": True,
+    }
 
 
 def test_none_is_valid_for_every_field() -> None:
@@ -103,9 +119,3 @@ def test_metadata_false_is_still_encoded_explicitly() -> None:
     options = TransferOptions(metadata=False)
 
     assert encode_transfer_options_config(options) == {"Metadata": False}
-
-
-@pytest.mark.parametrize("field_name", ["max_backlog"])
-def test_max_backlog_zero_is_rejected(field_name: str) -> None:
-    with pytest.raises(ValueError, match="positive integer"):
-        TransferOptions(**{field_name: 0})  # type: ignore[arg-type]
