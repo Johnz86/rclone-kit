@@ -13,6 +13,7 @@ from rclone_kit.authorization import (
     RemoteConflictPolicy,
     Secret,
 )
+from rclone_kit.check import CheckResult
 from rclone_kit.client import Rclone
 from rclone_kit.config import Config, Parsed, Section
 from rclone_kit.diff import DiffItem, DiffOption, DiffType
@@ -54,6 +55,7 @@ __all__ = [
     "AuthorizationResult",
     "AuthorizationSession",
     "AuthorizationStatus",
+    "CheckResult",
     "Config",
     "DiffItem",
     "DiffOption",

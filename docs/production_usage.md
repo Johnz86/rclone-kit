@@ -467,6 +467,83 @@ result = rclone.copy_to(
 assert result.ok
 ```
 
+### Mirror a tree with `sync()`
+
+`sync()` makes the destination identical to the source. It is destructive
+on the destination: every file under `dst` with no matching source path is
+deleted. There is no undo. Keep it behind application-level authorization
+and verify path construction before enabling it in a worker.
+
+```python
+result = rclone.sync(
+    src="/srv/incoming/run-42",
+    dst="archive:runs/run-42",
+    check=True,
+    transfers=32,
+    checkers=256,
+)
+assert result.ok
+```
+
+`sync()` runs the underlying sync **exactly once**. `copy()` uses the
+fork's own retry-aware `rclonekit/copy` RC method, which wraps the copy in
+the same high-level retry loop the `rclone copy` command uses and reports
+each attempt in `OperationResult.attempts`. There is no `rclonekit/sync`
+equivalent, so `sync()` calls upstream `sync/sync` directly: nothing is
+retried at the command level, a transient failure is final, and
+`result.attempts` is always empty. For that reason `sync()` takes no
+`retries` parameter at all - `_config.Retries` is read only by the retry
+loop it does not have. The loop is deliberately not reimplemented in
+Python: rclone resets its accounting group's error state between attempts,
+which an out-of-process caller cannot do correctly, and a naive retry
+would double-count stats. Per-file `low_level_retries` still applies.
+
+Retry a sync at the application level if you need one, and treat each
+attempt as a fresh operation:
+
+```python
+for _attempt in range(3):
+    result = rclone.sync(source, destination, check=False)
+    if result.ok:
+        break
+    time.sleep(5)
+```
+
+### Move a tree or one file
+
+`move()` transfers and then removes the source. It is destructive on the
+source, not on the destination - files that exist only at `dst` survive,
+which is what separates it from `sync()`. `delete_empty_src_dirs=True`
+also removes the emptied source directories.
+
+```python
+result = rclone.move(
+    src="source:staging/run-42",
+    dst="archive:runs/run-42",
+    check=True,
+    delete_empty_src_dirs=True,
+)
+assert result.ok
+```
+
+`move_to()` is the single-file counterpart of `copy_to()`:
+
+```python
+result = rclone.move_to(
+    "source:staging/manifest.json",
+    "archive:runs/run-42/manifest.json",
+    check=True,
+)
+assert result.ok
+```
+
+`move()` carries the same no-command-level-retry caveat as `sync()` (it
+calls upstream `sync/move`) and likewise takes no `retries` parameter. A
+failure part-way leaves some files moved and the rest still at the source.
+rclone moves server-side where the backend supports it and falls back to
+copy-then-delete where it does not, so an interrupted single-file
+`move_to()` can leave the file on both sides - never on neither.
+
 ### Copy a selected file set
 
 Names are relative to the supplied source root and must not include a remote
@@ -522,6 +599,38 @@ if not purge_result.ok:
 behind application-level authorization and test path construction before
 enabling it in a production worker.
 
+`is_synced()` answers only yes/no. Use `check()` when the worker needs to
+act on *which* paths disagree; it returns a frozen `CheckResult` and never
+raises just because the two sides differ:
+
+```python
+report = rclone.check(source, destination, match=True)
+if not report.success:
+    raise RuntimeError(
+        f"{report.status}: "
+        f"{len(report.differ)} differ, "
+        f"{len(report.missing_on_dst)} missing at the destination"
+    )
+```
+
+`CheckResult` fields: `success` (bool), `status` (rclone's textual summary,
+`"OK"` on success), `hash_type` (`None` for a download-based check), and
+the tuples `combined`, `missing_on_src`, `missing_on_dst`, `match`,
+`differ`, `error`. An array rclone did not report is an empty tuple, and
+each report flag left unset uses rclone's own default: `combined` and
+`match` off; `missing_on_src`, `missing_on_dst`, `differ`, and `error` on.
+
+`check()` alters neither side. `one_way=True` checks only that every source
+file exists at the destination; `download=True` compares contents instead
+of hashes, for backends with no usable hash; `size_only`, `checkers`, and
+`fast_list` tune the comparison itself.
+
+Unlike `copy()`/`sync()`, `check()` is a direct synchronous RC call with no
+`JobHandle` - it cannot be cancelled or progress-polled, because the report
+is the call's return value and rclone reports nothing until the comparison
+finishes. It does not block anything else: the embedded runtime holds no
+lock for the duration of a call, so only the calling thread waits.
+
 For selected files, `delete_files()` accepts one path or a list of fully
 qualified remote paths:
 
@@ -541,17 +650,20 @@ if not result.ok:
 ## Asynchronous copies, partitioned operations, and result types
 
 The client links the bundled native library directly in-process; there is no `rclone` executable and
-no subprocess per call. `copy()`, `copy_to()`, `copy_dir()`, `copy_remote()`, `purge()`, `cleanup()`,
-`copy_files()`, and `delete_files()` all return `OperationResult` (`size_files()` returns `SizeResult`),
-and `check=True` still raises on failure - code that only inspects `.ok`/`.error` needs no special
-handling. `start_copy()` gives direct access to the underlying asynchronous job model when a caller
-needs more than a blocking call.
+no subprocess per call. `copy()`, `copy_to()`, `copy_dir()`, `copy_remote()`, `sync()`, `move()`,
+`move_to()`, `purge()`, `cleanup()`, `copy_files()`, and `delete_files()` all return `OperationResult`
+(`size_files()` returns `SizeResult`; `check()` returns `CheckResult`), and `check=True` still raises on
+failure - code that only inspects `.ok`/`.error` needs no special handling. `start_copy()`,
+`start_sync()`, and `start_move()` give direct access to the underlying asynchronous job model when a
+caller needs more than a blocking call.
 
-### Real asynchronous control with `start_copy()`
+### Real asynchronous control with `start_copy()`/`start_sync()`/`start_move()`
 
-`copy()`/`copy_dir()`/`copy_remote()` all block internally: they start the transfer as an embedded job
-and immediately wait for it. Call `start_copy()` directly when the caller needs to observe progress,
-apply a bounded wait, or cancel a transfer already in flight:
+`copy()`/`copy_dir()`/`copy_remote()`/`sync()`/`move()` all block internally: they start the transfer as
+an embedded job and immediately wait for it. Call `start_copy()` (or `start_sync()`/`start_move()`,
+which take the same tuning parameters minus `retries`, plus `sync/move`'s `delete_empty_src_dirs`)
+directly when the caller needs to observe progress, apply a bounded wait, or cancel a transfer already
+in flight:
 
 ```python
 handle = rclone.start_copy(
@@ -574,6 +686,10 @@ except OperationTimeoutError:
 if not result.ok:
     raise RuntimeError(result.error)
 ```
+
+All three return the same `JobHandle`, but only a copy's `OperationResult.attempts` is ever populated:
+`start_sync()`/`start_move()` run upstream `sync/sync`/`sync/move`, which have no command-level retry
+loop to report attempts from. See "Mirror a tree with `sync()`" above.
 
 `wait(timeout=...)` never cancels the underlying operation by itself - a timeout means "we stopped
 watching," not "it stopped running." Call `cancel()` for that; it returns immediately (`True` if the

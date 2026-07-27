@@ -17,6 +17,7 @@ from typing import cast
 import pytest
 
 from rclone_kit.authorization import AuthorizationSession
+from rclone_kit.check import CheckResult
 from rclone_kit.client import (
     _COPY_DEFAULT_CHECKERS,
     _COPY_DEFAULT_LOW_LEVEL_RETRIES,
@@ -395,6 +396,13 @@ def _set_successful_copy_responses(
     _set_successful_job_responses(binding, b"rclonekit/copy", success=success, error=error)
 
 
+def _job_request_params(binding: FakeBinding) -> dict:
+    """The RC params the first job start sent, minus the `_async`/`_group`
+    envelope `RcloneRcJobClient.start` adds to every job it dispatches."""
+    request = json.loads(binding.rpc_calls[0][1])
+    return {key: value for key, value in request.items() if key not in {"_async", "_group"}}
+
+
 def test_copy_to_dispatches_to_rc_client_when_embedded() -> None:
     binding = FakeBinding()
     _set_successful_job_responses(binding, b"operations/copyfile")
@@ -594,6 +602,196 @@ def test_copy_dir_does_not_raise_on_failure() -> None:
     result = rclone.copy_dir("src:bucket", "dst:bucket")
 
     assert result.ok is False
+    rclone.close()
+
+
+def test_start_sync_dispatches_to_sync_sync_with_the_verified_payload() -> None:
+    binding = FakeBinding()
+    _set_successful_job_responses(binding, b"sync/sync")
+    rclone = Rclone(None, runtime=RcloneRuntime(binding))
+
+    handle = rclone.start_sync(_COPY_SRC, _COPY_DST, create_empty_src_dirs=True)
+    result = handle.wait(timeout=5.0)
+
+    assert result.ok is True
+    assert binding.rpc_calls[0][0] == b"sync/sync"
+    assert _job_request_params(binding) == {
+        "srcFs": _COPY_SRC,
+        "dstFs": _COPY_DST,
+        "createEmptySrcDirs": True,
+    }
+    rclone.close()
+
+
+def test_sync_applies_copys_tuned_profile_without_a_retries_setting() -> None:
+    """`_config.Retries` is read only by a command-level retry loop, which
+    `sync/sync` does not have - so `sync()` must not send one, even though
+    it otherwise shares `copy()`'s tuned profile.
+    """
+    binding = FakeBinding()
+    _set_successful_job_responses(binding, b"sync/sync")
+    rclone = Rclone(None, runtime=RcloneRuntime(binding))
+
+    result = rclone.sync(_COPY_SRC, _COPY_DST)
+
+    assert result.ok is True
+    assert json.loads(binding.rpc_calls[0][1])["_config"] == {
+        "Checkers": _COPY_DEFAULT_CHECKERS,
+        "Transfers": _COPY_DEFAULT_TRANSFERS,
+        "LowLevelRetries": _COPY_DEFAULT_LOW_LEVEL_RETRIES,
+    }
+    rclone.close()
+
+
+def test_sync_raises_operation_failed_error_by_default_on_failure() -> None:
+    binding = FakeBinding()
+    _set_successful_job_responses(binding, b"sync/sync", success=False, error="boom")
+    rclone = Rclone(None, runtime=RcloneRuntime(binding))
+
+    with pytest.raises(OperationFailedError):
+        rclone.sync(_COPY_SRC, _COPY_DST)
+    rclone.close()
+
+
+def test_sync_returns_a_failed_result_when_check_is_false() -> None:
+    binding = FakeBinding()
+    _set_successful_job_responses(binding, b"sync/sync", success=False, error="boom")
+    rclone = Rclone(None, runtime=RcloneRuntime(binding))
+
+    result = rclone.sync(_COPY_SRC, _COPY_DST, check=False)
+
+    assert result.ok is False
+    assert result.attempts == ()
+    rclone.close()
+
+
+def test_start_move_dispatches_to_sync_move_with_both_empty_dir_flags() -> None:
+    binding = FakeBinding()
+    _set_successful_job_responses(binding, b"sync/move")
+    rclone = Rclone(None, runtime=RcloneRuntime(binding))
+
+    handle = rclone.start_move(_COPY_SRC, _COPY_DST, delete_empty_src_dirs=True)
+    result = handle.wait(timeout=5.0)
+
+    assert result.ok is True
+    assert binding.rpc_calls[0][0] == b"sync/move"
+    assert _job_request_params(binding) == {
+        "srcFs": _COPY_SRC,
+        "dstFs": _COPY_DST,
+        "createEmptySrcDirs": False,
+        "deleteEmptySrcDirs": True,
+    }
+    rclone.close()
+
+
+def test_move_applies_copys_tuned_profile_without_a_retries_setting() -> None:
+    binding = FakeBinding()
+    _set_successful_job_responses(binding, b"sync/move")
+    rclone = Rclone(None, runtime=RcloneRuntime(binding))
+
+    result = rclone.move(_COPY_SRC, _COPY_DST)
+
+    assert result.ok is True
+    assert json.loads(binding.rpc_calls[0][1])["_config"] == {
+        "Checkers": _COPY_DEFAULT_CHECKERS,
+        "Transfers": _COPY_DEFAULT_TRANSFERS,
+        "LowLevelRetries": _COPY_DEFAULT_LOW_LEVEL_RETRIES,
+    }
+    rclone.close()
+
+
+def test_move_raises_operation_failed_error_by_default_on_failure() -> None:
+    binding = FakeBinding()
+    _set_successful_job_responses(binding, b"sync/move", success=False, error="boom")
+    rclone = Rclone(None, runtime=RcloneRuntime(binding))
+
+    with pytest.raises(OperationFailedError):
+        rclone.move(_COPY_SRC, _COPY_DST)
+    rclone.close()
+
+
+def test_move_returns_a_failed_result_when_check_is_false() -> None:
+    binding = FakeBinding()
+    _set_successful_job_responses(binding, b"sync/move", success=False, error="boom")
+    rclone = Rclone(None, runtime=RcloneRuntime(binding))
+
+    result = rclone.move(_COPY_SRC, _COPY_DST, check=False)
+
+    assert result.ok is False
+    rclone.close()
+
+
+def test_move_to_dispatches_to_operations_movefile_when_embedded() -> None:
+    binding = FakeBinding()
+    _set_successful_job_responses(binding, b"operations/movefile")
+    rclone = Rclone(None, runtime=RcloneRuntime(binding))
+
+    result = rclone.move_to("remote:a.txt", "remote:b.txt")
+
+    assert result.ok is True
+    assert binding.rpc_calls[0][0] == b"operations/movefile"
+    assert _job_request_params(binding) == {
+        "srcFs": "remote:",
+        "srcRemote": "a.txt",
+        "dstFs": "remote:",
+        "dstRemote": "b.txt",
+    }
+    rclone.close()
+
+
+def test_move_to_raises_operation_failed_error_by_default_on_failure() -> None:
+    binding = FakeBinding()
+    _set_successful_job_responses(binding, b"operations/movefile", success=False, error="boom")
+    rclone = Rclone(None, runtime=RcloneRuntime(binding))
+
+    with pytest.raises(OperationFailedError):
+        rclone.move_to("remote:a.txt", "remote:b.txt")
+    rclone.close()
+
+
+def test_move_to_returns_a_failed_result_when_check_is_false() -> None:
+    binding = FakeBinding()
+    _set_successful_job_responses(binding, b"operations/movefile", success=False, error="boom")
+    rclone = Rclone(None, runtime=RcloneRuntime(binding))
+
+    result = rclone.move_to("remote:a.txt", "remote:b.txt", check=False)
+
+    assert result.ok is False
+    rclone.close()
+
+
+def test_check_dispatches_to_operations_check_and_returns_a_typed_report() -> None:
+    binding = FakeBinding()
+    binding.rpc_responses_by_method[b"operations/check"] = (
+        200,
+        json.dumps(
+            {
+                "success": False,
+                "status": "1 differences found",
+                "hashType": "md5",
+                "missingOnDst": ["only-on-src.txt"],
+                "differ": ["differs.txt"],
+            }
+        ).encode("utf-8"),
+    )
+    rclone = Rclone(None, runtime=RcloneRuntime(binding))
+
+    report = rclone.check(_COPY_SRC, _COPY_DST, combined=True, checkers=64)
+
+    assert isinstance(report, CheckResult)
+    assert report.success is False
+    assert report.differ == ("differs.txt",)
+    assert report.missing_on_dst == ("only-on-src.txt",)
+    assert report.match == ()
+    assert binding.rpc_calls[0][0] == b"operations/check"
+    assert json.loads(binding.rpc_calls[0][1]) == {
+        "srcFs": _COPY_SRC,
+        "dstFs": _COPY_DST,
+        "oneWay": False,
+        "download": False,
+        "combined": True,
+        "_config": {"Checkers": 64},
+    }
     rclone.close()
 
 

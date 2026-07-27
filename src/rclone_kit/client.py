@@ -1,4 +1,25 @@
-"""Rclone implementation providing the public operation surface."""
+"""Rclone implementation providing the public operation surface.
+
+One difference between the directory-level transfer entry points is
+load-bearing enough to state here rather than only in the methods
+themselves. `copy()`/`start_copy()` run the fork's own `rclonekit/copy` RC
+method, which wraps `sync.CopyDir` in the same high-level retry loop the
+`rclone copy` CLI command uses and reports every attempt in the job
+output - which is why `OperationResult.attempts` is populated for a copy.
+There is no `rclonekit/sync` or `rclonekit/move` equivalent, so
+`sync()`/`start_sync()` and `move()`/`start_move()` call upstream
+`sync/sync`/`sync/move` directly: the underlying operation runs exactly
+ONCE, nothing is retried at the command level, and their
+`OperationResult.attempts` is always empty.
+
+That gap is not filled in Python on purpose. rclone's retry loop resets
+its accounting group's error state between attempts
+(`librclone/rclonekit/rc/copy.go`), which no out-of-process caller can do
+correctly; a naive Python retry would double-count stats and report
+errors from an abandoned attempt as if they belonged to the successful
+one. Per-file `low_level_retries` still applies to all of them - it is
+enforced inside the operation, not by the command loop.
+"""
 
 from __future__ import annotations
 
@@ -17,6 +38,7 @@ from rclone_kit.authorization import (
     RemoteConflictPolicy,
     Secret,
 )
+from rclone_kit.check import CheckResult
 from rclone_kit.config import Config
 from rclone_kit.convert import convert_to_filestr_list, convert_to_str
 from rclone_kit.diff import DiffItem, DiffOption
@@ -37,6 +59,7 @@ from rclone_kit.native.build_info import NativeBuildInfo
 from rclone_kit.native.library import resolve_library_path
 from rclone_kit.native.runtime import RcloneRuntime
 from rclone_kit.operation import OperationResult
+from rclone_kit.operations.check_ops_embedded import run_check_embedded
 from rclone_kit.operations.config_ops import (
     check_is_s3,
     fetch_config_paths_embedded,
@@ -71,6 +94,7 @@ from rclone_kit.operations.transfer_ops_embedded import (
     copy_file_to_embedded,
     copy_files_embedded,
     delete_files_embedded,
+    move_file_to_embedded,
     purge_dir_embedded,
     start_copy_files_embedded,
     start_delete_files_embedded,
@@ -117,12 +141,23 @@ _JOB_SHUTDOWN_DEADLINE_SECONDS = 10.0
 
 _CLEANUP_FAILURE_MESSAGE = "one or more tracked resources failed to close"
 
-# copy()'s aggressive tuned profile. copy_dir()/copy_remote() must not
-# inherit these - they use rclone's own defaults instead.
+# copy()'s aggressive tuned profile, shared by sync()/move() (minus
+# _COPY_DEFAULT_RETRIES, which only the retry-aware copy endpoint reads).
+# copy_dir()/copy_remote() must not inherit these - they use rclone's own
+# defaults instead.
 _COPY_DEFAULT_CHECKERS = 1000
 _COPY_DEFAULT_TRANSFERS = 32
 _COPY_DEFAULT_LOW_LEVEL_RETRIES = 10
 _COPY_DEFAULT_RETRIES = 3
+
+# RC method and `OperationResult.operation` label per directory-level
+# transfer entry point.
+_COPY_RC_METHOD = "rclonekit/copy"
+_SYNC_RC_METHOD = "sync/sync"
+_MOVE_RC_METHOD = "sync/move"
+_COPY_OPERATION = "copy"
+_SYNC_OPERATION = "sync"
+_MOVE_OPERATION = "move"
 
 
 def _copy_to_failure_detail(error: OperationFailedError) -> str:
@@ -530,6 +565,30 @@ class Rclone:
             check=check,
         )
 
+    def move_to(
+        self,
+        src: File | str,
+        dst: File | str,
+        check: bool | None = None,
+    ) -> OperationResult:
+        """Move one file from source to destination via
+        `operations/movefile`, the exact counterpart of `copy_to()`.
+
+        Destructive on the source: the file at `src` is gone once this
+        returns successfully. rclone moves server-side where the backend
+        supports it and falls back to copy-then-delete where it does not.
+
+        Warning - slow.
+        """
+        return move_file_to_embedded(
+            self._ensure_job_monitor(),
+            self._client_id,
+            self.config,
+            src,
+            dst,
+            check=check,
+        )
+
     def copy_files(
         self,
         src: str,
@@ -713,6 +772,47 @@ class Rclone:
         stream._on_close = lambda: self._file_streams.discard(stream)
         return stream
 
+    def _start_directory_transfer(
+        self,
+        method: str,
+        operation: str,
+        src: Dir | Remote | str,
+        dst: Dir | Remote | str,
+        options: TransferOptions,
+        *,
+        check: bool | None,
+        extra_params: Mapping[str, object] | None = None,
+    ) -> JobHandle:
+        """Start one `srcFs`/`dstFs`/`createEmptySrcDirs`-shaped RC transfer
+        method as a job and return its handle - the request-building body
+        `start_copy()`, `start_sync()`, and `start_move()` share.
+
+        `check` is stored on the returned handle and governs
+        `JobHandle.wait()`'s raise-on-failure behavior; it is never sent to
+        rclone. `extra_params` carries whatever the method needs beyond the
+        shared three (only `sync/move`'s `deleteEmptySrcDirs`, today).
+        """
+        src_str = convert_to_str(src)
+        dst_str = convert_to_str(dst)
+        params: dict[str, object] = {
+            "srcFs": encode_fs_spec(self.config, src_str),
+            "dstFs": encode_fs_spec(self.config, dst_str),
+            "createEmptySrcDirs": options.create_empty_src_dirs,
+            **(extra_params or {}),
+        }
+        config_overlay = encode_transfer_options_config(options)
+        if config_overlay:
+            params["_config"] = config_overlay
+        return self._ensure_job_monitor().start_job(
+            method,
+            params,
+            group=f"rclone-kit/{self._client_id}/{uuid.uuid4()}",
+            operation=operation,
+            source=src_str,
+            destination=dst_str,
+            check=get_check(check),
+        )
+
     def start_copy(
         self,
         src: Dir | Remote | str,
@@ -728,41 +828,109 @@ class Rclone:
     ) -> JobHandle:
         """Start an asynchronous directory copy and return a `JobHandle`.
 
-        `check` is stored on the returned handle and governs
-        `JobHandle.wait()`'s raise-on-failure behavior; it is never sent to
-        rclone. Uses the retry-aware `rclonekit/copy` RC method (not a bare
+        Uses the retry-aware `rclonekit/copy` RC method (not a bare
         `sync/copy`), which preserves the same high-level retry loop
-        `rclone copy` itself uses.
+        `rclone copy` itself uses and records every attempt in the
+        resulting `OperationResult.attempts`. `start_sync()`/`start_move()`
+        have no such loop; see this module's docstring.
         """
-        check = get_check(check)
-        src_str = convert_to_str(src)
-        dst_str = convert_to_str(dst)
-        options = TransferOptions(
-            checkers=checkers,
-            transfers=transfers,
-            low_level_retries=low_level_retries,
-            retries=retries,
-            multi_thread_streams=multi_thread_streams,
-            create_empty_src_dirs=create_empty_src_dirs,
-        )
-        params: dict[str, object] = {
-            "srcFs": encode_fs_spec(self.config, src_str),
-            "dstFs": encode_fs_spec(self.config, dst_str),
-            "createEmptySrcDirs": create_empty_src_dirs,
-        }
-        config_overlay = encode_transfer_options_config(options)
-        if config_overlay:
-            params["_config"] = config_overlay
-        monitor = self._ensure_job_monitor()
-        group = f"rclone-kit/{self._client_id}/{uuid.uuid4()}"
-        return monitor.start_job(
-            "rclonekit/copy",
-            params,
-            group=group,
-            operation="copy",
-            source=src_str,
-            destination=dst_str,
+        return self._start_directory_transfer(
+            _COPY_RC_METHOD,
+            _COPY_OPERATION,
+            src,
+            dst,
+            TransferOptions(
+                checkers=checkers,
+                transfers=transfers,
+                low_level_retries=low_level_retries,
+                retries=retries,
+                multi_thread_streams=multi_thread_streams,
+                create_empty_src_dirs=create_empty_src_dirs,
+            ),
             check=check,
+        )
+
+    def start_sync(
+        self,
+        src: Dir | Remote | str,
+        dst: Dir | Remote | str,
+        *,
+        transfers: int | None = None,
+        checkers: int | None = None,
+        multi_thread_streams: int | None = None,
+        low_level_retries: int | None = None,
+        create_empty_src_dirs: bool = False,
+        check: bool | None = None,
+    ) -> JobHandle:
+        """Start an asynchronous directory sync and return a `JobHandle`.
+
+        DESTRUCTIVE ON THE DESTINATION: sync makes `dst` identical to
+        `src`, which means deleting every file present at `dst` and absent
+        at `src`. Use `copy()` for the additive variant.
+
+        NO COMMAND-LEVEL RETRY: this calls upstream `sync/sync`, which
+        runs the underlying sync exactly once - unlike `start_copy()`'s
+        `rclonekit/copy`. The resulting `OperationResult.attempts` is
+        always empty, and there is deliberately no `retries` parameter
+        here because `_config.Retries` is read only by a command-level
+        retry loop this endpoint does not have. See this module's
+        docstring for why the loop is not reimplemented in Python.
+        """
+        return self._start_directory_transfer(
+            _SYNC_RC_METHOD,
+            _SYNC_OPERATION,
+            src,
+            dst,
+            TransferOptions(
+                checkers=checkers,
+                transfers=transfers,
+                low_level_retries=low_level_retries,
+                multi_thread_streams=multi_thread_streams,
+                create_empty_src_dirs=create_empty_src_dirs,
+            ),
+            check=check,
+        )
+
+    def start_move(
+        self,
+        src: Dir | Remote | str,
+        dst: Dir | Remote | str,
+        *,
+        transfers: int | None = None,
+        checkers: int | None = None,
+        multi_thread_streams: int | None = None,
+        low_level_retries: int | None = None,
+        create_empty_src_dirs: bool = False,
+        delete_empty_src_dirs: bool = False,
+        check: bool | None = None,
+    ) -> JobHandle:
+        """Start an asynchronous directory move and return a `JobHandle`.
+
+        DESTRUCTIVE ON THE SOURCE: every transferred file is removed from
+        `src`. Files already present and identical at `dst` are still
+        removed from `src`; files only at `dst` are left alone (a move is
+        not a sync). `delete_empty_src_dirs` additionally removes the
+        source directories left behind.
+
+        NO COMMAND-LEVEL RETRY, exactly as for `start_sync()`: this calls
+        upstream `sync/move`, so the move runs once,
+        `OperationResult.attempts` is always empty, and no `retries`
+        parameter is offered.
+        """
+        return self._start_directory_transfer(
+            _MOVE_RC_METHOD,
+            _MOVE_OPERATION,
+            src,
+            dst,
+            TransferOptions(
+                checkers=checkers,
+                transfers=transfers,
+                low_level_retries=low_level_retries,
+                multi_thread_streams=multi_thread_streams,
+                create_empty_src_dirs=create_empty_src_dirs,
+            ),
+            check=check,
+            extra_params={"deleteEmptySrcDirs": delete_empty_src_dirs},
         )
 
     def copy(
@@ -800,6 +968,151 @@ class Rclone:
             check=check,
         )
         return handle.wait()
+
+    def sync(
+        self,
+        src: Dir | str,
+        dst: Dir | str,
+        check: bool | None = None,
+        transfers: int | None = None,
+        checkers: int | None = None,
+        multi_thread_streams: int | None = None,
+        low_level_retries: int | None = None,
+        create_empty_src_dirs: bool = False,
+    ) -> OperationResult:
+        """Make `dst` identical to `src`, DELETING files that exist only at
+        the destination.
+
+        This is the destructive counterpart of `copy()`. Anything under
+        `dst` with no matching source path is removed; there is no undo and
+        no dry-run here. Keep it behind application-level authorization and
+        verify path construction (`check()`, `diff()`) before enabling it
+        in a production worker.
+
+        Runs the underlying sync exactly ONCE. `copy()` uses the fork's
+        retry-aware `rclonekit/copy` endpoint and reports each attempt in
+        `OperationResult.attempts`; `sync()` uses upstream `sync/sync`,
+        which has no command-level retry loop, so its `attempts` is always
+        empty and a transient failure is final. That is why no `retries`
+        parameter is offered - see this module's docstring for why the loop
+        is not reimplemented in Python. Per-file `low_level_retries` works
+        identically for both.
+
+        Each tuning parameter falls back to `copy()`'s tuned profile only
+        when it is left `None`; any explicit value is passed through
+        unchanged.
+        """
+        handle = self.start_sync(
+            src,
+            dst,
+            transfers=_COPY_DEFAULT_TRANSFERS if transfers is None else transfers,
+            checkers=_COPY_DEFAULT_CHECKERS if checkers is None else checkers,
+            low_level_retries=(
+                _COPY_DEFAULT_LOW_LEVEL_RETRIES if low_level_retries is None else low_level_retries
+            ),
+            multi_thread_streams=multi_thread_streams,
+            create_empty_src_dirs=create_empty_src_dirs,
+            check=check,
+        )
+        return handle.wait()
+
+    def move(
+        self,
+        src: Dir | str,
+        dst: Dir | str,
+        check: bool | None = None,
+        transfers: int | None = None,
+        checkers: int | None = None,
+        multi_thread_streams: int | None = None,
+        low_level_retries: int | None = None,
+        create_empty_src_dirs: bool = False,
+        delete_empty_src_dirs: bool = False,
+    ) -> OperationResult:
+        """Move a directory from `src` to `dst`, DELETING the source files
+        as they transfer.
+
+        Destructive on the source, not on the destination: files that
+        exist only at `dst` survive (that is `sync()`'s job, not this
+        one). `delete_empty_src_dirs=True` also removes the emptied source
+        directories afterwards. A failure part-way leaves some files moved
+        and the rest still at the source.
+
+        Runs the underlying move exactly ONCE, for the same reason
+        `sync()` does: upstream `sync/move` has no command-level retry
+        loop, so `OperationResult.attempts` is always empty and no
+        `retries` parameter is offered.
+
+        Tuning defaults match `copy()`'s tuned profile, as `sync()`'s do.
+        """
+        handle = self.start_move(
+            src,
+            dst,
+            transfers=_COPY_DEFAULT_TRANSFERS if transfers is None else transfers,
+            checkers=_COPY_DEFAULT_CHECKERS if checkers is None else checkers,
+            low_level_retries=(
+                _COPY_DEFAULT_LOW_LEVEL_RETRIES if low_level_retries is None else low_level_retries
+            ),
+            multi_thread_streams=multi_thread_streams,
+            create_empty_src_dirs=create_empty_src_dirs,
+            delete_empty_src_dirs=delete_empty_src_dirs,
+            check=check,
+        )
+        return handle.wait()
+
+    def check(
+        self,
+        src: Dir | Remote | str,
+        dst: Dir | Remote | str,
+        *,
+        one_way: bool = False,
+        download: bool = False,
+        combined: bool | None = None,
+        missing_on_src: bool | None = None,
+        missing_on_dst: bool | None = None,
+        match: bool | None = None,
+        differ: bool | None = None,
+        error: bool | None = None,
+        size_only: bool | None = None,
+        fast_list: bool = False,
+        checkers: int | None = None,
+    ) -> CheckResult:
+        """Compare `src` and `dst` and return a typed `CheckResult` report.
+
+        Alters neither side. `is_synced()` answers only "are these
+        identical"; this returns the full per-path report behind that
+        answer, so a caller can act on exactly which paths differ or are
+        missing.
+
+        Each report flag left `None` uses rclone's own documented default:
+        `combined` and `match` off, `missing_on_src`, `missing_on_dst`,
+        `differ`, and `error` on. `one_way` checks only that every source
+        file exists at the destination; `download` compares contents
+        instead of hashes, for backends that expose no usable hash.
+
+        Unlike `copy()`/`sync()`, this is a direct synchronous RC call
+        with no `JobHandle`: it cannot be cancelled or progress-polled.
+        See `operations/check_ops_embedded.py`'s module docstring for why.
+
+        A source and destination that do not match is a successful call
+        reporting `success=False`, never an exception.
+        """
+        return run_check_embedded(
+            self._rc_client,
+            self.config,
+            convert_to_str(src),
+            convert_to_str(dst),
+            one_way=one_way,
+            download=download,
+            combined=combined,
+            missing_on_src=missing_on_src,
+            missing_on_dst=missing_on_dst,
+            match=match,
+            differ=differ,
+            error=error,
+            size_only=size_only,
+            fast_list=fast_list,
+            checkers=checkers,
+        )
 
     def purge(self, src: Dir | str) -> OperationResult:
         """Purge a directory"""

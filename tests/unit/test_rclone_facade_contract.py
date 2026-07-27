@@ -8,6 +8,7 @@ from rclone_kit import Rclone as PublicRclone
 from rclone_kit.client import Rclone
 
 PUBLIC_OPERATION_NAMES = {
+    "check",
     "cleanup",
     "copy",
     "copy_bytes",
@@ -30,6 +31,8 @@ PUBLIC_OPERATION_NAMES = {
     "modtime",
     "modtime_dt",
     "mount",
+    "move",
+    "move_to",
     "obscure",
     "purge",
     "read_bytes",
@@ -39,6 +42,7 @@ PUBLIC_OPERATION_NAMES = {
     "serve_http",
     "size_file",
     "size_files",
+    "sync",
     "walk",
     "write_bytes",
     "write_text",
