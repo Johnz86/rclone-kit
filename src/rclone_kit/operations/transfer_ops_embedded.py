@@ -1,13 +1,15 @@
 """Embedded RC-backed transfer operations.
 
-`copy_file_to_embedded`/`purge_dir_embedded`/`cleanup_embedded`
+`copy_file_to_embedded`/`move_file_to_embedded`/`purge_dir_embedded`/
+`cleanup_embedded`
 (`read_bytes`/`read_text` are transitive, since `Rclone.read_bytes` only
 ever calls `self.copy_to`) each start their RC method as an asynchronous
 job through the shared
 `_JobMonitor` - via the same generic `_async: true` RC mechanism
 `start_copy()` uses, not a bespoke Go endpoint, since
-`operations/copyfile`/`operations/purge`/`operations/cleanup` need no
-retry loop of their own - then immediately wait on the resulting handle.
+`operations/copyfile`/`operations/movefile`/`operations/purge`/
+`operations/cleanup` need no retry loop of their own - then immediately
+wait on the resulting handle.
 This keeps a synchronous RC call from holding the runtime lock for the
 whole operation, and means these functions return a real
 `OperationResult`, never a synthetic `subprocess.CompletedProcess`;
@@ -69,6 +71,11 @@ if TYPE_CHECKING:
     from rclone_kit.file import File
     from rclone_kit.job import JobHandle, _JobMonitor
 
+_COPY_FILE_METHOD = "operations/copyfile"
+_MOVE_FILE_METHOD = "operations/movefile"
+_COPY_TO_OPERATION = "copy_to"
+_MOVE_TO_OPERATION = "move_to"
+
 _COPY_FILES_DEFAULT_CHECKERS = 1000
 _COPY_FILES_DEFAULT_TRANSFERS = 32
 _COPY_FILES_DEFAULT_LOW_LEVEL_RETRIES = 10
@@ -81,28 +88,29 @@ def _new_group(client_id: uuid.UUID) -> str:
     return f"rclone-kit/{client_id}/{uuid.uuid4()}"
 
 
-def copy_file_to_embedded(
+def _single_file_transfer_embedded(
     monitor: _JobMonitor,
     client_id: uuid.UUID,
     config: Config,
     src: File | str,
     dst: File | str,
-    check: bool | None = None,
+    *,
+    method: str,
+    operation: str,
+    check: bool | None,
 ) -> OperationResult:
-    """Copy one file from source to destination via `operations/copyfile`.
+    """Run one `srcFs`/`srcRemote`/`dstFs`/`dstRemote` RC method as a job
+    and wait for it - the whole body `copy_file_to_embedded` and
+    `move_file_to_embedded` share, which differ only by RC method name and
+    result label.
 
     Both sides split at their final path component: `operations/copyfile`
-    needs `srcFs`/`dstFs` to be navigable directory roots, never the bare
-    file paths themselves. Each side's resulting `fs` value is then passed
-    through `encode_fs_spec`, so a configured S3/B2 remote gets rclone's
-    RC config-object form (`_name`/`_root`/`no_check_bucket`) instead of a
-    plain string.
-
-    Raises `OperationFailedError` when `check` resolves `True` (the
-    default) and the job fails; otherwise returns an `OperationResult`
-    whose `.ok` reflects success.
+    and `operations/movefile` need `srcFs`/`dstFs` to be navigable
+    directory roots, never the bare file paths themselves. Each side's
+    resulting `fs` value is then passed through `encode_fs_spec`, so a
+    configured S3/B2 remote gets rclone's RC config-object form
+    (`_name`/`_root`/`no_check_bucket`) instead of a plain string.
     """
-    check = get_check(check)
     src_str = src if isinstance(src, str) else str(src.path)
     dst_str = dst if isinstance(dst, str) else str(dst.path)
     src_target = RcPath.parse(src_str).as_parent_and_name()
@@ -114,15 +122,74 @@ def copy_file_to_embedded(
         "dstRemote": dst_target.remote,
     }
     handle = monitor.start_job(
-        "operations/copyfile",
+        method,
         params,
         group=_new_group(client_id),
-        operation="copy_to",
+        operation=operation,
         source=src_str,
         destination=dst_str,
-        check=check,
+        check=get_check(check),
     )
     return handle.wait()
+
+
+def copy_file_to_embedded(
+    monitor: _JobMonitor,
+    client_id: uuid.UUID,
+    config: Config,
+    src: File | str,
+    dst: File | str,
+    check: bool | None = None,
+) -> OperationResult:
+    """Copy one file from source to destination via `operations/copyfile`.
+
+    Raises `OperationFailedError` when `check` resolves `True` (the
+    default) and the job fails; otherwise returns an `OperationResult`
+    whose `.ok` reflects success.
+    """
+    return _single_file_transfer_embedded(
+        monitor,
+        client_id,
+        config,
+        src,
+        dst,
+        method=_COPY_FILE_METHOD,
+        operation=_COPY_TO_OPERATION,
+        check=check,
+    )
+
+
+def move_file_to_embedded(
+    monitor: _JobMonitor,
+    client_id: uuid.UUID,
+    config: Config,
+    src: File | str,
+    dst: File | str,
+    check: bool | None = None,
+) -> OperationResult:
+    """Move one file from source to destination via `operations/movefile`.
+
+    Destructive on the source: the source file is gone once this returns
+    successfully. rclone performs a server-side move where the backend
+    supports one and falls back to copy-then-delete where it does not, so
+    a failure part-way can leave the file present on both sides - never on
+    neither.
+
+    Failure contract is `copy_file_to_embedded`'s exactly: raises
+    `OperationFailedError` when `check` resolves `True` (the default) and
+    the job fails, otherwise returns an `OperationResult` whose `.ok`
+    reflects success.
+    """
+    return _single_file_transfer_embedded(
+        monitor,
+        client_id,
+        config,
+        src,
+        dst,
+        method=_MOVE_FILE_METHOD,
+        operation=_MOVE_TO_OPERATION,
+        check=check,
+    )
 
 
 def purge_dir_embedded(

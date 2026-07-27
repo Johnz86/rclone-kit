@@ -1,5 +1,6 @@
 """Unit tests for the embedded RC-backed transfer operations (`copy_to`,
-`copy_files`, `delete_files`, `purge`, `cleanup`, `copy_bytes`).
+`move_to`, `copy_files`, `delete_files`, `purge`, `cleanup`,
+`copy_bytes`).
 
 Drives `_JobMonitor` with a fake `RcJobClient` (the same harness
 `tests/unit/test_job.py` uses), so these tests exercise request mapping and
@@ -27,6 +28,7 @@ from rclone_kit.operations.transfer_ops_embedded import (
     copy_file_to_embedded,
     copy_files_embedded,
     delete_files_embedded,
+    move_file_to_embedded,
     purge_dir_embedded,
 )
 from rclone_kit.rc.jobs import RcJobRef
@@ -208,6 +210,56 @@ def test_copy_file_to_embedded_wraps_failure_when_check_is_false() -> None:
     job_client.success = False
 
     result = copy_file_to_embedded(
+        _monitor(job_client),
+        _CLIENT_ID,
+        _empty_config(),
+        "remote:a.txt",
+        "remote:b.txt",
+        check=False,
+    )
+
+    assert result.ok is False
+
+
+def test_move_file_to_embedded_starts_a_movefile_job_labelled_move_to() -> None:
+    job_client = FakeJobClient()
+
+    result = move_file_to_embedded(
+        _monitor(job_client),
+        _CLIENT_ID,
+        _empty_config(),
+        "remote:path/to/a.txt",
+        "remote:other/b.txt",
+    )
+
+    assert result.ok is True
+    assert result.operation == "move_to"
+    assert len(job_client.starts) == 1
+    method, params, _group = job_client.starts[0]
+    assert method == "operations/movefile"
+    assert params == {
+        "srcFs": "remote:path/to",
+        "srcRemote": "a.txt",
+        "dstFs": "remote:other",
+        "dstRemote": "b.txt",
+    }
+
+
+def test_move_file_to_embedded_raises_operation_failed_error_by_default_on_failure() -> None:
+    job_client = FakeJobClient()
+    job_client.success = False
+
+    with pytest.raises(OperationFailedError):
+        move_file_to_embedded(
+            _monitor(job_client), _CLIENT_ID, _empty_config(), "remote:a.txt", "remote:b.txt"
+        )
+
+
+def test_move_file_to_embedded_wraps_failure_when_check_is_false() -> None:
+    job_client = FakeJobClient()
+    job_client.success = False
+
+    result = move_file_to_embedded(
         _monitor(job_client),
         _CLIENT_ID,
         _empty_config(),
