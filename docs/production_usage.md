@@ -135,6 +135,25 @@ verify_storage(rclone, {"archive", "source"})
 rclone, in that order. `config_show()` is useful for diagnostics, but its
 output can contain secrets; never include it in routine production logs.
 
+### Environment variables
+
+| Variable | Default | Effect |
+| --- | --- | --- |
+| `RCLONE_CONFIG` | unset | Config file used when no path is passed to `Rclone`. |
+| `RCLONE_KIT_TMP_DIR` | `<os temp dir>/rclone-kit` | Directory the library stages large temporary files in. |
+| `RCLONE_KIT_CLEANUP` | `1` | `0` keeps temporary config directories after exit, for debugging. |
+| `RCLONE_KIT_VERBOSE` | `0` | `1` enables verbose rclone command logging. |
+| `RCLONE_KIT_CHECK` | `1` | `0` disables post-transfer verification by default. |
+
+The library never writes into the current working directory. Byte-range
+chunk downloads and S3 multipart upload chunks are staged under
+`RCLONE_KIT_TMP_DIR`, which must be writable and large enough to hold the
+chunks in flight; point it at a dedicated volume when the process's
+temporary filesystem is small or memory-backed. Staged directories are
+removed when the operation finishes and, as a fallback, at process exit;
+chunk-store files left behind by a killed process are pruned after a day
+on the next run.
+
 ## Runtime lifecycle and multi-client processes
 
 `Rclone(config)` loads and initializes the native library the first time it's
@@ -1003,6 +1022,9 @@ Before rollout:
 - deploy on a certified OS and architecture with Python 3.13 or newer;
 - provide a writable home or temp directory for `Config`'s temporary config
   file, and enough VFS or temporary disk space if mounting;
+- size the staging area for concurrent byte-range and multipart chunks, and
+  set `RCLONE_KIT_TMP_DIR` when the default temporary filesystem is too
+  small or is memory-backed;
 - mount `rclone.conf` read-only from secret storage;
 - validate required remotes and a representative read during startup;
 - set explicit transfer, checker, partition-worker, and HTTP thread limits;

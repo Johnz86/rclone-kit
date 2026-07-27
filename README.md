@@ -75,6 +75,10 @@ Run any of them with `--help` for full usage.
 
 - `RCLONE_CONFIG`, path to an `rclone.conf` file. If unset, the embedded
   runtime's own default config path is used to discover the active config.
+- `RCLONE_KIT_TMP_DIR`, directory the library stages large temporary files
+  in - byte-range chunk downloads and S3 multipart upload chunks. Defaults
+  to an `rclone-kit` subdirectory of the operating system's temporary
+  directory; set it to place staged data on a specific volume.
 
 ## Contributing
 
