@@ -18,7 +18,7 @@ import pytest
 
 from rclone_kit import http_server as http_server_module
 from rclone_kit.exceptions import HttpFetchError
-from rclone_kit.http_server import FileList, HttpServer, _parse_files_and_dirs
+from rclone_kit.http_server import HttpServer, _parse_files_and_dirs, _ParsedDirectoryListing
 from rclone_kit.types import Range
 
 _TABLE_HEADER = """
@@ -50,7 +50,7 @@ def _stub_process() -> _StubServerHandle:
 @dataclass(frozen=True)
 class ParseCase:
     html: str
-    expected: FileList
+    expected: _ParsedDirectoryListing
 
 
 MIXED_FILES_AND_DIRS_CASE = ParseCase(
@@ -60,7 +60,7 @@ MIXED_FILES_AND_DIRS_CASE = ParseCase(
     + _row("archive.tar.gz")
     + _row("backups/")
     + _TABLE_FOOTER,
-    expected=FileList(
+    expected=_ParsedDirectoryListing(
         dirs=["photos/", "backups/"],
         files=["report.txt", "archive.tar.gz"],
     ),
@@ -68,24 +68,24 @@ MIXED_FILES_AND_DIRS_CASE = ParseCase(
 
 EMPTY_LISTING_CASE = ParseCase(
     html=_TABLE_HEADER + _TABLE_FOOTER,
-    expected=FileList(dirs=[], files=[]),
+    expected=_ParsedDirectoryListing(dirs=[], files=[]),
 )
 
 DIRECTORIES_ONLY_CASE = ParseCase(
     html=_TABLE_HEADER + _row("photos/") + _row("backups/") + _TABLE_FOOTER,
-    expected=FileList(dirs=["photos/", "backups/"], files=[]),
+    expected=_ParsedDirectoryListing(dirs=["photos/", "backups/"], files=[]),
 )
 
 FILES_ONLY_CASE = ParseCase(
     html=_TABLE_HEADER + _row("report.txt") + _row("archive.tar.gz") + _TABLE_FOOTER,
-    expected=FileList(dirs=[], files=["report.txt", "archive.tar.gz"]),
+    expected=_ParsedDirectoryListing(dirs=[], files=["report.txt", "archive.tar.gz"]),
 )
 
 HTML_ENTITY_NAME_CASE = ParseCase(
     html=_TABLE_HEADER
     + '<tr class="file"><td><span class="name"><a href="A%20%26%20B.txt">A &amp; B.txt</a></span></td></tr>'
     + _TABLE_FOOTER,
-    expected=FileList(dirs=[], files=["A & B.txt"]),
+    expected=_ParsedDirectoryListing(dirs=[], files=["A & B.txt"]),
 )
 
 PARSE_CASES = [

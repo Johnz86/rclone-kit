@@ -527,7 +527,7 @@ commit and follow the authorship and commit-message rules in `code_style.md`.
    module.
 3. Expose the operation through the curated `Rclone` client.
 4. Test empty inputs, explicit `False` options, caller-owned arguments,
-   credential redaction, and RC-call failure (`RcCallError`).
+   and RC-call failure (`RcCallError`).
 
 ### Change native build/toolchain handling
 
@@ -828,7 +828,7 @@ after all callers have migrated.
 - [ ] Public compatibility is preserved or has a documented deprecation.
 - [ ] Unit tests cover success, failure, cleanup, and platform edge cases.
 - [ ] Optional features still import without their extras installed.
-- [ ] Commands use argument lists and diagnostics redact credentials.
+- [ ] Diagnostics and log records never carry credentials or config secrets.
 - [ ] Formatting, Ruff, Pyright, and unit tests pass; `tests/native` passes
       too when a native build is available locally.
 - [ ] A canonical wheel build passes when distribution behavior changed.

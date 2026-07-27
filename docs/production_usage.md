@@ -99,9 +99,8 @@ rclone = Rclone(config)
 
 When a `Config` object is used, the library materializes it to a private
 temporary file at most once per `Config` instance. Do not print the
-`Config` or place credentials in source control. Command logging redacts
-recognized credential flags, but the safest production pattern is still a
-secret-backed config file.
+`Config` or place credentials in source control; the safest production
+pattern is a secret-backed config file.
 
 Use rclone's obscured password format when a backend requires it:
 
@@ -1086,9 +1085,8 @@ LogSettings.rclone_verbose(True)
 LogSettings.enable_upload_parts_logging(True)
 ```
 
-Verbose command logging is useful during rollout but can be noisy. The
-library redacts recognized credential arguments; the application remains
-responsible for not logging config contents or database URLs.
+Verbose logging is useful during rollout but can be noisy. The application
+remains responsible for not logging config contents or database URLs.
 
 Handle the typed library errors at the boundary where retry or alert policy
 is decided:

@@ -67,6 +67,14 @@ class SizeSuffix:
     _size: int
 
     def __init__(self, size: "int | str | SizeSuffix"):
+        """Build a size from a byte count, an rclone size string, or another
+        `SizeSuffix`.
+
+        `float` is deliberately rejected rather than truncated: a byte count
+        is integral, and silently dropping the fraction of a computed float
+        would corrupt part offsets and content lengths without any signal.
+        Callers holding a float must round explicitly.
+        """
         parsed_size: int
         if isinstance(size, SizeSuffix):
             parsed_size = size._size
@@ -74,8 +82,6 @@ class SizeSuffix:
             parsed_size = size
         elif isinstance(size, str):
             parsed_size = self._parse_size_suffix(size)
-        elif isinstance(size, float):
-            parsed_size = int(size)
         else:
             raise ValueError(f"Invalid type for size: {type(size)}")
         object.__setattr__(self, "_size", parsed_size)
