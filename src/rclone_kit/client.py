@@ -28,7 +28,6 @@ import uuid
 from collections.abc import Generator
 from datetime import datetime, timedelta
 from pathlib import Path
-from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING, Self
 
 from rclone_kit.authorization import (
@@ -59,6 +58,10 @@ from rclone_kit.native.build_info import NativeBuildInfo
 from rclone_kit.native.library import resolve_library_path
 from rclone_kit.native.runtime import RcloneRuntime
 from rclone_kit.operation import OperationResult
+from rclone_kit.operations.bytes_ops import (
+    read_bytes_via_temp_file,
+    write_bytes_via_temp_file,
+)
 from rclone_kit.operations.check_ops_embedded import run_check_embedded
 from rclone_kit.operations.config_ops import (
     check_is_s3,
@@ -66,7 +69,6 @@ from rclone_kit.operations.config_ops import (
     fetch_config_show_embedded,
     fetch_s3_credentials,
 )
-from rclone_kit.operations.copy_file_parts_resumable import copy_file_parts_resumable
 from rclone_kit.operations.listing_ops import (
     fetch_modtime,
     fetch_modtime_dt,
@@ -84,6 +86,11 @@ from rclone_kit.operations.listing_ops_embedded import (
     stream_diff_embedded,
 )
 from rclone_kit.operations.mount_ops_embedded import fetch_mount_embedded, fetch_s3_mount_embedded
+from rclone_kit.operations.s3_ops import (
+    copy_file_parts_s3_resumable,
+    make_s3_client,
+    upload_file_s3,
+)
 from rclone_kit.operations.serve_ops_embedded import (
     fetch_serve_http_embedded,
     fetch_serve_webdav_embedded,
@@ -98,37 +105,32 @@ from rclone_kit.operations.transfer_ops_embedded import (
     purge_dir_embedded,
     start_copy_files_embedded,
     start_delete_files_embedded,
+    start_directory_transfer_embedded,
 )
 from rclone_kit.operations.transfer_options import (
     COPY_TUNED_PROFILE,
     COPY_TUNED_PROFILE_WITHOUT_RETRIES,
     TransferOptions,
-    encode_transfer_options_config,
 )
-from rclone_kit.operations.walk import walk
+from rclone_kit.operations.traversal_ops import scan_missing_folders_from, walk_from
 from rclone_kit.optional_dependency import MissingOptionalDependencyError
 from rclone_kit.partitioned_job import PartitionedJobHandle
 from rclone_kit.rc.client import RcClient
-from rclone_kit.rc.fs_spec import encode_fs_spec
 from rclone_kit.rc.jobs import RcloneRcJobClient
 from rclone_kit.rc.list_stream import RcloneRcListStreamClient
 from rclone_kit.rc.mount import RcloneRcMountClient
 from rclone_kit.rc.serve import RcloneRcServeClient
 from rclone_kit.remote import Remote
-from rclone_kit.rpath import RPath
-from rclone_kit.s3.types import S3UploadTarget
-from rclone_kit.scan_missing_folders import scan_missing_folders
 from rclone_kit.serve_handle import ServeHandle
 from rclone_kit.types import (
     ListingOption,
     ModTimeStrategy,
     Order,
     PartInfo,
-    S3PathInfo,
     SizeResult,
     SizeSuffix,
 )
-from rclone_kit.util import get_check, get_verbose, make_temp_config_file, to_path
+from rclone_kit.util import get_verbose, make_temp_config_file
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -154,11 +156,6 @@ _MOVE_RC_METHOD = "sync/move"
 _COPY_OPERATION = "copy"
 _SYNC_OPERATION = "sync"
 _MOVE_OPERATION = "move"
-
-
-def _copy_to_failure_detail(error: OperationFailedError) -> str:
-    """Extract a stderr-like diagnostic string from a `copy_to()` failure."""
-    return error.result.error or ""
 
 
 def _to_rclone_conf(config: Config | Path | None) -> Config:
@@ -481,28 +478,9 @@ class Rclone:
         Yields:
             DirListing: Directory listing for each directory encountered
         """
-        dir_obj: Dir
-        if isinstance(src, Dir):
-            remote = src.remote
-            rpath = RPath(
-                remote=remote,
-                path=src.path.path,
-                name=src.path.name,
-                size=0,
-                mime_type="inode/directory",
-                mod_time="",
-                is_dir=True,
-            )
-            rpath.set_rclone(self)
-            dir_obj = Dir(rpath)
-        elif isinstance(src, str):
-            dir_obj = Dir(to_path(src, self))
-        elif isinstance(src, Remote):
-            dir_obj = Dir(src)
-        else:
-            raise TypeError(f"Invalid type for path: {type(src)}")
-
-        yield from walk(dir_obj, max_depth=max_depth, breadth_first=breadth_first, order=order)
+        yield from walk_from(
+            self, src, max_depth=max_depth, breadth_first=breadth_first, order=order
+        )
 
     def scan_missing_folders(
         self,
@@ -530,9 +508,7 @@ class Rclone:
         Yields:
             Dir: each directory present under `src` but missing under `dst`
         """
-        src_dir = Dir(to_path(src, self))
-        dst_dir = Dir(to_path(dst, self))
-        yield from scan_missing_folders(src=src_dir, dst=dst_dir, max_depth=max_depth, order=order)
+        yield from scan_missing_folders_from(self, src, dst, max_depth=max_depth, order=order)
 
     def cleanup(self, src: str) -> OperationResult:
         """Cleanup any resources used by the Rclone instance."""
@@ -779,34 +755,21 @@ class Rclone:
         check: bool | None,
         extra_params: Mapping[str, object] | None = None,
     ) -> JobHandle:
-        """Start one `srcFs`/`dstFs`/`createEmptySrcDirs`-shaped RC transfer
-        method as a job and return its handle - the request-building body
+        """Bind this client's monitor and config to
+        `start_directory_transfer_embedded`, the request-building body
         `start_copy()`, `start_sync()`, and `start_move()` share.
-
-        `check` is stored on the returned handle and governs
-        `JobHandle.wait()`'s raise-on-failure behavior; it is never sent to
-        rclone. `extra_params` carries whatever the method needs beyond the
-        shared three (only `sync/move`'s `deleteEmptySrcDirs`, today).
         """
-        src_str = convert_to_str(src)
-        dst_str = convert_to_str(dst)
-        params: dict[str, object] = {
-            "srcFs": encode_fs_spec(self.config, src_str),
-            "dstFs": encode_fs_spec(self.config, dst_str),
-            "createEmptySrcDirs": options.create_empty_src_dirs,
-            **(extra_params or {}),
-        }
-        config_overlay = encode_transfer_options_config(options)
-        if config_overlay:
-            params["_config"] = config_overlay
-        return self._ensure_job_monitor().start_job(
+        return start_directory_transfer_embedded(
+            self._ensure_job_monitor(),
+            self._client_id,
+            self.config,
             method,
-            params,
-            group=f"rclone-kit/{self._client_id}/{uuid.uuid4()}",
-            operation=operation,
-            source=src_str,
-            destination=dst_str,
-            check=get_check(check),
+            operation,
+            src,
+            dst,
+            options,
+            check=check,
+            extra_params=extra_params,
         )
 
     def start_copy(
@@ -1168,16 +1131,12 @@ class Rclone:
         return check_is_synced_embedded(self._rc_client, src, dst)
 
     def _s3_client(self, src: str, verbose: bool | None = None) -> S3Client:
-        """Get an S3 client."""
-        try:
-            from rclone_kit.s3.api import S3Client
-        except ModuleNotFoundError as error:
-            raise MissingOptionalDependencyError("S3 operations", "s3", "boto3") from error
+        """Get an S3 client.
 
-        verbose = get_verbose(verbose)
-        s3_creds = self.get_s3_credentials(remote=src, verbose=verbose)
-        s3_client = S3Client(s3_creds=s3_creds, verbose=verbose)
-        return s3_client
+        Raises `MissingOptionalDependencyError` when `boto3` is absent -
+        the optional-dependency boundary is inside `make_s3_client`.
+        """
+        return make_s3_client(self, src, verbose=verbose)
 
     def copy_file_s3(
         self,
@@ -1189,18 +1148,7 @@ class Rclone:
 
         Raises ValueError if `dst` is not an S3 remote.
         """
-        if not self.is_s3(dst):
-            raise ValueError(f"Destination is not an S3 remote: {dst}")
-        s3_client = self._s3_client(dst, verbose=verbose)
-
-        path_info: S3PathInfo = S3PathInfo.from_str(dst)
-        target: S3UploadTarget = S3UploadTarget(
-            src_file=src,
-            src_file_size=src.stat().st_size,
-            bucket_name=path_info.bucket,
-            s3_key=path_info.key,
-        )
-        s3_client.upload_file(target=target)
+        upload_file_s3(self, src, dst, verbose=verbose)
 
     def is_s3(self, dst: str) -> bool:
         """Check if a remote is an S3 remote."""
@@ -1215,14 +1163,10 @@ class Rclone:
         merge_threads: int = 4,
     ) -> None:
         """Copy parts of a file from source to destination."""
-        if dst.endswith("/"):
-            dst = dst[:-1]
-        dst_dir = f"{dst}-parts"
-
-        copy_file_parts_resumable(
-            access=self,
-            src=src,
-            dst_dir=dst_dir,
+        copy_file_parts_s3_resumable(
+            self,
+            src,
+            dst,
             part_infos=part_infos,
             upload_threads=upload_threads,
             merge_threads=merge_threads,
@@ -1245,17 +1189,7 @@ class Rclone:
 
         Raises RcloneCommandError if the underlying rclone command fails.
         """
-        with TemporaryDirectory() as tmpdir:
-            tmpfile = Path(tmpdir) / "file.bin"
-            tmpfile.write_bytes(data)
-            if self.is_s3(dst):
-                self.copy_file_s3(tmpfile, dst)
-                return
-
-            try:
-                self.copy_to(str(tmpfile), dst, check=True)
-            except OperationFailedError as error:
-                raise RcloneCommandError("copyto", _copy_to_failure_detail(error), error) from error
+        write_bytes_via_temp_file(self, data, dst)
 
     def read_bytes(self, src: str) -> bytes:
         """Read bytes from a file.
@@ -1263,18 +1197,7 @@ class Rclone:
         Raises RcloneCommandError if the underlying rclone command fails
         or if rclone reports success without producing an output file.
         """
-        with TemporaryDirectory() as tmpdir:
-            tmpfile = Path(tmpdir) / "file.bin"
-            try:
-                self.copy_to(src, str(tmpfile), check=True)
-            except OperationFailedError as error:
-                raise RcloneCommandError("copyto", _copy_to_failure_detail(error), error) from error
-
-            if not tmpfile.exists():
-                raise RcloneCommandError(
-                    "copyto", "", FileNotFoundError(f"{src} produced no output file")
-                )
-            return tmpfile.read_bytes()
+        return read_bytes_via_temp_file(self, src)
 
     def read_text(self, src: str) -> str:
         """Read text from a file."""

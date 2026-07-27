@@ -18,6 +18,12 @@ compatibility wrapper. A failure with `check=True` raises
 `OperationFailedError` (part of the execution-independent `OperationError`
 hierarchy), not a raw `RcCallError`.
 
+`start_directory_transfer_embedded` is the one function here that hands
+back a `JobHandle` instead of waiting on it: it builds the shared
+`srcFs`/`dstFs`/`createEmptySrcDirs` request behind
+`start_copy()`/`start_sync()`/`start_move()`, whose whole purpose is not
+to block. `copy()`/`sync()`/`move()` are those three plus a `wait()`.
+
 `copy_files_embedded`/`delete_files_embedded` are composite: each
 partitions its file list via `group_files()`, starts one job per
 partition (in batches of at most `max_partition_workers`, waiting for each
@@ -74,6 +80,7 @@ if TYPE_CHECKING:
     from rclone_kit.dir import Dir
     from rclone_kit.file import File
     from rclone_kit.job import JobHandle, _JobMonitor
+    from rclone_kit.remote import Remote
 
 _COPY_FILE_METHOD = "operations/copyfile"
 _MOVE_FILE_METHOD = "operations/movefile"
@@ -131,6 +138,54 @@ def _single_file_transfer_embedded(
         check=get_check(check),
     )
     return handle.wait()
+
+
+def start_directory_transfer_embedded(
+    monitor: _JobMonitor,
+    client_id: uuid.UUID,
+    config: Config,
+    method: str,
+    operation: str,
+    src: Dir | Remote | str,
+    dst: Dir | Remote | str,
+    options: TransferOptions,
+    *,
+    check: bool | None,
+    extra_params: Mapping[str, object] | None = None,
+) -> JobHandle:
+    """Start one `srcFs`/`dstFs`/`createEmptySrcDirs`-shaped RC transfer
+    method as a job and return its handle - the request-building body
+    `start_copy()`, `start_sync()`, and `start_move()` share.
+
+    Returns the handle without waiting, unlike every other function here:
+    these three entry points are the non-blocking half of the transfer
+    surface, and their blocking wrappers do the waiting themselves.
+
+    `check` is stored on the returned handle and governs
+    `JobHandle.wait()`'s raise-on-failure behavior; it is never sent to
+    rclone. `extra_params` carries whatever the method needs beyond the
+    shared three (only `sync/move`'s `deleteEmptySrcDirs`, today).
+    """
+    src_str = convert_to_str(src)
+    dst_str = convert_to_str(dst)
+    params: dict[str, object] = {
+        "srcFs": encode_fs_spec(config, src_str),
+        "dstFs": encode_fs_spec(config, dst_str),
+        "createEmptySrcDirs": options.create_empty_src_dirs,
+        **(extra_params or {}),
+    }
+    config_overlay = encode_transfer_options_config(options)
+    if config_overlay:
+        params["_config"] = config_overlay
+    return monitor.start_job(
+        method,
+        params,
+        group=_new_group(client_id),
+        operation=operation,
+        source=src_str,
+        destination=dst_str,
+        check=get_check(check),
+    )
 
 
 def copy_file_to_embedded(
