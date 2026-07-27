@@ -8,7 +8,7 @@ from threading import Thread
 
 from rclone_kit.dir import Dir
 from rclone_kit.dir_listing import DirListing
-from rclone_kit.operations.walk import walk_runner_depth_first
+from rclone_kit.operations.walk import walk
 from rclone_kit.types import ListingOption, Order
 
 logger = logging.getLogger(__name__)
@@ -65,16 +65,19 @@ def _async_diff_dir_walk_task(
         if src_dir not in dst_files_set:
             out_queue.put(src_dir_dir)
             if next_depth > 0 or next_depth == -1:
-                queue_dir_listing: Queue[DirListing | None] = Queue()
-                walk_runner_depth_first(
-                    dir=src_dir_dir,
-                    out_queue=queue_dir_listing,
-                    order=order,
-                    max_depth=next_depth,
-                )
-                while dirlisting := queue_dir_listing.get():
-                    if dirlisting is None:
-                        break
+                # `walk()` rather than `walk_runner_depth_first` into a local
+                # queue: the runner fills its queue synchronously and only
+                # returns once the whole subtree is in it, so that queue held
+                # every listing of a missing subtree in memory at once, and
+                # could not simply be bounded - a bounded queue would block
+                # the runner's own `put()` with no consumer running yet, in
+                # this very thread, and deadlock outright. `walk()` already
+                # solves exactly this by running the runner on its own thread
+                # behind a bounded queue, and re-raises the runner's failures
+                # to this caller just as the direct call did.
+                for dirlisting in walk(
+                    src_dir_dir, breadth_first=False, max_depth=next_depth, order=order
+                ):
                     for d in dirlisting.dirs:
                         out_queue.put(d)
         else:
