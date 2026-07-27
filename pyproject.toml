@@ -221,6 +221,21 @@ quote-style = "double"
 # do a bare `import verify_distribution`, mirroring the `pythonpath`
 # entry pytest itself uses for the same import at test-run time.
 extraPaths = ["scripts", "scripts/native"]
+# Without these, a bare `uv run pyright` (what an editor's language server
+# runs too) reports ~123 errors from code this project does not own or
+# type-check: `reference/` is a gitignored vendored checkout of rclone's
+# own sources, `native/` is the Go submodule, and `build/`/`dist/` are
+# generated. The contributing docs' explicit invocation already listed the
+# directories that matter; this makes the default invocation agree with it
+# instead of burying real findings in vendored noise.
+exclude = [
+    "**/__pycache__",
+    "**/.venv",
+    "build",
+    "dist",
+    "native",
+    "reference",
+]
 strict = [
     "src/rclone_kit/command_flags.py",
     "src/rclone_kit/settings.py",
