@@ -577,9 +577,105 @@ The build pipeline is substantially complete. Source improvements were
 delivered as focused correctness, security, dependency, logging, cleanup, and
 test changes, and the broad architectural phases (error model, resource
 ownership, S3 multipart, client architecture, paths and filesystems, test
-isolation) are now also complete - only typing/linting, release publication
-refinement, build isolation, and source distributions remain open. Improve
+isolation, and the post-1.1.1 review pass) are now also complete - only
+typing/linting, release publication refinement, build isolation, source
+distributions, and the deferred domain-layer freeze remain open. Improve
 them incrementally:
+
+The post-1.1.1 review pass is done. It closed six correctness defects, one
+scalability defect, one diagnostics-policy gap, and the three most
+conspicuous missing operations.
+
+Correctness: a `JobIdentityError` was treated as a transient poll failure
+and retried forever, so `wait()` blocked indefinitely and `close()` burned
+its whole shutdown deadline before leaving the runtime open permanently;
+it now settles the record terminally, reusing `JobState.LOST` rather than
+widening a public enum. `RPath`, `Remote`, `RealFS` and `RemoteFS` had
+identity semantics, which made `DirListing._dedupe` a no-op that filtered
+nothing and made two `FSPath`s for the same path compare unequal and hash
+apart - a test asserted the latter with `assertNotIn` and was inverted.
+`Rclone.close()` ran its cleanup loops unguarded, so one raising stream or
+session skipped the job shutdown and the runtime close; each release is
+now isolated and the failures surface as an `ExceptionGroup` after the
+runtime is closed. `copy()` selected its tuned defaults with `or`, so an
+explicit `0` was silently replaced. `TransferOptions` rejected
+`multi_thread_streams=0`, which is rclone's own documented way to disable
+multi-thread transfers (`doMultiThreadCopy` bails on `<= 1`). And
+`scan_missing_folders` still swallowed a real Ctrl+C through a handler
+that only existed for the retired `_thread.interrupt_main()` signalling.
+
+The library also wrote into the current working directory - `chunk_store/`,
+`chunks/`, and the opt-in upload log - which fails outright under a
+read-only or shared working directory and collides between processes
+started from the same one. `chunk_store.get_staging_root()` is now the one
+place that decides where large temporary files go, under the OS temp
+directory unless `RCLONE_KIT_TMP_DIR` says otherwise.
+
+Scalability: `fs_walk` submitted every discovered subdirectory
+immediately, so its pending-future map held one entry per directory in the
+whole tree (200 outstanding listings against a pool of 16 on a wide fake
+tree), and rescanned that set after every completion, making a walk
+quadratic. It is now bounded and O(1) per listing. Its docstring's claim
+of submission order was false and is now true. Separately, `_JobMonitor`
+issued one `job/status` per tracked job per tick, degrading the poll
+interval linearly with partition count; one `job/batch` per tick replaced
+it, behind an optional protocol with a same-tick fallback to per-job
+polling, since no native library is available to test the batch path
+against locally. `job/list` was rejected because `librclone.RPC` registers
+every RC call as a job, so its response is sized by all bookkeeping jobs in
+the process rather than by the tracked ones.
+
+Diagnostics are now a single policy. 26 `warnings.warn` sites were runtime
+events on a channel that deduplicates by (message, category, module,
+lineno), so per-item diagnostics fired once per process and were dropped
+thereafter; ~25 `locked_print` sites wrote library output straight to
+stdout. Both are `logging` now, `locked_print` is deleted, and `T201`
+moved from the global ignore list to narrow per-file exceptions, so a
+stray `print` under `src/rclone_kit/` is a lint error. `warnings` is kept
+only for a genuine `DeprecationWarning` and for `RemoteFS.mkdir`'s
+caller-misuse report.
+
+`sync()`/`start_sync()`, `move()`/`start_move()`, `move_to()` and
+`check()` fill the API's most conspicuous gaps, all on RC methods the
+pinned build already registers. `sync`/`move` run upstream
+`sync/sync`/`sync/move`, which have no equivalent of the fork's
+retry-aware `rclonekit/copy`: they run exactly once, their
+`OperationResult.attempts` is always empty, and they deliberately expose
+no `retries` parameter, because `_config.Retries` is read only by a
+command-level retry loop they do not have. A retry-aware `rclonekit/sync`
+and `rclonekit/move` in the fork would close that gap and is the natural
+follow-up; it needs a native rebuild and a submodule pin move, so it was
+out of scope here. `check()` runs synchronously and returns a validated
+frozen `CheckResult`, because its report *is* the RC output and the job
+types deliberately surface only `attempts` from that output.
+
+Hygiene in the same pass: the tuned copy profile was declared twice
+verbatim and is now one `TransferOptions` value applied through
+`with_defaults_from`, with a test pinning that `copy()` and `copy_files()`
+emit identical config; the post-CLI dead code in `util.py`
+(`format_command`, `find_free_port`/`port_is_free`,
+`clear_temp_config_file`) is gone along with two documentation claims that
+the library redacts credential arguments, which it no longer does;
+`http_server`'s private `FileList` no longer collides with the exported
+one; `rclone_verbose` lost the `from_api` back door that suppressed its
+own deprecation warning; `SizeSuffix` no longer accepts a `float` its
+annotation excluded; and `FileItem`'s module-level string interner became
+`sys.intern` after measurement showed the dict retained 211 MB for the
+process lifetime on a 2M-file low-fanout listing while `sys.intern` cost
+under 1 MB more and frees with the last referencing item.
+
+Two things were considered and deliberately not done. Mirroring the client
+under `rclone.s3`/`rclone.mounts`/`rclone.serve`/`rclone.config`
+namespaces was rejected: `rclone.config` is already a documented public
+`Config` attribute, so that namespace cannot exist without breaking it,
+and keeping every method as a delegating alias would have added a second
+spelling for a dozen calls while removing none. What the client actually
+had was misplaced logic, and that moved into `operations/` with no public
+name added, removed, or renamed. Retiring `RPath`'s mutable `rclone`
+back-reference and `set_rclone` - so `Dir.ls`/`Dir.walk`'s
+`assert self.path.rclone is not None` invariant stops being an assertion -
+is a breaking change needing a deprecation cycle, and belongs in its own
+release rather than bolted onto this pass.
 
 The error model phase is done: `rclone_kit.exceptions` now holds a typed
 `RcloneKitError` hierarchy (`FilesystemError`, `ConfigParseError`,
@@ -804,16 +900,25 @@ by loosening any signature). `group_files.py`'s one strict-mode finding
 (`reportUnnecessaryIsInstance` on `TreeNode.__repr__`'s child loop) is also
 resolved: `child_nodes: dict[str, "TreeNode"]` already guarantees every
 value is a `TreeNode`, so the `isinstance` check and its dead `else` branch
-were removed. Re-measured ignore-family counts as of this pass: `S101` 521,
-`ANN` 202, `TRY` 144, `FBT001`/`FBT002`/`FBT003` 143/82/17, `A001`/`A002`
-16/7, `PLR0913` 33, `PTH` 33, `PLR0911`/`PLR0912`/`PLR0915` 1/3/6 - re-run
-`uv run ruff check --select <CODE> --no-cache .` before trusting these in a
-future session, they will have moved again.
+were removed. Re-measured after the post-1.1.1 review pass: `S101` 1415,
+`TRY` 245 (`TRY003` 192 of it), `ANN` 211 (`ANN001` 129), `FBT001`/`FBT002`/
+`FBT003` 95/51/28, `PLR0913` 52, `PTH` 28, `A001`/`A002` 15/10. These are
+counted over `src`, `tests`, and `scripts` together, and the suite grew from
+834 to 974 tests during that pass, so they are not comparable like-for-like
+with the earlier figures above - re-run `uv run ruff check --select <CODE>
+--no-cache --statistics .` before trusting either set.
+
+`T201` left the ignore list entirely in that pass and is not in these
+counts: it is now enforced under `src/rclone_kit/`, with narrow per-file
+exceptions for the console scripts, `scripts/`, tests, and the single
+deliberate `print` implementing `Rclone.print()`.
 
 | Area | Current constraint | Preferred next step | Required evidence |
 |---|---|---|---|
 | Typing and linting | `S101`, `ANN`, `TRY`, `FBT001`/`FBT002`/`FBT003`, `A001`/`A002`, `PLR0913`, `PTH`, `PLR0911`/`PLR0912`/`PLR0915` remain globally ignored. Pyright `strict` now covers `command_flags.py`, `settings.py`, and `group_files.py` (all genuinely 0-error, not just near-zero) - every other module trialed (`access.py`, `backend.py`, `chunk_store.py`, `completed_process.py`, `config_discovery.py`) still returns only `reportMissingTypeStubs` cross-module noise from importing a non-strict sibling, so broadening the list further should wait on real `ANN` progress rather than adding more noisy modules. | Make progress on the `ANN` family (even partial) before adding more files to `strict = [...]`; re-trial candidates afterward, since most of the remaining ones are only "near-zero" because of the cross-module noise, not their own quality. | Quality gates pass with a smaller ignore surface and no broad `Any` escape hatches in changed code. |
 | Release publication | Done: `.github/workflows/release.yaml` builds, verifies, and publishes both certified wheels to PyPI via trusted publishing (OIDC, no stored token) on `v*` tags, gated by the `pypi-release` GitHub Environment. See `docs/release_process.md`. Artifact attestations (`actions/attest-build-provenance` or equivalent) are not yet added. | Add build provenance attestations to the `publish` job's uploaded wheels if supply-chain verification beyond trusted publishing becomes a requirement. | A published wheel carries a verifiable attestation, not just a trusted-publishing OIDC trail. |
+| Domain-layer freeze | `RPath` carries a mutable `rclone` back-reference wired in after construction by `set_rclone`, which is why it cannot be a frozen dataclass and why `Dir.__init__`/`Dir.ls`/`Dir.walk` each guard it with `assert self.path.rclone is not None` - a nullable-then-asserted invariant the type system cannot help with. The post-1.1.1 pass gave these types value semantics but left the back-reference in place, because removing it is a breaking change. | Make `RPath` frozen with no client reference and move `Dir.ls`/`Dir.walk`/`File.read_text` onto the client, which already has `rclone.ls(dir)`. Keep deprecated shims for one minor version. This also retires `access.py`'s `DomainAccess`/`ListingAccess` protocols and a large share of the untyped legacy surface the `ANN` rollout is waiting on. | The `assert`-as-invariant pattern is gone from `dir.py`, `RPath` is frozen, and the deprecation shims carry a documented removal version. |
+| Retry-aware `sync`/`move` | `sync()`/`move()` call upstream `sync/sync`/`sync/move`, which run once with no command-level retry loop, so their `OperationResult.attempts` is always empty and they expose no `retries` parameter - unlike `copy()`, which uses the fork's `rclonekit/copy`. The loop is deliberately not reimplemented in Python: rclone resets its accounting group's error state between attempts, which an out-of-process caller cannot do, so a naive retry would double-count stats and misattribute an abandoned attempt's errors. | Add `rclonekit/sync` and `rclonekit/move` to the fork alongside `rclonekit/copy`, reusing its `runWithRetries`. Needs a native rebuild and a submodule pin move, so it cannot ride along with a Python-only change. | `sync()`/`move()` report populated `attempts` and honour `retries`/`retries_sleep`, with the same job-level tests `copy()` has. |
 | Build isolation | Smoke tests poison proxies but do not enforce network denial. | Run them in a network-disabled container or namespace where supported. | A deliberate network attempt fails while the bundled executable still runs. |
 | Source distributions | An sdist cannot yet build a complete certified wheel. | Keep wheel-only releases, or add a verified artifact input/download hook and test sdist-to-wheel builds on every target. | A built-from-sdist wheel passes the same verifier and smoke test. |
 | `scan_missing_folders()` on hierarchical backends | Done: originally found live against `tests/live/gdrive`, where a dst root that doesn't exist at all on a backend with real directories (Drive, SFTP, local, ...) makes the underlying `ls()` call fail inside the background walk thread. That failure is now collected by the walk thread and re-raised by the generator to its own caller after teardown, instead of being signalled with `_thread.interrupt_main()` and then swallowed by the read loop's `except KeyboardInterrupt: pass`. Both halves of the old behaviour are gone: the caller sees the real error rather than an empty result, and a user-issued Ctrl+C during iteration propagates rather than silently truncating the scan. `_drain_queue_until_sentinel` keeps a deliberately narrower `KeyboardInterrupt` suppression, because abandoning that drain halfway leaves the walk thread blocked forever on the bounded queue it exists to empty. | Optional, only if callers turn out to want it: report a wholly missing dst root as "every src directory is missing" instead of raising the listing error. | `tests/unit/test_scan_missing_folders.py` proves a background walk failure reaches the caller, and that a consumer's `KeyboardInterrupt` propagates while the worker is still joined. |
