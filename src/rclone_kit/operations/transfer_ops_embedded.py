@@ -140,6 +140,21 @@ def _single_file_transfer_embedded(
     return handle.wait()
 
 
+COPY_RC_METHOD = "rclonekit/copy"
+SYNC_RC_METHOD = "sync/sync"
+MOVE_RC_METHOD = "sync/move"
+COPY_OPERATION = "copy"
+SYNC_OPERATION = "sync"
+MOVE_OPERATION = "move"
+"""RC method and `OperationResult.operation` label per directory-level
+transfer entry point.
+
+Declared beside `start_directory_transfer_embedded` rather than beside its
+`client.py` callers: they are that function's `method`/`operation`
+vocabulary, and pairing each RC method with the label its results carry is
+only checkable where the two are used together."""
+
+
 def start_directory_transfer_embedded(
     monitor: _JobMonitor,
     client_id: uuid.UUID,

@@ -69,6 +69,7 @@ from rclone_kit.operations.config_ops import (
     fetch_config_show_embedded,
     fetch_s3_credentials,
 )
+from rclone_kit.operations.db_ops import save_stream_to_db
 from rclone_kit.operations.listing_ops import (
     fetch_modtime,
     fetch_modtime_dt,
@@ -96,6 +97,12 @@ from rclone_kit.operations.serve_ops_embedded import (
     fetch_serve_webdav_embedded,
 )
 from rclone_kit.operations.transfer_ops_embedded import (
+    COPY_OPERATION,
+    COPY_RC_METHOD,
+    MOVE_OPERATION,
+    MOVE_RC_METHOD,
+    SYNC_OPERATION,
+    SYNC_RC_METHOD,
     cleanup_embedded,
     copy_bytes_embedded,
     copy_file_to_embedded,
@@ -113,7 +120,6 @@ from rclone_kit.operations.transfer_options import (
     TransferOptions,
 )
 from rclone_kit.operations.traversal_ops import scan_missing_folders_from, walk_from
-from rclone_kit.optional_dependency import MissingOptionalDependencyError
 from rclone_kit.partitioned_job import PartitionedJobHandle
 from rclone_kit.rc.client import RcClient
 from rclone_kit.rc.jobs import RcloneRcJobClient
@@ -147,15 +153,6 @@ logger = logging.getLogger(__name__)
 _JOB_SHUTDOWN_DEADLINE_SECONDS = 10.0
 
 _CLEANUP_FAILURE_MESSAGE = "one or more tracked resources failed to close"
-
-# RC method and `OperationResult.operation` label per directory-level
-# transfer entry point.
-_COPY_RC_METHOD = "rclonekit/copy"
-_SYNC_RC_METHOD = "sync/sync"
-_MOVE_RC_METHOD = "sync/move"
-_COPY_OPERATION = "copy"
-_SYNC_OPERATION = "sync"
-_MOVE_OPERATION = "move"
 
 
 def _to_rclone_conf(config: Config | Path | None) -> Config:
@@ -272,33 +269,26 @@ class Rclone:
         return errors
 
     def close(self) -> None:
-        """Release resources this client owns. Idempotent.
+        """Release every resource this client owns. Idempotent.
 
-        Cancels and waits for every job this client started (regardless of
-        who owns the embedded runtime - the runtime may be injected and
-        outlive this client, but jobs this client started are still its own
-        responsibility) before finalizing the runtime. Raises
-        `OperationShutdownError` and leaves the runtime open, rather than
-        reporting a false close, if a job cannot be confirmed settled
-        within the shutdown deadline. Also stops every `serve/start`
-        instance, unmounts every `mount/mount` instance, closes every
-        `ls_stream()` cursor, and cancels every authorization session this
-        client started but never explicitly disposed: this client tracks
-        only the resources it owns.
+        Cancels and waits for the jobs this client started, then stops its
+        `serve/start` instances, unmounts its `mount/mount` instances,
+        closes its `ls_stream()` cursors, and cancels its undisposed
+        authorization sessions. Only what this client owns: jobs it
+        started stay its responsibility even when the runtime is injected,
+        while an injected runtime itself is left open, matching
+        `RcloneRuntime`'s single-owner closing rule.
 
-        Every one of those resource releases is failure-isolated, so one
-        raising resource can never cost the others their release, the job
-        shutdown, or the runtime close. Their failures are logged and then
-        re-raised as an `ExceptionGroup` *after* the runtime is closed, so
-        a caller is still told the close was incomplete without any
-        resource being leaked to say so. An unsettled job outranks them:
-        `OperationShutdownError` propagates immediately (runtime left open,
-        as documented above) and the already-logged resource failures do
-        not mask it.
+        Each release is failure-isolated, so one raising resource cannot
+        cost the others their release, the job shutdown, or the runtime
+        close; their failures are logged and re-raised as an
+        `ExceptionGroup` *after* the runtime is closed, reporting an
+        incomplete close without leaking a resource to do so.
 
-        Only closes the embedded runtime itself if this client created it;
-        an injected `runtime` outlives this client, matching
-        `RcloneRuntime`'s own single-owner closing rule.
+        A job that cannot be confirmed settled within the shutdown
+        deadline outranks all of that: `OperationShutdownError` propagates
+        immediately and the runtime is left open, rather than reporting a
+        close that did not happen.
         """
         cleanup_errors = self._close_tracked_resources()
         if self._job_monitor is not None:
@@ -344,15 +334,12 @@ class Rclone:
         max_depth: int = -1,
         fast_list: bool = False,
     ) -> EmbeddedFilesStream:
-        """
-        List files in the given path, as a bounded-memory pull stream.
+        """List files under `src` as a bounded-memory pull stream, backed
+        by `rclonekit/liststream/*`.
 
-        Args:
-            src: Remote path to list
-            max_depth: Maximum recursion depth (-1 for unlimited)
-            fast_list: Use fast list (only use when getting THE entire data repository from the root/bucket, or it's small)
-
-        Backed by `rclonekit/liststream/*` rather than a subprocess.
+        `max_depth=-1` recurses without limit. `fast_list` trades memory
+        for round-trips inside rclone; use it only when listing an entire
+        repository from its root/bucket, or when the tree is small.
         """
         stream = fetch_ls_stream_embedded(
             RcloneRcListStreamClient(self._rc_client), src, max_depth, fast_list
@@ -366,27 +353,17 @@ class Rclone:
         max_depth: int = -1,
         fast_list: bool = False,
     ) -> None:
+        """Stream a listing of `src` into the database at `db_url`
+        (`sqlite:///data.db`, `mysql://...`, `postgres://...`).
+
+        `src` populates an entire table, so pass the root-most path you
+        want represented. See `ls_stream()` for `max_depth`/`fast_list`.
+
+        Raises `MissingOptionalDependencyError` without the `database`
+        extra.
         """
-        Save files to a database (sqlite, mysql, postgres)
-
-        Args:
-            src: Remote path to list, this will be used to populate an entire table, so always use the root-most path.
-            db_url: Database URL, like sqlite:///data.db or mysql://user:pass@localhost/db or postgres://user:pass@localhost/db
-            max_depth: Maximum depth to traverse (-1 for unlimited)
-            fast_list: Use fast list (only use when getting THE entire data repository from the root/bucket)
-
-        """
-        try:
-            from rclone_kit.db import DB
-        except ModuleNotFoundError as error:
-            raise MissingOptionalDependencyError(
-                "Database operations", "database", "sqlmodel"
-            ) from error
-
-        db = DB(db_url)
         with self.ls_stream(src, max_depth, fast_list) as stream:
-            for page in stream.files_paged(page_size=10000):
-                db.add_files(page)
+            save_stream_to_db(stream, db_url)
 
     def ls(
         self,
@@ -490,23 +467,14 @@ class Rclone:
         order: Order = Order.NORMAL,
     ) -> Generator[Dir]:
         """Yield every directory present under `src` that is missing under
-        the corresponding relative path in `dst`.
+        the corresponding relative path in `dst` (`max_depth=-1` for
+        unlimited).
 
-        A folder found missing is yielded once for itself; if it has a
-        subtree, every descendant directory is yielded too (walked via
-        `detail.walk.walk_runner_depth_first`, since a whole missing
-        subtree needs no further src/dst comparison - none of it exists on
-        the `dst` side by definition). Folders present under `src` and
-        `dst` at a given relative path are recursed into, in case they
+        A folder found missing is yielded once for itself, then its whole
+        subtree is walked and every descendant yielded too: none of it can
+        exist on the `dst` side, so no further comparison is needed.
+        Folders present on both sides are recursed into, in case they
         diverge further down.
-
-        Args:
-            src: Source directory or Remote to walk through
-            dst: Destination directory or Remote to walk through
-            max_depth: Maximum depth to traverse (-1 for unlimited)
-
-        Yields:
-            Dir: each directory present under `src` but missing under `dst`
         """
         yield from scan_missing_folders_from(self, src, dst, max_depth=max_depth, order=order)
 
@@ -787,15 +755,12 @@ class Rclone:
     ) -> JobHandle:
         """Start an asynchronous directory copy and return a `JobHandle`.
 
-        Uses the retry-aware `rclonekit/copy` RC method (not a bare
-        `sync/copy`), which preserves the same high-level retry loop
-        `rclone copy` itself uses and records every attempt in the
-        resulting `OperationResult.attempts`. `start_sync()`/`start_move()`
-        have no such loop; see this module's docstring.
+        Retry-aware: uses `rclonekit/copy`, so `OperationResult.attempts`
+        is populated. See this module's docstring.
         """
         return self._start_directory_transfer(
-            _COPY_RC_METHOD,
-            _COPY_OPERATION,
+            COPY_RC_METHOD,
+            COPY_OPERATION,
             src,
             dst,
             TransferOptions(
@@ -827,17 +792,12 @@ class Rclone:
         `src`, which means deleting every file present at `dst` and absent
         at `src`. Use `copy()` for the additive variant.
 
-        NO COMMAND-LEVEL RETRY: this calls upstream `sync/sync`, which
-        runs the underlying sync exactly once - unlike `start_copy()`'s
-        `rclonekit/copy`. The resulting `OperationResult.attempts` is
-        always empty, and there is deliberately no `retries` parameter
-        here because `_config.Retries` is read only by a command-level
-        retry loop this endpoint does not have. See this module's
-        docstring for why the loop is not reimplemented in Python.
+        No command-level retry, hence no `retries` parameter. See this
+        module's docstring.
         """
         return self._start_directory_transfer(
-            _SYNC_RC_METHOD,
-            _SYNC_OPERATION,
+            SYNC_RC_METHOD,
+            SYNC_OPERATION,
             src,
             dst,
             TransferOptions(
@@ -871,14 +831,12 @@ class Rclone:
         not a sync). `delete_empty_src_dirs` additionally removes the
         source directories left behind.
 
-        NO COMMAND-LEVEL RETRY, exactly as for `start_sync()`: this calls
-        upstream `sync/move`, so the move runs once,
-        `OperationResult.attempts` is always empty, and no `retries`
-        parameter is offered.
+        No command-level retry, hence no `retries` parameter. See this
+        module's docstring.
         """
         return self._start_directory_transfer(
-            _MOVE_RC_METHOD,
-            _MOVE_OPERATION,
+            MOVE_RC_METHOD,
+            MOVE_OPERATION,
             src,
             dst,
             TransferOptions(
@@ -952,14 +910,9 @@ class Rclone:
         verify path construction (`check()`, `diff()`) before enabling it
         in a production worker.
 
-        Runs the underlying sync exactly ONCE. `copy()` uses the fork's
-        retry-aware `rclonekit/copy` endpoint and reports each attempt in
-        `OperationResult.attempts`; `sync()` uses upstream `sync/sync`,
-        which has no command-level retry loop, so its `attempts` is always
-        empty and a transient failure is final. That is why no `retries`
-        parameter is offered - see this module's docstring for why the loop
-        is not reimplemented in Python. Per-file `low_level_retries` works
-        identically for both.
+        Runs exactly ONCE, so a transient failure is final and no
+        `retries` parameter is offered; per-file `low_level_retries` still
+        applies. See this module's docstring.
 
         Each tuning parameter falls back to `copy()`'s tuned profile only
         when it is left `None`; any explicit value is passed through
@@ -1001,12 +954,8 @@ class Rclone:
         directories afterwards. A failure part-way leaves some files moved
         and the rest still at the source.
 
-        Runs the underlying move exactly ONCE, for the same reason
-        `sync()` does: upstream `sync/move` has no command-level retry
-        loop, so `OperationResult.attempts` is always empty and no
-        `retries` parameter is offered.
-
-        Tuning defaults match `copy()`'s tuned profile, as `sync()`'s do.
+        Runs exactly ONCE and offers no `retries`, as `sync()` does.
+        Tuning defaults match `copy()`'s tuned profile.
         """
         tuned = TransferOptions(
             checkers=checkers, transfers=transfers, low_level_retries=low_level_retries
