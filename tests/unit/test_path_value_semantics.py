@@ -177,6 +177,16 @@ def test_remotes_with_different_names_are_different_values() -> None:
     assert first != second
 
 
+def _dedupe_records(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    """Only the records `dir_listing` itself emitted.
+
+    `caplog` captures at the root, so any background thread logging during
+    the test - a `_JobMonitor` poller from another module's fixture, for
+    instance - would otherwise be counted here.
+    """
+    return [record for record in caplog.records if record.name == dir_listing.logger.name]
+
+
 def test_dir_listing_collapses_duplicate_file_entries(caplog: pytest.LogCaptureFixture) -> None:
     duplicate = _rpath(BASELINE_ENTRY)
 
@@ -192,7 +202,7 @@ def test_dir_listing_collapses_duplicate_dir_entries(caplog: pytest.LogCaptureFi
         listing = DirListing([_rpath(ENTRY_AS_DIRECTORY), _rpath(ENTRY_AS_DIRECTORY)])
 
     assert len(listing.dirs) == 1
-    assert len(caplog.records) == 1
+    assert len(_dedupe_records(caplog)) == 1
 
 
 def test_dir_listing_reports_every_dropped_duplicate(caplog: pytest.LogCaptureFixture) -> None:
@@ -208,7 +218,7 @@ def test_dir_listing_reports_every_dropped_duplicate(caplog: pytest.LogCaptureFi
         listing = DirListing([_rpath(BASELINE_ENTRY), *repeats])
 
     assert len(listing.files) == 1
-    assert len(caplog.records) == _REPEATED_ENTRY_COUNT
+    assert len(_dedupe_records(caplog)) == _REPEATED_ENTRY_COUNT
 
 
 def test_dir_listing_keeps_entries_that_disagree_on_metadata() -> None:

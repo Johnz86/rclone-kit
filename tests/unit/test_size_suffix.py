@@ -25,6 +25,9 @@ REVERSED_RANGE = InvalidRangeCase(start=2, end=1)
 INVALID_RANGE_CASES = [NEGATIVE_RANGE_START, EMPTY_RANGE, REVERSED_RANGE]
 INVALID_RANGE_IDS = ["negative_start", "empty", "reversed"]
 
+UNSUPPORTED_SIZE_VALUES: list[Any] = [1.5, None, b"1K"]
+UNSUPPORTED_SIZE_IDS = ["float", "none", "bytes"]
+
 
 class RcloneSuffixSize(unittest.TestCase):
     """Test rclone functionality."""
@@ -84,6 +87,12 @@ def test_in_place_addition_returns_a_new_value() -> None:
 def test_range_rejects_invalid_bounds(case: InvalidRangeCase) -> None:
     with pytest.raises(ValueError):
         Range(case.start, case.end)
+
+
+@pytest.mark.parametrize("value", UNSUPPORTED_SIZE_VALUES, ids=UNSUPPORTED_SIZE_IDS)
+def test_size_suffix_rejects_unsupported_types(value: Any) -> None:
+    with pytest.raises(ValueError):
+        SizeSuffix(value)
 
 
 def test_zero_byte_file_has_no_multipart_parts() -> None:

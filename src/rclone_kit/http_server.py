@@ -43,7 +43,15 @@ _range = range
 
 
 @dataclass
-class FileList:
+class _ParsedDirectoryListing:
+    """The entry names `_FileListingHTMLParser` recovered from one
+    `serve http` autoindex page.
+
+    Distinct from the public `rclone_kit.FileList`, which carries resolved
+    `Dir` and `File` objects; these are the raw names as they appeared in
+    the HTML, directories still keeping their trailing slash.
+    """
+
     dirs: list[str]
     files: list[str]
 
@@ -111,11 +119,11 @@ class _FileListingHTMLParser(HTMLParser):
             self._in_row = False
 
 
-def _parse_files_and_dirs(html: str) -> FileList:
+def _parse_files_and_dirs(html: str) -> _ParsedDirectoryListing:
     parser = _FileListingHTMLParser()
     parser.feed(html)
     parser.close()
-    return FileList(dirs=parser.dirs, files=parser.files)
+    return _ParsedDirectoryListing(dirs=parser.dirs, files=parser.files)
 
 
 def _concatenate_chunks(chunk_files: list[Path], dst_path: Path) -> None:

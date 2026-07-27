@@ -9,7 +9,7 @@ behavior beyond "is it still alive" and "dispose it", both of which
 `_DisposableServerHandle` protocol.
 
 The actual bound address always comes from `serve/start`'s own response,
-never a Python-side `find_free_port()` guess: requesting port `0` lets
+never a Python-side free-port guess: requesting port `0` lets
 rclone bind an ephemeral port and report back what it actually chose,
 avoiding the inherent TOCTOU race a separate "find a free port, hope
 rclone binds it" step would have.
