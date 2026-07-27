@@ -102,7 +102,7 @@ from rclone_kit.types import (
 from rclone_kit.util import get_check, get_verbose, make_temp_config_file, to_path
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Callable, Mapping
 
     from rclone_kit.rc.mount import RcMountClient
     from rclone_kit.rc.serve import RcServeClient
@@ -114,6 +114,8 @@ _DEFAULT_AUTHORIZATION_EXPIRES_IN = timedelta(minutes=10)
 logger = logging.getLogger(__name__)
 
 _JOB_SHUTDOWN_DEADLINE_SECONDS = 10.0
+
+_CLEANUP_FAILURE_MESSAGE = "one or more tracked resources failed to close"
 
 # copy()'s aggressive tuned profile. copy_dir()/copy_remote() must not
 # inherit these - they use rclone's own defaults instead.
@@ -205,6 +207,42 @@ class Rclone:
             return rclone_conf
         return rclone_conf.materialize(make_temp_config_file)
 
+    def _tracked_resource_closers(self) -> list[Callable[[], None]]:
+        """Snapshot one closing callable per tracked resource, in the order
+        `close()` must release them: serve and mount instances first (they
+        hold VFS state on top of the runtime), then read cursors, then
+        authorization sessions.
+
+        Snapshotted up front because each callable removes its own resource
+        from the set it was taken from, via the `_on_dispose`/`_on_close`
+        hook `_track_*` installed.
+        """
+        return [
+            *(handle.dispose for handle in self._serve_handles),
+            *(mount_handle.dispose for mount_handle in self._mount_handles),
+            *(stream.close for stream in self._file_streams),
+            *(session.close for session in self._authorization_sessions),
+        ]
+
+    def _close_tracked_resources(self) -> list[Exception]:
+        """Close every tracked resource, isolating failures, and return the
+        ones that raised.
+
+        Isolation is what keeps a single misbehaving resource from
+        stranding the native runtime: an escaping exception here would skip
+        the remaining resources, the job shutdown, and
+        `RcloneRuntime.close()`, and a runtime that is never finalized
+        cannot be replaced for the rest of the process's life.
+        """
+        errors: list[Exception] = []
+        for close_resource in self._tracked_resource_closers():
+            try:
+                close_resource()
+            except Exception as error:
+                logger.exception("error releasing a tracked resource during Rclone.close()")
+                errors.append(error)
+        return errors
+
     def close(self) -> None:
         """Release resources this client owns. Idempotent.
 
@@ -220,18 +258,21 @@ class Rclone:
         client started but never explicitly disposed: this client tracks
         only the resources it owns.
 
+        Every one of those resource releases is failure-isolated, so one
+        raising resource can never cost the others their release, the job
+        shutdown, or the runtime close. Their failures are logged and then
+        re-raised as an `ExceptionGroup` *after* the runtime is closed, so
+        a caller is still told the close was incomplete without any
+        resource being leaked to say so. An unsettled job outranks them:
+        `OperationShutdownError` propagates immediately (runtime left open,
+        as documented above) and the already-logged resource failures do
+        not mask it.
+
         Only closes the embedded runtime itself if this client created it;
         an injected `runtime` outlives this client, matching
         `RcloneRuntime`'s own single-owner closing rule.
         """
-        for handle in list(self._serve_handles):
-            handle.dispose()
-        for mount_handle in list(self._mount_handles):
-            mount_handle.dispose()
-        for stream in list(self._file_streams):
-            stream.close()
-        for session in list(self._authorization_sessions):
-            session.close()
+        cleanup_errors = self._close_tracked_resources()
         if self._job_monitor is not None:
             all_settled = self._job_monitor.shutdown(
                 deadline_seconds=_JOB_SHUTDOWN_DEADLINE_SECONDS
@@ -243,6 +284,8 @@ class Rclone:
                 )
         if self._owns_embedded_runtime:
             self._embedded_runtime.close()
+        if cleanup_errors:
+            raise ExceptionGroup(_CLEANUP_FAILURE_MESSAGE, cleanup_errors)
 
     def __enter__(self) -> Self:
         return self
@@ -735,6 +778,11 @@ class Rclone:
     ) -> OperationResult:
         """Copy files from source to destination.
 
+        Each tuning parameter falls back to `copy()`'s tuned profile only
+        when it is left `None`; any explicit value is passed through
+        unchanged, so a caller is never silently given a different setting
+        than the one they asked for.
+
         Args:
             src: Source directory
             dst: Destination directory
@@ -742,10 +790,12 @@ class Rclone:
         handle = self.start_copy(
             src,
             dst,
-            transfers=transfers or _COPY_DEFAULT_TRANSFERS,
-            checkers=checkers or _COPY_DEFAULT_CHECKERS,
-            low_level_retries=low_level_retries or _COPY_DEFAULT_LOW_LEVEL_RETRIES,
-            retries=retries or _COPY_DEFAULT_RETRIES,
+            transfers=_COPY_DEFAULT_TRANSFERS if transfers is None else transfers,
+            checkers=_COPY_DEFAULT_CHECKERS if checkers is None else checkers,
+            low_level_retries=(
+                _COPY_DEFAULT_LOW_LEVEL_RETRIES if low_level_retries is None else low_level_retries
+            ),
+            retries=_COPY_DEFAULT_RETRIES if retries is None else retries,
             multi_thread_streams=multi_thread_streams,
             check=check,
         )

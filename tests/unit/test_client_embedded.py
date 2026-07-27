@@ -9,15 +9,31 @@ through the `runtime=` constructor parameter, so these tests exercise
 """
 
 import json
+from collections.abc import Callable
+from dataclasses import dataclass
+from pathlib import Path
+from typing import cast
 
 import pytest
 
-from rclone_kit.client import Rclone
+from rclone_kit.authorization import AuthorizationSession
+from rclone_kit.client import (
+    _COPY_DEFAULT_CHECKERS,
+    _COPY_DEFAULT_LOW_LEVEL_RETRIES,
+    _COPY_DEFAULT_RETRIES,
+    _COPY_DEFAULT_TRANSFERS,
+    Rclone,
+)
 from rclone_kit.config import Config
-from rclone_kit.exceptions import OperationFailedError
+from rclone_kit.embedded_file_stream import EmbeddedFilesStream
+from rclone_kit.exceptions import OperationFailedError, OperationShutdownError
+from rclone_kit.job import _JobMonitor
 from rclone_kit.native.runtime import RcloneRuntime
 from rclone_kit.remote import Remote
 from rclone_kit.serve_handle import ServeHandle
+
+_COPY_SRC = "src:bucket"
+_COPY_DST = "dst:bucket"
 
 _BUILD_INFO_JSON = json.dumps(
     {
@@ -148,8 +164,15 @@ def test_close_is_idempotent() -> None:
     rclone.close()
 
 
-def test_context_manager_closes_a_runtime_it_created_itself(tmp_path, monkeypatch) -> None:
-    binding = FakeBinding()
+def _client_owning_its_runtime(
+    binding: FakeBinding, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Rclone:
+    """Build an `Rclone` that genuinely owns its runtime, by making it load
+    `binding` through the library-path path instead of accepting an
+    injected `runtime` - the only way `close()` reaches
+    `RcloneRuntime.close()` at all, and therefore the only way a test can
+    observe whether the runtime was finalized or left open.
+    """
     fake_library_path = tmp_path / "librclone_kit.dll"
     fake_library_path.touch()
     monkeypatch.setattr(
@@ -160,8 +183,13 @@ def test_context_manager_closes_a_runtime_it_created_itself(tmp_path, monkeypatc
         "from_library_path",
         staticmethod(lambda _library_path: RcloneRuntime(binding)),
     )
+    return Rclone(None, library_path=fake_library_path)
 
-    with Rclone(None, library_path=fake_library_path) as rclone:
+
+def test_context_manager_closes_a_runtime_it_created_itself(tmp_path, monkeypatch) -> None:
+    binding = FakeBinding()
+
+    with _client_owning_its_runtime(binding, tmp_path, monkeypatch) as rclone:
         assert rclone.obscure("x") == "fake-obscured"
 
     assert binding.finalize_calls == 1
@@ -466,6 +494,85 @@ def test_copy_dispatches_to_start_copy_with_its_tuned_defaults() -> None:
     rclone.close()
 
 
+@dataclass(frozen=True)
+class ExplicitZeroTuningCase:
+    field_name: str
+    copy_with_zero: Callable[[Rclone], object]
+
+
+COPY_TRANSFERS_ZERO = ExplicitZeroTuningCase(
+    "transfers", lambda rclone: rclone.copy(_COPY_SRC, _COPY_DST, transfers=0)
+)
+COPY_CHECKERS_ZERO = ExplicitZeroTuningCase(
+    "checkers", lambda rclone: rclone.copy(_COPY_SRC, _COPY_DST, checkers=0)
+)
+COPY_LOW_LEVEL_RETRIES_ZERO = ExplicitZeroTuningCase(
+    "low_level_retries", lambda rclone: rclone.copy(_COPY_SRC, _COPY_DST, low_level_retries=0)
+)
+COPY_RETRIES_ZERO = ExplicitZeroTuningCase(
+    "retries", lambda rclone: rclone.copy(_COPY_SRC, _COPY_DST, retries=0)
+)
+
+EXPLICIT_ZERO_TUNING_CASES = [
+    COPY_TRANSFERS_ZERO,
+    COPY_CHECKERS_ZERO,
+    COPY_LOW_LEVEL_RETRIES_ZERO,
+    COPY_RETRIES_ZERO,
+]
+
+
+@pytest.mark.parametrize(
+    "case",
+    EXPLICIT_ZERO_TUNING_CASES,
+    ids=[
+        "copy_transfers_zero",
+        "copy_checkers_zero",
+        "copy_low_level_retries_zero",
+        "copy_retries_zero",
+    ],
+)
+def test_copy_passes_an_explicit_zero_through_instead_of_its_tuned_default(
+    case: ExplicitZeroTuningCase,
+) -> None:
+    """An explicit `0` must reach `TransferOptions` and be rejected there,
+    rather than being read as "unset" and silently rewritten to `copy()`'s
+    tuned default - which would run a transfer the caller never asked for.
+    """
+    binding = FakeBinding()
+    _set_successful_copy_responses(binding)
+    rclone = Rclone(None, runtime=RcloneRuntime(binding))
+
+    with pytest.raises(ValueError, match=f"{case.field_name} must be a positive integer"):
+        case.copy_with_zero(rclone)
+
+    assert binding.rpc_calls == []
+    rclone.close()
+
+
+def test_copy_forwards_an_explicit_multi_thread_streams_zero_to_the_rc_config() -> None:
+    """`0` is rclone's documented "disable multi-thread transfers" value,
+    so it must survive the whole `copy()` -> `TransferOptions` -> `_config`
+    chain alongside the tuned defaults.
+    """
+    binding = FakeBinding()
+    _set_successful_copy_responses(binding)
+    rclone = Rclone(None, runtime=RcloneRuntime(binding))
+
+    result = rclone.copy(_COPY_SRC, _COPY_DST, multi_thread_streams=0)
+
+    assert result.ok is True
+    request = json.loads(binding.rpc_calls[0][1])
+    assert request["_config"] == {
+        "Checkers": _COPY_DEFAULT_CHECKERS,
+        "Transfers": _COPY_DEFAULT_TRANSFERS,
+        "LowLevelRetries": _COPY_DEFAULT_LOW_LEVEL_RETRIES,
+        "Retries": _COPY_DEFAULT_RETRIES,
+        "MultiThreadStreams": 0,
+        "MultiThreadSet": True,
+    }
+    rclone.close()
+
+
 def test_copy_dir_dispatches_to_start_copy_without_copys_tuned_defaults() -> None:
     binding = FakeBinding()
     _set_successful_copy_responses(binding)
@@ -582,3 +689,79 @@ def test_close_does_not_double_stop_an_already_disposed_serve_handle() -> None:
 
     stop_calls_after_close = sum(1 for m, _ in binding.rpc_calls if m == b"serve/stop")
     assert stop_calls_after_close == stop_calls_after_manual_dispose == 1
+
+
+_RESOURCE_FAILURE_MESSAGE = "simulated teardown failure"
+
+
+class _RaisingResource:
+    """A tracked resource whose close raises, standing in for an
+    `EmbeddedFilesStream` or `AuthorizationSession` that fails during
+    teardown - unlike `ServeHandle`/`MountHandle`, neither of those
+    swallows its own failures.
+    """
+
+    def __init__(self) -> None:
+        self.close_calls = 0
+
+    def close(self) -> None:
+        self.close_calls += 1
+        raise RuntimeError(_RESOURCE_FAILURE_MESSAGE)
+
+
+class _FakeJobMonitor:
+    """Stands in for `_JobMonitor` so a test can choose the shutdown
+    outcome directly, instead of arranging a real job that refuses to
+    settle within the deadline.
+    """
+
+    def __init__(self, *, all_settled: bool) -> None:
+        self._all_settled = all_settled
+        self.shutdown_calls = 0
+
+    def shutdown(self, *, deadline_seconds: float) -> bool:
+        assert deadline_seconds > 0
+        self.shutdown_calls += 1
+        return self._all_settled
+
+
+def test_close_isolates_failing_resources_from_every_other_cleanup_step(
+    tmp_path, monkeypatch
+) -> None:
+    binding = FakeBinding()
+    _set_serve_responses(binding)
+    rclone = _client_owning_its_runtime(binding, tmp_path, monkeypatch)
+    monitor = _FakeJobMonitor(all_settled=True)
+    rclone._job_monitor = cast(_JobMonitor, monitor)
+    serve_handle = rclone.serve_webdav("remote:base", "alice", "hunter2", addr="127.0.0.1:0")
+    stream = _RaisingResource()
+    rclone._file_streams.add(cast(EmbeddedFilesStream, stream))
+    session = _RaisingResource()
+    rclone._authorization_sessions.add(cast(AuthorizationSession, session))
+
+    with pytest.raises(ExceptionGroup) as raised:
+        rclone.close()
+
+    assert [str(error) for error in raised.value.exceptions] == [_RESOURCE_FAILURE_MESSAGE] * 2
+    assert stream.close_calls == 1
+    assert session.close_calls == 1
+    assert serve_handle.closed is True
+    assert monitor.shutdown_calls == 1
+    assert binding.finalize_calls == 1
+
+
+def test_close_still_reports_unsettled_jobs_and_leaves_the_runtime_open(
+    tmp_path, monkeypatch
+) -> None:
+    binding = FakeBinding()
+    rclone = _client_owning_its_runtime(binding, tmp_path, monkeypatch)
+    monitor = _FakeJobMonitor(all_settled=False)
+    rclone._job_monitor = cast(_JobMonitor, monitor)
+    stream = _RaisingResource()
+    rclone._file_streams.add(cast(EmbeddedFilesStream, stream))
+
+    with pytest.raises(OperationShutdownError):
+        rclone.close()
+
+    assert stream.close_calls == 1
+    assert binding.finalize_calls == 0
