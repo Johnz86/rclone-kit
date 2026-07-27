@@ -26,11 +26,13 @@ from fake_job_client import wait_until as _wait_until
 from rclone_kit.exceptions import (
     JobExpiredError,
     JobIdentityError,
+    JobRuntimeClosedError,
     OperationCancelledError,
     OperationFailedError,
     OperationTimeoutError,
 )
-from rclone_kit.job import _IDENTITY_MISMATCH_STATUS_ERROR
+from rclone_kit.job import _IDENTITY_MISMATCH_STATUS_ERROR, _RUNTIME_CLOSED_STATUS_ERROR
+from rclone_kit.native.errors import RuntimeClosedError
 from rclone_kit.operation import JobState, TransferStats
 from rclone_kit.rc.jobs import RcJobNotFoundError, RcJobRef
 
@@ -602,6 +604,61 @@ class TestJobIdentityMismatch:
             handle.job_id,
             JobIdentityError(handle.job_id, handle.execute_id, "exec-after-rclone-restart"),
         )
+
+        all_settled = monitor.shutdown(deadline_seconds=_WAIT_TIMEOUT)
+
+        assert all_settled is True
+        assert handle.done
+
+
+class TestJobRuntimeClosed:
+    """A runtime closed out from under a live job.
+
+    `RcloneRuntime`'s closed flag is a one-way latch, so every later
+    `job/status` raises `RuntimeClosedError` too. Classified as transient,
+    the record never settled: `wait()` blocked forever, `close()` burned
+    its whole deadline, and the monitor thread logged a traceback every
+    poll interval for the rest of the process's life.
+    """
+
+    def test_a_closed_runtime_settles_the_job_and_wait_reraises_it(self) -> None:
+        job_client = FakeJobClient()
+        monitor = _monitor(job_client)
+        handle = monitor.start_job(
+            "sync/copy", {}, group="g1", operation="copy", source="a", destination="b", check=True
+        )
+        job_client.queue_status(handle.job_id, RuntimeClosedError())
+
+        with pytest.raises(JobRuntimeClosedError):
+            handle.wait(timeout=_WAIT_TIMEOUT)
+
+        assert handle.done
+        assert handle.status().state is JobState.LOST
+        assert handle.status().error == _RUNTIME_CLOSED_STATUS_ERROR
+
+    def test_a_closed_runtime_forgets_the_record_and_stops_polling_it(self) -> None:
+        job_client = FakeJobClient()
+        monitor = _monitor(job_client)
+        handle = monitor.start_job(
+            "sync/copy", {}, group="g1", operation="copy", source="a", destination="b", check=False
+        )
+        job_client.queue_status(handle.job_id, RuntimeClosedError())
+
+        with pytest.raises(JobRuntimeClosedError):
+            handle.wait(timeout=_WAIT_TIMEOUT)
+        reads_at_settle = len(job_client.status_reads)
+        time.sleep(_POLL_INTERVAL * 5)
+
+        assert handle.job_id not in monitor._records
+        assert len(job_client.status_reads) == reads_at_settle
+
+    def test_shutdown_settles_a_job_whose_runtime_was_closed(self) -> None:
+        job_client = FakeJobClient()
+        monitor = _monitor(job_client)
+        handle = monitor.start_job(
+            "sync/copy", {}, group="g1", operation="copy", source="a", destination="b", check=False
+        )
+        job_client.queue_status(handle.job_id, RuntimeClosedError())
 
         all_settled = monitor.shutdown(deadline_seconds=_WAIT_TIMEOUT)
 

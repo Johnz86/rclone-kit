@@ -37,11 +37,13 @@ from typing import TYPE_CHECKING, Self
 from rclone_kit.exceptions import (
     JobExpiredError,
     JobIdentityError,
+    JobRuntimeClosedError,
     OperationCancelledError,
     OperationError,
     OperationFailedError,
     OperationTimeoutError,
 )
+from rclone_kit.native.errors import RuntimeClosedError
 from rclone_kit.operation import JobState, JobStatus, OperationResult, TransferStats
 from rclone_kit.progress import _DEFAULT_WATCH_INTERVAL_SECONDS, ProgressSubscription
 from rclone_kit.progress import on_progress as _on_progress
@@ -66,6 +68,9 @@ _CANCELLATION_ERROR_MARKER = "context canceled"
 _EXPIRED_STATUS_ERROR = "job record expired before its terminal state could be observed"
 _IDENTITY_MISMATCH_STATUS_ERROR = (
     "job id was reused by a restarted rclone before this job's terminal state could be observed"
+)
+_RUNTIME_CLOSED_STATUS_ERROR = (
+    "the runtime polling this job was closed before its terminal state could be observed"
 )
 
 _EMPTY_STATS = TransferStats(
@@ -495,6 +500,8 @@ class _JobMonitor:
                     self._settle_lost(record)
                 case JobIdentityError() as error:
                     self._settle_identity_mismatch(record, error)
+                case RuntimeClosedError():
+                    self._settle_runtime_closed(record)
                 case Exception():
                     # Transient: a status-call/parsing error does not mean the
                     # job itself failed or disappeared - only `RcJobNotFoundError`
@@ -579,6 +586,28 @@ class _JobMonitor:
         record blocks `wait()` indefinitely and burns the whole
         `Rclone.close()` shutdown deadline."""
         self._settle_unobservable(record, error, status_error=_IDENTITY_MISMATCH_STATUS_ERROR)
+
+    def _settle_runtime_closed(self, record: _JobRecord) -> None:
+        """A closed runtime is permanent, not a transient poll failure.
+
+        `RcloneRuntime._closed` is a one-way latch, so every subsequent
+        `job/status` call raises `RuntimeClosedError` too. Left in the
+        transient branch, the record would never settle: `wait()` would
+        block forever, `Rclone.close()` would burn its whole shutdown
+        deadline and then raise `OperationShutdownError`, and the monitor
+        thread would log a fresh traceback every poll interval for the
+        remaining life of the process.
+
+        Reachable whenever a runtime is closed out from under live jobs -
+        most plainly through `shared_runtime()`, which `production_usage.md`
+        documents for exactly the multi-client case where the closer is not
+        the client whose jobs are still outstanding.
+        """
+        self._settle_unobservable(
+            record,
+            JobRuntimeClosedError(record.ref.job_id),
+            status_error=_RUNTIME_CLOSED_STATUS_ERROR,
+        )
 
     def _settle_unobservable(
         self, record: _JobRecord, error: OperationError, *, status_error: str
