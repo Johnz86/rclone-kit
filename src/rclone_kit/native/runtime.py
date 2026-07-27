@@ -26,6 +26,10 @@ from rclone_kit.native.errors import (
 
 logger = logging.getLogger(__name__)
 
+_CLOSE_DRAIN_LOG_INTERVAL_SECONDS = 10.0
+"""How long `close()` waits between reporting that in-flight calls are
+still holding up finalization. Not a deadline - the wait never gives up."""
+
 EXPECTED_ABI_VERSION = 1
 
 STATUS_OK = 0
@@ -190,13 +194,22 @@ class RcloneRuntime:
         every already-in-flight `call()` to finish before invoking
         `finalize()` - never interrupts one, since the underlying RC
         dispatch has no cancellation mechanism to interrupt it with.
+
+        That wait is deliberately unbounded: finalizing the native runtime
+        while a call is still dispatched inside it would tear down state
+        that call is actively using, which is a process-level crash rather
+        than a recoverable error. So there is no timeout that could safely
+        give up and finalize anyway. What the wait does instead is
+        *report* itself - a long synchronous operation (`check()` over a
+        large tree, say) otherwise makes `close()` look like an
+        unexplained hang with nothing in the log to explain it.
         """
         with self._state_lock:
             if self._closed:
                 return
             self._closed = True
             was_initialized = self._initialized
-            self._no_calls_in_flight.wait_for(lambda: self._active_calls == 0)
+            self._wait_for_calls_to_drain()
         if was_initialized:
             status, output = self._binding.finalize()
             if status != STATUS_OK:
@@ -205,6 +218,26 @@ class RcloneRuntime:
                     status,
                     output.decode("utf-8", errors="replace"),
                 )
+
+    def _wait_for_calls_to_drain(self) -> None:
+        """Wait out every in-flight `call()`, logging while it takes long.
+
+        Caller must hold `_state_lock` (which is `_no_calls_in_flight`'s
+        own lock). Waits in bounded slices purely so a slow drain leaves a
+        trail naming how many calls are still outstanding; the loop itself
+        never gives up, for the reason `close()` documents.
+        """
+        waited = 0.0
+        while not self._no_calls_in_flight.wait_for(
+            lambda: self._active_calls == 0, timeout=_CLOSE_DRAIN_LOG_INTERVAL_SECONDS
+        ):
+            waited += _CLOSE_DRAIN_LOG_INTERVAL_SECONDS
+            logger.warning(
+                "close() has waited %.0fs for %d in-flight rclone call(s) to finish; "
+                "the native runtime cannot be finalized until they return",
+                waited,
+                self._active_calls,
+            )
 
     def __enter__(self) -> Self:
         return self
