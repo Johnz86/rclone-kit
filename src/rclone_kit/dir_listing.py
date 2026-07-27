@@ -7,9 +7,16 @@ from rclone_kit.rpath import RcloneJsonEntry, RPath
 
 
 def _dedupe(items: list[RPath]) -> list[RPath]:
-    """Remove duplicate items from a list of RPath objects."""
-    seen = set()
-    unique_items = []
+    """Drop repeated listing entries, keeping the first occurrence.
+
+    Relies on `RPath`'s value semantics: an entry is a duplicate only when
+    every listed field (remote, path, name, size, mime type, mod time,
+    directory flag) matches. Two entries for the same path that disagree
+    on metadata are kept, because that is a genuine listing anomaly the
+    caller should still see rather than a repeat this can safely collapse.
+    """
+    seen: set[RPath] = set()
+    unique_items: list[RPath] = []
     for item in items:
         if item not in seen:
             seen.add(item)
