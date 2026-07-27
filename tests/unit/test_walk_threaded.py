@@ -56,4 +56,20 @@ def test_fswalker_exit_stops_worker_even_when_not_fully_consumed(
     with FSWalker(fspath=cast(FSPath, "root"), max_backlog=1) as walker:
         next(iter(walker))
 
+    assert walker.walker is not None
     assert not walker.walker.thread.is_alive()
+
+
+def test_fswalker_used_without_with_raises_a_clear_error() -> None:
+    """Regression test: `walker` is only created on `__enter__`, so
+    iterating an un-entered `FSWalker` used to raise a bare
+    `AttributeError` naming an implementation attribute instead of saying
+    the context manager is mandatory.
+    """
+    walker = FSWalker(fspath=cast(FSPath, "root"), max_backlog=8)
+
+    with pytest.raises(RuntimeError, match="context manager"):
+        iter(walker)
+
+    with pytest.raises(RuntimeError, match="context manager"):
+        walker.walk()
