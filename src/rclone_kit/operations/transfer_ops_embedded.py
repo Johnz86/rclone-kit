@@ -52,7 +52,11 @@ from typing import TYPE_CHECKING
 from rclone_kit.convert import convert_to_str
 from rclone_kit.group_files import group_files
 from rclone_kit.operation import OperationResult
-from rclone_kit.operations.transfer_options import TransferOptions, encode_transfer_options_config
+from rclone_kit.operations.transfer_options import (
+    COPY_TUNED_PROFILE,
+    TransferOptions,
+    encode_transfer_options_config,
+)
 from rclone_kit.partitioned_job import (
     PartitionedJobHandle,
     aggregate_results,
@@ -76,10 +80,6 @@ _MOVE_FILE_METHOD = "operations/movefile"
 _COPY_TO_OPERATION = "copy_to"
 _MOVE_TO_OPERATION = "move_to"
 
-_COPY_FILES_DEFAULT_CHECKERS = 1000
-_COPY_FILES_DEFAULT_TRANSFERS = 32
-_COPY_FILES_DEFAULT_LOW_LEVEL_RETRIES = 10
-_COPY_FILES_DEFAULT_RETRIES = 3
 _DELETE_FILES_CHECKERS = 1000
 _DELETE_FILES_TRANSFERS = 1000
 
@@ -264,20 +264,16 @@ def _copy_files_partitions(
 ) -> tuple[list[tuple[str, list[str]]], Mapping[str, object]]:
     datalists: dict[str, list[str]] = group_files(payload, fully_qualified=False)
     options = TransferOptions(
-        checkers=_COPY_FILES_DEFAULT_CHECKERS if checkers is None else checkers,
-        transfers=_COPY_FILES_DEFAULT_TRANSFERS if transfers is None else transfers,
-        low_level_retries=(
-            _COPY_FILES_DEFAULT_LOW_LEVEL_RETRIES
-            if low_level_retries is None
-            else low_level_retries
-        ),
-        retries=_COPY_FILES_DEFAULT_RETRIES if retries is None else retries,
+        checkers=checkers,
+        transfers=transfers,
+        low_level_retries=low_level_retries,
+        retries=retries,
         multi_thread_streams=multi_thread_streams,
         retries_sleep=retries_sleep,
         timeout=timeout,
         max_backlog=max_backlog,
         metadata=metadata,
-    )
+    ).with_defaults_from(COPY_TUNED_PROFILE)
     return list(datalists.items()), encode_transfer_options_config(options)
 
 
@@ -336,8 +332,9 @@ def copy_files_embedded(
     `rclonekit/copy` jobs, one per common-prefix group.
 
     Each partition keeps the retry-aware `rclonekit/copy` endpoint (not a
-    bare `sync/copy`), matching `copy()`'s own tuned defaults (checkers
-    1000, transfers 32, low-level retries 10, retries 3) unless overridden.
+    bare `sync/copy`), applying the very `COPY_TUNED_PROFILE` `copy()`
+    itself uses - the single declaration of that profile - to whatever the
+    caller left unset.
     `max_partition_workers` bounds how many partition jobs are
     outstanding (started but not yet waited-on) at once - an RC job is
     already concurrent on rclone's side the moment `start()` returns, so no

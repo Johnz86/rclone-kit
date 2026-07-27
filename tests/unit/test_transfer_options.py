@@ -1,10 +1,14 @@
 """Unit tests for `rclone_kit.operations.transfer_options`."""
 
+from dataclasses import replace
+
 import pytest
 
 from rclone_kit.operations.transfer_options import (
     _NON_NEGATIVE_INT_FIELDS,
     _POSITIVE_INT_FIELDS,
+    COPY_TUNED_PROFILE,
+    COPY_TUNED_PROFILE_WITHOUT_RETRIES,
     TransferOptions,
     encode_transfer_options_config,
 )
@@ -119,3 +123,39 @@ def test_metadata_false_is_still_encoded_explicitly() -> None:
     options = TransferOptions(metadata=False)
 
     assert encode_transfer_options_config(options) == {"Metadata": False}
+
+
+def test_a_profile_fills_only_the_fields_the_caller_left_unset() -> None:
+    tuned = TransferOptions(timeout="5m").with_defaults_from(COPY_TUNED_PROFILE)
+
+    assert tuned == replace(COPY_TUNED_PROFILE, timeout="5m")
+
+
+def test_an_explicit_value_is_never_overwritten_by_the_profile() -> None:
+    """A caller who names a setting must get exactly that setting - a
+    profile supplies defaults, it does not impose a policy.
+    """
+    tuned = TransferOptions(transfers=1).with_defaults_from(COPY_TUNED_PROFILE)
+
+    assert tuned.transfers == 1
+    assert tuned.checkers == COPY_TUNED_PROFILE.checkers
+
+
+def test_options_without_a_profile_stay_empty_so_rclones_own_defaults_apply() -> None:
+    """`copy_dir()`/`copy_remote()`/`start_copy()` build a `TransferOptions`
+    and never name a profile; the tuned numbers must not reach them as
+    field defaults on the type.
+    """
+    assert encode_transfer_options_config(TransferOptions()) == {}
+    assert TransferOptions().with_defaults_from(TransferOptions()) == TransferOptions()
+
+
+def test_the_retryless_profile_is_the_copy_profile_minus_retries() -> None:
+    """`sync()`/`move()` share `copy()`'s tuning but run endpoints with no
+    command-level retry loop, so their profile must differ in `retries`
+    alone - never in the numbers themselves.
+    """
+    assert COPY_TUNED_PROFILE.retries is not None
+    assert COPY_TUNED_PROFILE_WITHOUT_RETRIES.retries is None
+    assert replace(COPY_TUNED_PROFILE, retries=None) == COPY_TUNED_PROFILE_WITHOUT_RETRIES
+    assert "Retries" not in encode_transfer_options_config(COPY_TUNED_PROFILE_WITHOUT_RETRIES)

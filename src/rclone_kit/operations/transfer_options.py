@@ -1,15 +1,23 @@
 """Typed transfer options and their RC `_config` encoding.
 
-`TransferOptions` itself carries no defaults beyond "let rclone use its
-own configured value" (`None`): `copy()`'s tuned profile (checkers 1000,
-transfers 32, low-level retries 10, retries 3) is a policy that belongs at
-its own call site, not baked into this generic type -
-`copy_dir()`/`copy_remote()` must not inherit it.
+`TransferOptions` itself carries no field defaults beyond "let rclone use
+its own configured value" (`None`): `copy()`'s tuned profile is a policy,
+not a property of this generic type. The policy still lives here, next to
+the type it is expressed in, as an ordinary `TransferOptions` value
+(`COPY_TUNED_PROFILE`) that a call site must opt into explicitly through
+`TransferOptions.with_defaults_from` - so it is declared exactly once and
+`copy()`/`copy_files()` provably share it, while
+`copy_dir()`/`copy_remote()`/`start_copy()`/`start_sync()`/`start_move()`
+never inherit it and keep getting rclone's own configured values.
+
+`COPY_TUNED_PROFILE_WITHOUT_RETRIES` is that same profile minus `retries`,
+for `sync()`/`move()`: `_config.Retries` is read only by a command-level
+retry loop, which upstream `sync/sync`/`sync/move` do not have.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, fields, replace
 
 _POSITIVE_INT_FIELDS = (
     "checkers",
@@ -82,6 +90,39 @@ class TransferOptions:
                 continue
             if isinstance(value, bool) or value < minimum:
                 raise ValueError(f"{field_name} must be {description}, got {value!r}")
+
+    def with_defaults_from(self, profile: TransferOptions) -> TransferOptions:
+        """Return a copy with every unset (`None`) field taken from `profile`.
+
+        The tuning policy is an argument, never a field default on this
+        type: a caller that passes an explicit value keeps it untouched,
+        and a call site that never names a profile at all still sends
+        nothing, leaving rclone's own configured values in force.
+        """
+        overrides = {
+            field.name: getattr(profile, field.name)
+            for field in fields(self)
+            if getattr(self, field.name) is None and getattr(profile, field.name) is not None
+        }
+        return replace(self, **overrides)
+
+
+COPY_TUNED_PROFILE = TransferOptions(
+    checkers=1000,
+    transfers=32,
+    low_level_retries=10,
+    retries=3,
+)
+"""`copy()`'s aggressive tuned profile, shared verbatim by `copy_files()`.
+
+Both run the retry-aware `rclonekit/copy` endpoint, which is the only one
+that reads `_config.Retries`.
+"""
+
+COPY_TUNED_PROFILE_WITHOUT_RETRIES = replace(COPY_TUNED_PROFILE, retries=None)
+"""`COPY_TUNED_PROFILE` for `sync()`/`move()`, whose upstream
+`sync/sync`/`sync/move` endpoints have no command-level retry loop: a
+`Retries` entry there would be config they can never act on."""
 
 
 def encode_transfer_options_config(options: TransferOptions) -> dict[str, object]:
