@@ -1,9 +1,19 @@
 """Exception types raised by rclone-kit's non-runtime operations.
 
-`rclone_kit.runtime` has its own `RcloneRuntimeError` hierarchy in
-`runtime/exceptions.py` for platform/download/cache concerns; this module
-covers everything else. Filled in incrementally as call sites that
-currently return `Exception` as data are migrated to raise instead.
+`RcloneKitError` is the root of the *whole* library's hierarchy, not just
+this module's: the per-subsystem base types each subclass it -
+`rclone_kit.rc.errors.RcCallError`, `rclone_kit.native.errors.NativeError`,
+`rclone_kit.rc.jobs.RcJobNotFoundError` and
+`rclone_kit.runtime.exceptions.RcloneRuntimeError`. Each keeps its own
+module so its subsystem stays self-describing, but a caller writing the
+boundary handler `docs/production_usage.md` recommends - `except
+RcloneKitError` - catches every one of them.
+
+That root is the only guarantee callers should rely on for "something in
+rclone-kit failed". `MissingOptionalDependencyError` deliberately stays
+outside it: it subclasses `ImportError` because it reports a deployment
+packaging fault, not a storage operation failing, and callers are meant to
+treat it as permanent rather than folding it into a retry policy.
 """
 
 from __future__ import annotations
@@ -194,6 +204,24 @@ class JobIdentityError(OperationError):
         super().__init__(
             f"Job {job_id} identity mismatch: expected execute_id="
             f"{expected_execute_id!r}, got {actual_execute_id!r}"
+        )
+
+
+class JobRuntimeClosedError(OperationError):
+    """Raised when the runtime a job was being polled through was closed
+    before that job reached a terminal state.
+
+    Like `JobExpiredError`, the outcome is genuinely unknown rather than
+    failed: the operation may well have completed inside rclone, but the
+    only channel that could have reported it is gone. `RcloneRuntime`'s
+    closed flag is a one-way latch, so this can never resolve by retrying.
+    """
+
+    def __init__(self, job_id: int) -> None:
+        self.job_id = job_id
+        super().__init__(
+            f"The runtime polling job {job_id} was closed before the job reached a "
+            "terminal state; its outcome can no longer be observed"
         )
 
 

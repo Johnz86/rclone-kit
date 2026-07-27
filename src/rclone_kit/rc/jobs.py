@@ -58,7 +58,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
-from rclone_kit.exceptions import JobIdentityError, OperationStartError
+from rclone_kit.exceptions import JobIdentityError, OperationStartError, RcloneKitError
 from rclone_kit.operation import (
     ActiveTransfer,
     JobState,
@@ -91,13 +91,17 @@ have raised for it. Batched polling has to carry per-job failures
 alongside per-job successes, which an exception cannot express."""
 
 
-class RcJobNotFoundError(Exception):
+class RcJobNotFoundError(RcloneKitError):
     """Raised when rclone reports no job exists for a given job ID.
 
     Deliberately not a domain `OperationError`: this is an RC-wire-level
     fact ("rclone has no record of this ID right now"), not yet a decision
     about what it *means* for the operation (expired, mismatched, lost).
     That decision needs cached job state this module does not have.
+
+    Still rooted in `RcloneKitError` - staying outside the `OperationError`
+    branch is about *which* kind of failure this is, not about escaping the
+    library-wide root every caller's boundary handler catches.
     """
 
     def __init__(self, job_id: int) -> None:

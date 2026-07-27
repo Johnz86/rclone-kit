@@ -1092,8 +1092,7 @@ Handle the typed library errors at the boundary where retry or alert policy
 is decided:
 
 ```python
-from rclone_kit.exceptions import HttpFetchError, RcloneKitError
-from rclone_kit.optional_dependency import MissingOptionalDependencyError
+from rclone_kit import HttpFetchError, MissingOptionalDependencyError, RcloneKitError
 
 try:
     run_storage_job(rclone)
@@ -1106,6 +1105,20 @@ except HttpFetchError as error:
 except RcloneKitError as error:
     mark_job_failed(error)
 ```
+
+`RcloneKitError` is the root of the entire library hierarchy, so the last
+clause is a genuine catch-all: the per-subsystem base types (`RcCallError`
+for a failed RC call, `NativeError` for an ABI-level fault, and
+`RcloneRuntimeError` for a platform/download/cache fault) all subclass it.
+`MissingOptionalDependencyError` is the one deliberate exception — it
+subclasses `ImportError`, because a missing extra is a deployment
+packaging fault rather than a storage operation failing, and belongs in a
+permanent-failure branch ahead of the catch-all rather than inside it.
+
+Every exception type in that hierarchy is importable directly from
+`rclone_kit`. The defining modules (`rclone_kit.exceptions`,
+`rclone_kit.rc.errors`, `rclone_kit.native.errors`) remain available, but
+only the package root carries a compatibility promise.
 
 `FileNotFoundError` is used for missing local or remote targets in several
 filesystem and metadata operations. `ValueError` generally means invalid or

@@ -3,12 +3,18 @@
 Mirrors `rclone_kit.runtime.exceptions`'s pattern of a single base type per
 subsystem, kept separate because these describe the rclone-kit-owned
 `librclone_kit` ABI lifecycle, not the downloaded-executable runtime.
+
+Rooted in `RcloneKitError` so an ABI-level fault - a closed runtime, a
+version mismatch, a missing library - reaches the same documented `except
+RcloneKitError` boundary handler as every other library failure.
 """
 
 from pathlib import Path
 
+from rclone_kit.exceptions import RcloneKitError
 
-class NativeError(Exception):
+
+class NativeError(RcloneKitError):
     """Base type for every exception raised by `rclone_kit.native`."""
 
 
