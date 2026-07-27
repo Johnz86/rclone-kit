@@ -66,6 +66,25 @@ def test_normal_exhaustion_yields_everything_and_joins_worker() -> None:
     assert not _CREATED_THREADS[0].is_alive()
 
 
+def test_consumer_keyboard_interrupt_propagates_and_still_joins_worker() -> None:
+    """A real user-issued Ctrl+C during iteration must reach the caller.
+
+    The generator used to catch `KeyboardInterrupt` because the walk thread
+    signalled failures with `_thread.interrupt_main()`; with failures now
+    collected and re-raised instead, that handler only turned an interrupt
+    into a silently truncated scan. Teardown still has to run, so the
+    blocked walk thread is drained and joined on the way out.
+    """
+    generator = scan_missing_folders(src=cast(Dir, "src"), dst=cast(Dir, "dst"), order=Order.NORMAL)
+    assert next(generator) == "dir-0"
+
+    with pytest.raises(KeyboardInterrupt):
+        generator.throw(KeyboardInterrupt)
+
+    assert len(_CREATED_THREADS) == 1
+    assert not _CREATED_THREADS[0].is_alive()
+
+
 def _fake_walk_task_raising(
     *, src: object, dst: object, max_depth: int, out_queue: Queue, order: Order
 ) -> None:

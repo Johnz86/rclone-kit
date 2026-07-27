@@ -487,14 +487,13 @@ The suites have different purposes:
   are fixed: they now catch that `CalledProcessError` and raise the
   documented `FileNotFoundError`, the same way `check_exists()` already did
   - `tests/live/gdrive/test_live_gdrive_ls_and_stat.py`'s missing-object
-  tests exercise this directly. `scan_missing_folders()`'s background
-  thread still silently swallows the same exception instead of propagating
-  it when a dst root doesn't exist at all, yielding an empty (wrong) result
-  rather than raising or reporting the whole dst as missing - tracked, not
-  fixed, in the "Improvement roadmap" table below;
+  tests exercise this directly. `scan_missing_folders()` propagates the
+  same exception now too: its background thread collects the failure and
+  the generator re-raises it to the caller, so a dst root that doesn't
+  exist at all surfaces as that error rather than an empty (wrong) result.
   `test_scan_missing_folders_finds_the_nested_directory_before_any_copy`
-  routes around it by writing a sibling file first so the dst root exists,
-  and says so in its own docstring.
+  still routes around it by writing a sibling file first so the dst root
+  exists, and says so in its own docstring.
 
 Run the canonical platform build as well when changing packaging, the build
 backend, runtime artifact code, entry points, dependencies, licenses, or
@@ -817,7 +816,7 @@ future session, they will have moved again.
 | Release publication | Done: `.github/workflows/release.yaml` builds, verifies, and publishes both certified wheels to PyPI via trusted publishing (OIDC, no stored token) on `v*` tags, gated by the `pypi-release` GitHub Environment. See `docs/release_process.md`. Artifact attestations (`actions/attest-build-provenance` or equivalent) are not yet added. | Add build provenance attestations to the `publish` job's uploaded wheels if supply-chain verification beyond trusted publishing becomes a requirement. | A published wheel carries a verifiable attestation, not just a trusted-publishing OIDC trail. |
 | Build isolation | Smoke tests poison proxies but do not enforce network denial. | Run them in a network-disabled container or namespace where supported. | A deliberate network attempt fails while the bundled executable still runs. |
 | Source distributions | An sdist cannot yet build a complete certified wheel. | Keep wheel-only releases, or add a verified artifact input/download hook and test sdist-to-wheel builds on every target. | A built-from-sdist wheel passes the same verifier and smoke test. |
-| `scan_missing_folders()` on hierarchical backends | Found live against `tests/live/gdrive`, related to but distinct from the now-fixed `fetch_stat()`/`fetch_size_file()` gap: when the dst root doesn't exist at all on a backend with real directories (Drive, SFTP, local, ...), the underlying `ls()` call fails inside the background walk thread (`scan_missing_folders.py`); the thread reports this to the main thread via `_thread.interrupt_main()`, but the generator's own read loop catches the resulting `KeyboardInterrupt` and silently stops iterating instead of re-raising it, so the caller sees an empty result instead of an error or "whole dst missing" report - and the same catch would just as silently swallow a real user-issued Ctrl+C during iteration. | Make the generator distinguish a propagated listing failure from a real interrupt (e.g. a dedicated exception/sentinel instead of `KeyboardInterrupt`) and raise or report the whole dst as missing, instead of silently stopping either way. | A unit test with a fake backend that raises "directory not found" for a missing dst root proves `scan_missing_folders()` either raises or correctly reports the whole dst as missing, not silently empty. |
+| `scan_missing_folders()` on hierarchical backends | Done: originally found live against `tests/live/gdrive`, where a dst root that doesn't exist at all on a backend with real directories (Drive, SFTP, local, ...) makes the underlying `ls()` call fail inside the background walk thread. That failure is now collected by the walk thread and re-raised by the generator to its own caller after teardown, instead of being signalled with `_thread.interrupt_main()` and then swallowed by the read loop's `except KeyboardInterrupt: pass`. Both halves of the old behaviour are gone: the caller sees the real error rather than an empty result, and a user-issued Ctrl+C during iteration propagates rather than silently truncating the scan. `_drain_queue_until_sentinel` keeps a deliberately narrower `KeyboardInterrupt` suppression, because abandoning that drain halfway leaves the walk thread blocked forever on the bounded queue it exists to empty. | Optional, only if callers turn out to want it: report a wholly missing dst root as "every src directory is missing" instead of raising the listing error. | `tests/unit/test_scan_missing_folders.py` proves a background walk failure reaches the caller, and that a consumer's `KeyboardInterrupt` propagates while the worker is still joined. |
 
 Keep improvement pull requests small. Establish the contract with tests,
 change one boundary, preserve compatibility, and remove the old path only

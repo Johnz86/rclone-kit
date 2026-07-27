@@ -110,6 +110,14 @@ def _drain_queue_until_sentinel(out_queue: Queue[Dir | None]) -> None:
     letting the walk run to completion. Without this, the background walk
     thread would block forever on `out_queue.put()` once nobody drains its
     bounded queue, leaking a permanently blocked thread.
+
+    `KeyboardInterrupt` is suppressed *here only*, unlike in the consumer
+    loop: this drain is the teardown itself, and abandoning it halfway
+    recreates exactly the blocked thread it exists to prevent. The
+    interrupt that started the teardown keeps propagating once this
+    returns - only a further Ctrl+C landing inside the drain is dropped,
+    and it costs at most the walk's remaining runtime, since the walk is
+    already running and always ends by putting the sentinel.
     """
     with contextlib.suppress(KeyboardInterrupt):
         while out_queue.get() is not None:
@@ -180,8 +188,6 @@ def scan_missing_folders(
                 sentinel_seen = True
                 break
             yield dir
-    except KeyboardInterrupt:
-        pass
     finally:
         if not sentinel_seen:
             _drain_queue_until_sentinel(out_queue)
