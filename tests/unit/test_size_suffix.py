@@ -2,6 +2,7 @@
 Unit test file.
 """
 
+import logging
 import unittest
 from dataclasses import FrozenInstanceError, dataclass
 from typing import Any
@@ -9,6 +10,7 @@ from typing import Any
 import pytest
 
 from rclone_kit import PartInfo, Range, SizeSuffix
+from rclone_kit import types as types_module
 
 
 @dataclass(frozen=True)
@@ -88,12 +90,15 @@ def test_zero_byte_file_has_no_multipart_parts() -> None:
     assert PartInfo.split_parts(0, 1) == []
 
 
-def test_multipart_part_count_never_exceeds_provider_limit() -> None:
-    with pytest.warns(UserWarning):
+def test_multipart_part_count_never_exceeds_provider_limit(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with caplog.at_level(logging.WARNING, logger=types_module.logger.name):
         parts = PartInfo.split_parts(10_001, 1)
 
     assert len(parts) <= 10_000
     assert parts[-1].range.end == 10_001
+    assert "adjusting target_chunk_size" in caplog.text
 
 
 if __name__ == "__main__":

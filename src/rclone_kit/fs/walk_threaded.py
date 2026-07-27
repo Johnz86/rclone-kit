@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import contextlib
-import warnings
+import logging
 from collections.abc import Generator
 from queue import Empty, Queue
 from threading import Event, Thread
@@ -11,6 +11,8 @@ from rclone_kit.fs.walk import fs_walk
 
 if TYPE_CHECKING:
     from rclone_kit.fs.filesystem import FSPath
+
+logger = logging.getLogger(__name__)
 
 _CLOSE_JOIN_TIMEOUT_SECONDS = 30.0
 _DRAIN_POLL_SECONDS = 0.1
@@ -65,10 +67,9 @@ class FSWalkThread:
                 self.result_queue.get(timeout=_DRAIN_POLL_SECONDS)
         self.join(timeout=_CLOSE_JOIN_TIMEOUT_SECONDS)
         if self.thread.is_alive():
-            warnings.warn(
-                "FSWalkThread background walk did not finish within "
-                f"{_CLOSE_JOIN_TIMEOUT_SECONDS}s of close()",
-                stacklevel=2,
+            logger.warning(
+                "FSWalkThread background walk did not finish within %ss of close()",
+                _CLOSE_JOIN_TIMEOUT_SECONDS,
             )
 
     def __enter__(self):

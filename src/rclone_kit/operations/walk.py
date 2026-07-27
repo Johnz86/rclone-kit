@@ -1,6 +1,6 @@
 import contextlib
+import logging
 import random
-import warnings
 from collections.abc import Generator
 from queue import Queue
 from threading import Thread
@@ -9,6 +9,8 @@ from rclone_kit.dir import Dir
 from rclone_kit.dir_listing import DirListing
 from rclone_kit.remote import Remote
 from rclone_kit.types import Order
+
+logger = logging.getLogger(__name__)
 
 _MAX_OUT_QUEUE_SIZE = 50
 _WORKER_JOIN_TIMEOUT_SECONDS = 30.0
@@ -172,10 +174,9 @@ def walk(
             _drain_queue_until_sentinel(out_queue)
         worker.join(timeout=_WORKER_JOIN_TIMEOUT_SECONDS)
         if worker.is_alive():
-            warnings.warn(
-                "walk background thread did not finish within "
-                f"{_WORKER_JOIN_TIMEOUT_SECONDS}s of generator teardown",
-                stacklevel=2,
+            logger.warning(
+                "walk background thread did not finish within %ss of generator teardown",
+                _WORKER_JOIN_TIMEOUT_SECONDS,
             )
     if errors:
         raise errors[0]

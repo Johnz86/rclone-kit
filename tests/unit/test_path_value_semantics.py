@@ -7,13 +7,14 @@ equality, which silently broke every set, dict and dedupe built on them -
 the same local file compared unequal.
 """
 
-import re
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
 import pytest
 
+from rclone_kit import dir_listing
 from rclone_kit.access import ListingAccess
 from rclone_kit.dir_listing import DirListing
 from rclone_kit.fs.filesystem import FSPath, RealFS, RemoteFS, RemoteFSAccess
@@ -28,6 +29,7 @@ _ENTRY_SIZE = 1234
 _ENTRY_MIME_TYPE = "text/plain"
 _ENTRY_MOD_TIME = "2024-01-01T00:00:00Z"
 
+_REPEATED_ENTRY_COUNT = 3
 _REMOTE_FS_SRC = "dst:bucket"
 _OTHER_REMOTE_FS_SRC = "dst:other-bucket"
 # Never touched on disk: every test here is pure path arithmetic.
@@ -175,20 +177,38 @@ def test_remotes_with_different_names_are_different_values() -> None:
     assert first != second
 
 
-def test_dir_listing_collapses_duplicate_file_entries() -> None:
+def test_dir_listing_collapses_duplicate_file_entries(caplog: pytest.LogCaptureFixture) -> None:
     duplicate = _rpath(BASELINE_ENTRY)
 
-    with pytest.warns(UserWarning, match=re.escape(str(duplicate))):
+    with caplog.at_level(logging.WARNING, logger=dir_listing.logger.name):
         listing = DirListing([_rpath(BASELINE_ENTRY), duplicate])
 
     assert len(listing.files) == 1
+    assert str(duplicate) in caplog.text
 
 
-def test_dir_listing_collapses_duplicate_dir_entries() -> None:
-    with pytest.warns(UserWarning):
+def test_dir_listing_collapses_duplicate_dir_entries(caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level(logging.WARNING, logger=dir_listing.logger.name):
         listing = DirListing([_rpath(ENTRY_AS_DIRECTORY), _rpath(ENTRY_AS_DIRECTORY)])
 
     assert len(listing.dirs) == 1
+    assert len(caplog.records) == 1
+
+
+def test_dir_listing_reports_every_dropped_duplicate(caplog: pytest.LogCaptureFixture) -> None:
+    """One diagnostic per dropped entry, not one per process.
+
+    `warnings.warn` deduplicates by (message, category, module, lineno), so
+    on that channel a listing with many duplicates reported the first and
+    silently hid the rest.
+    """
+    repeats = [_rpath(BASELINE_ENTRY) for _ in range(_REPEATED_ENTRY_COUNT)]
+
+    with caplog.at_level(logging.WARNING, logger=dir_listing.logger.name):
+        listing = DirListing([_rpath(BASELINE_ENTRY), *repeats])
+
+    assert len(listing.files) == 1
+    assert len(caplog.records) == _REPEATED_ENTRY_COUNT
 
 
 def test_dir_listing_keeps_entries_that_disagree_on_metadata() -> None:

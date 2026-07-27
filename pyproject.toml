@@ -151,11 +151,6 @@ select = [
 #                                 touched (config.py, mount_util.py, util.py,
 #                                 http_server.py) but did not sweep the rest
 #                                 of the codebase.
-#   T201                       - The package ships console scripts
-#                                 (`rclone-kit-*`) whose purpose is to print
-#                                 human-readable output, and many tests use
-#                                 `print` for interactive debugging. Migrating
-#                                 to structured logging is a separate effort.
 #   E501                       - Ruff's formatter enforces the line-length
 #                                 budget for all reformattable code; the
 #                                 stragglers are long string literals (error
@@ -184,7 +179,6 @@ ignore = [
     "S101",
     "S603",
     "PTH",
-    "T201",
     "E501",
     "DTZ005",
 ]
@@ -197,7 +191,22 @@ ignore = [
 # guide prefers literal expected values in parametrized cases over named
 # constants, which is exactly what PLR2004 flags. `src/` has no such
 # exception and must name its magic values.
-"tests/**/*.py" = ["N806", "PLR2004"]
+#
+# T201 is scoped here rather than ignored globally: the library itself now
+# routes every runtime diagnostic through a `logging` logger, so a bare
+# `print` in `src/rclone_kit/**` is a bug. Tests print for interactive
+# debugging, and the entry points below are terminal programs whose stdout
+# IS their output.
+"tests/**/*.py" = ["N806", "PLR2004", "T201"]
+
+# The packaged console scripts (`rclone-kit-*`) exist to write
+# human-readable output to a terminal; that stdout is their product, not a
+# stray diagnostic.
+"src/rclone_kit/cmd/**/*.py" = ["T201"]
+
+# Repo-local developer tooling (build, distribution verification, native
+# smoke tests) is invoked from a shell and reports to stdout/stderr.
+"scripts/**/*.py" = ["T201"]
 
 [tool.ruff.format]
 docstring-code-format = true

@@ -1,9 +1,11 @@
-import warnings
+import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import TypedDict
 
 from rclone_kit.types import EndOfStream
+
+logger = logging.getLogger(__name__)
 
 
 class FinishedPieceJson(TypedDict):
@@ -38,9 +40,7 @@ class FinishedPiece:
                 count_eos += 1
 
         if count_eos > 1:
-            warnings.warn(
-                f"Only one EndOfStream should be present, found {count_eos}", stacklevel=2
-            )
+            logger.warning("Only one EndOfStream should be present, found %d", count_eos)
         out = [p.to_json() for p in non_none]
         return out
 

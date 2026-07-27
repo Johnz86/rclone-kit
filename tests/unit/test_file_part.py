@@ -5,6 +5,7 @@ idempotent (silent-on-repeat) `dispose()`, and registering the module's
 """
 
 import atexit
+import logging
 from pathlib import Path
 
 import pytest
@@ -32,32 +33,35 @@ def test_dispose_deletes_file_and_prunes_cleanup_registry(tmp_path: Path) -> Non
 
 
 def test_dispose_is_idempotent_and_silent_on_repeat(
-    tmp_path: Path, recwarn: pytest.WarningsRecorder
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     chunk = tmp_path / "chunk.bin"
     chunk.write_bytes(b"data")
     part = FilePart(payload=chunk, extra=_s3_file_info())
 
     part.dispose()
-    recwarn.clear()
 
-    part.dispose()
+    with caplog.at_level(logging.WARNING, logger=file_part_module.logger.name):
+        part.dispose()
 
-    assert len(recwarn) == 0
+    assert caplog.records == []
 
 
 def test_dispose_on_error_payload_warns_once_then_is_silent(
-    recwarn: pytest.WarningsRecorder,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     part = FilePart(payload=OSError("fetch failed"), extra=_s3_file_info())
 
-    part.dispose()
-    assert len(recwarn) == 1
+    with caplog.at_level(logging.WARNING, logger=file_part_module.logger.name):
+        part.dispose()
 
-    recwarn.clear()
-    part.dispose()
+    assert len(caplog.records) == 1
 
-    assert len(recwarn) == 0
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger=file_part_module.logger.name):
+        part.dispose()
+
+    assert caplog.records == []
 
 
 def test_add_for_cleanup_registers_atexit_handler_at_most_once(

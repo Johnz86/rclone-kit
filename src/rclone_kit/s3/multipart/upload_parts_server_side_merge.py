@@ -12,7 +12,6 @@ import json
 import logging
 import os
 import time
-import warnings
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from queue import Queue
@@ -28,7 +27,6 @@ from rclone_kit.s3.multipart.finished_piece import FinishedPiece
 from rclone_kit.s3.multipart.info_json import InfoJson
 from rclone_kit.s3.multipart.merge_state import MergeState, MergeStateJson, Part
 from rclone_kit.types import EndOfStream
-from rclone_kit.util import locked_print
 
 logger = logging.getLogger(__name__)
 
@@ -61,10 +59,14 @@ def _upload_part_copy_task(
         params: dict = {}
         try:
             if retry > 0:
-                locked_print(f"Retrying part copy {part_number} for {state.dst_key}")
+                logger.warning("Retrying part copy %d for %s", part_number, state.dst_key)
 
-            locked_print(
-                f"Copying part {part_number} for {state.dst_key} from {source_bucket}/{source_key}"
+            logger.info(
+                "Copying part %d for %s from %s/%s",
+                part_number,
+                state.dst_key,
+                source_bucket,
+                source_key,
             )
 
             params = {
@@ -79,19 +81,28 @@ def _upload_part_copy_task(
 
             etag = part["CopyPartResult"]["ETag"]
             out = FinishedPiece(etag=etag, part_number=part_number)
-            locked_print(f"Finished part {part_number} for {state.dst_key}")
+            logger.info("Finished part %d for %s", part_number, state.dst_key)
             return out
 
         except Exception as e:
             last_error = e
-            msg = f"Error copying {copy_source} -> {state.dst_key}: {e}, params={params}"
-            if "An error occurred (InternalError)" in str(e) or "NoSuchKey" in str(e):
-                locked_print(msg)
             if retry == retries - 1:
-                locked_print(msg)
+                logger.exception(
+                    "Error copying %s -> %s, retries exhausted, params=%s",
+                    copy_source,
+                    state.dst_key,
+                    params,
+                )
                 break
             sleep_time = 2**retry
-            locked_print(f"{msg}, retrying in {sleep_time} seconds")
+            logger.warning(
+                "Error copying %s -> %s: %s, params=%s, retrying in %d seconds",
+                copy_source,
+                state.dst_key,
+                e,
+                params,
+                sleep_time,
+            )
             time.sleep(sleep_time)
 
     assert last_error is not None
@@ -207,18 +218,21 @@ def _begin_upload(
     """
 
     if verbose:
-        locked_print(
-            f"Creating multipart upload for {bucket}/{dst_key} from {len(parts)} source objects"
+        logger.info(
+            "Creating multipart upload for %s/%s from %d source objects",
+            bucket,
+            dst_key,
+            len(parts),
         )
     create_params: dict[str, str] = {
         "Bucket": bucket,
         "Key": dst_key,
     }
     if verbose:
-        locked_print(f"Creating multipart upload with {create_params}")
+        logger.info("Creating multipart upload with %s", create_params)
     mpu = s3_client.create_multipart_upload(**create_params)
     if verbose:
-        locked_print(f"Created multipart upload: {mpu}")
+        logger.info("Created multipart upload: %s", mpu)
     upload_id = mpu["UploadId"]
     return upload_id
 
@@ -249,7 +263,7 @@ class WriteMergeStateThread(Thread):
 
     def verbose_print(self, msg: str) -> None:
         if self.verbose:
-            locked_print(msg)
+            logger.info("%s", msg)
 
     def run(self):
         while True:
@@ -266,7 +280,7 @@ class WriteMergeStateThread(Thread):
             except KeyboardInterrupt:
                 raise
             except Exception as error:
-                warnings.warn(f"Error writing merge state: {error}", stacklevel=2)
+                logger.warning("Error writing merge state: %s", error)
                 break
 
     def add_finished(self, finished: FinishedPiece) -> None:
@@ -351,7 +365,7 @@ def _begin_or_resume_merge(
         try:
             merge_state = MergeState.from_json(rclone=rclone, data=merge_data)
         except (KeyError, MergeStateError) as error:
-            warnings.warn(f"Failed to resume merge: {error}, starting new merge", stacklevel=2)
+            logger.warning("Failed to resume merge: %s, starting new merge", error)
         else:
             merger._begin_resume_merge(merge_state=merge_state)
             return merger

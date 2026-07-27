@@ -7,7 +7,6 @@ import os
 import shutil
 import tempfile
 import threading
-import warnings
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -127,7 +126,7 @@ class UploadPart:
                 self.chunk.unlink()
             self.finished = True
         except Exception as e:
-            warnings.warn(f"Failed to delete file {self.chunk}: {e}", stacklevel=2)
+            logger.warning("Failed to delete file %s: %s", self.chunk, e)
 
     def __del__(self):
         self.dispose()

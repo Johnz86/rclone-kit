@@ -1,9 +1,11 @@
 import json
-import warnings
+import logging
 
 from rclone_kit.dir import Dir
 from rclone_kit.file import File
 from rclone_kit.rpath import RcloneJsonEntry, RPath
+
+logger = logging.getLogger(__name__)
 
 
 def _dedupe(items: list[RPath]) -> list[RPath]:
@@ -22,7 +24,7 @@ def _dedupe(items: list[RPath]) -> list[RPath]:
             seen.add(item)
             unique_items.append(item)
         else:
-            warnings.warn(f"Duplicate item found: {item}, filtered out.", stacklevel=2)
+            logger.warning("Duplicate item found: %s, filtered out.", item)
     return unique_items
 
 

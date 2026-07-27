@@ -1,7 +1,10 @@
 """Unit tests for `rclone_kit.s3.multipart.finished_piece.FinishedPiece`."""
 
+import logging
+
 import pytest
 
+from rclone_kit.s3.multipart import finished_piece as finished_piece_module
 from rclone_kit.s3.multipart.finished_piece import FinishedPiece
 from rclone_kit.types import EndOfStream
 
@@ -21,25 +24,30 @@ def test_to_json_array_excludes_end_of_stream_and_sorts_by_part_number() -> None
     ]
 
 
-def test_to_json_array_warns_when_more_than_one_end_of_stream_present() -> None:
+def test_to_json_array_warns_when_more_than_one_end_of_stream_present(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     parts = [
         FinishedPiece(part_number=1, etag="etag-1"),
         EndOfStream(),
         EndOfStream(),
     ]
 
-    with pytest.warns(UserWarning, match="Only one EndOfStream should be present"):
+    with caplog.at_level(logging.WARNING, logger=finished_piece_module.logger.name):
         FinishedPiece.to_json_array(parts)
+
+    assert "Only one EndOfStream should be present" in caplog.text
 
 
 def test_to_json_array_does_not_warn_with_a_single_end_of_stream(
-    recwarn: pytest.WarningsRecorder,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     parts = [FinishedPiece(part_number=1, etag="etag-1"), EndOfStream()]
 
-    FinishedPiece.to_json_array(parts)
+    with caplog.at_level(logging.WARNING, logger=finished_piece_module.logger.name):
+        FinishedPiece.to_json_array(parts)
 
-    assert len(recwarn) == 0
+    assert caplog.records == []
 
 
 def test_from_json_returns_end_of_stream_for_none() -> None:

@@ -1,5 +1,4 @@
 import logging
-import warnings
 from pathlib import Path
 from threading import Lock
 
@@ -29,7 +28,7 @@ def _on_exit_cleanup() -> None:
             if path.exists():
                 path.unlink()
         except Exception as e:
-            warnings.warn(f"Cannot cleanup {path}: {e}", stacklevel=2)
+            logger.warning("Cannot cleanup %s: %s", path, e)
 
 
 _register_exit_cleanup_handlers = make_atexit_registrar(
@@ -101,9 +100,9 @@ class FilePart:
             self._disposed = True
             logger.debug("Disposing file part")
             if isinstance(self.payload, Exception):
-                warnings.warn(
-                    f"Cannot close file part because the payload represents an error: {self.payload}",
-                    stacklevel=2,
+                logger.warning(
+                    "Cannot close file part because the payload represents an error: %s",
+                    self.payload,
                 )
                 return
             if self.payload.exists():
@@ -111,12 +110,9 @@ class FilePart:
                     self.payload.unlink()
                     logger.debug("File part %s deleted", self.payload)
                 except Exception as e:
-                    warnings.warn(f"Cannot close file part because of error: {e}", stacklevel=2)
+                    logger.warning("Cannot close file part because of error: %s", e)
             else:
-                warnings.warn(
-                    f"Cannot close file part because it does not exist: {self.payload}",
-                    stacklevel=2,
-                )
+                logger.warning("Cannot close file part because it does not exist: %s", self.payload)
             _remove_from_cleanup(self.payload)
 
     def __del__(self):

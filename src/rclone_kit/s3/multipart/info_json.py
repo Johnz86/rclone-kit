@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
-import warnings
 from datetime import datetime
 
 from rclone_kit.dir_listing import DirListing
@@ -13,6 +13,8 @@ from rclone_kit.types import (
     PartInfo,
     SizeSuffix,
 )
+
+logger = logging.getLogger(__name__)
 
 _PART_NAME_PATTERN = re.compile(r"^part\.(\d+)_\d+-\d+$")
 
@@ -78,14 +80,14 @@ def _get_info_json(access: MultipartAccess, src: str | None, src_info: str) -> d
     except KeyboardInterrupt:
         raise
     except Exception as error:
-        warnings.warn(f"Failed to read {src_info}: {error}", stacklevel=2)
+        logger.warning("Failed to read %s: %s", src_info, error)
         return new_data
 
     try:
         data = json.loads(text)
         return data
     except Exception as e:
-        warnings.warn(f"Failed to parse JSON: {e} at {src_info}", stacklevel=2)
+        logger.warning("Failed to parse JSON: %s at %s", e, src_info)
         return new_data
 
 
