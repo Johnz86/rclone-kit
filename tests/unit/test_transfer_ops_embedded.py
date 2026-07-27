@@ -31,6 +31,10 @@ from rclone_kit.operations.transfer_ops_embedded import (
     move_file_to_embedded,
     purge_dir_embedded,
 )
+from rclone_kit.operations.transfer_options import (
+    COPY_TUNED_PROFILE,
+    encode_transfer_options_config,
+)
 from rclone_kit.rc.jobs import RcJobRef
 from rclone_kit.types import SizeSuffix
 
@@ -368,12 +372,7 @@ class TestCopyFilesEmbedded:
         )
 
         _method, params, _group = job_client.starts[0]
-        assert params["_config"] == {
-            "Checkers": 1000,
-            "Transfers": 32,
-            "LowLevelRetries": 10,
-            "Retries": 3,
-        }
+        assert params["_config"] == encode_transfer_options_config(COPY_TUNED_PROFILE)
 
     def test_overridden_transfer_tuning_is_encoded(self) -> None:
         job_client = FakeJobClient()

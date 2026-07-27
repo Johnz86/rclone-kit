@@ -18,18 +18,17 @@ import pytest
 
 from rclone_kit.authorization import AuthorizationSession
 from rclone_kit.check import CheckResult
-from rclone_kit.client import (
-    _COPY_DEFAULT_CHECKERS,
-    _COPY_DEFAULT_LOW_LEVEL_RETRIES,
-    _COPY_DEFAULT_RETRIES,
-    _COPY_DEFAULT_TRANSFERS,
-    Rclone,
-)
+from rclone_kit.client import Rclone
 from rclone_kit.config import Config
 from rclone_kit.embedded_file_stream import EmbeddedFilesStream
 from rclone_kit.exceptions import OperationFailedError, OperationShutdownError
 from rclone_kit.job import _JobMonitor
 from rclone_kit.native.runtime import RcloneRuntime
+from rclone_kit.operations.transfer_options import (
+    COPY_TUNED_PROFILE,
+    COPY_TUNED_PROFILE_WITHOUT_RETRIES,
+    encode_transfer_options_config,
+)
 from rclone_kit.remote import Remote
 from rclone_kit.serve_handle import ServeHandle
 
@@ -493,12 +492,29 @@ def test_copy_dispatches_to_start_copy_with_its_tuned_defaults() -> None:
 
     assert result.ok is True
     request = json.loads(binding.rpc_calls[0][1])
-    assert request["_config"] == {
-        "Checkers": 1000,
-        "Transfers": 32,
-        "LowLevelRetries": 10,
-        "Retries": 3,
-    }
+    assert request["_config"] == encode_transfer_options_config(COPY_TUNED_PROFILE)
+    rclone.close()
+
+
+def test_copy_and_copy_files_apply_the_very_same_tuned_profile() -> None:
+    """Both entry points run the retry-aware `rclonekit/copy` endpoint and
+    are documented as sharing one profile, so a caller switching between
+    them must never be given different tuning. Comparing the two `_config`
+    payloads to each other pins that against the profile being declared
+    twice again and drifting apart.
+    """
+    binding = FakeBinding()
+    _set_successful_copy_responses(binding)
+    rclone = Rclone(None, runtime=RcloneRuntime(binding))
+
+    rclone.copy(_COPY_SRC, _COPY_DST)
+    copy_config = json.loads(binding.rpc_calls[0][1])["_config"]
+    binding.rpc_calls.clear()
+    rclone.copy_files(_COPY_SRC, _COPY_DST, ["a.txt"])
+    copy_files_config = json.loads(binding.rpc_calls[0][1])["_config"]
+
+    assert copy_config == copy_files_config
+    assert copy_config == encode_transfer_options_config(COPY_TUNED_PROFILE)
     rclone.close()
 
 
@@ -571,10 +587,7 @@ def test_copy_forwards_an_explicit_multi_thread_streams_zero_to_the_rc_config() 
     assert result.ok is True
     request = json.loads(binding.rpc_calls[0][1])
     assert request["_config"] == {
-        "Checkers": _COPY_DEFAULT_CHECKERS,
-        "Transfers": _COPY_DEFAULT_TRANSFERS,
-        "LowLevelRetries": _COPY_DEFAULT_LOW_LEVEL_RETRIES,
-        "Retries": _COPY_DEFAULT_RETRIES,
+        **encode_transfer_options_config(COPY_TUNED_PROFILE),
         "MultiThreadStreams": 0,
         "MultiThreadSet": True,
     }
@@ -635,11 +648,9 @@ def test_sync_applies_copys_tuned_profile_without_a_retries_setting() -> None:
     result = rclone.sync(_COPY_SRC, _COPY_DST)
 
     assert result.ok is True
-    assert json.loads(binding.rpc_calls[0][1])["_config"] == {
-        "Checkers": _COPY_DEFAULT_CHECKERS,
-        "Transfers": _COPY_DEFAULT_TRANSFERS,
-        "LowLevelRetries": _COPY_DEFAULT_LOW_LEVEL_RETRIES,
-    }
+    config = json.loads(binding.rpc_calls[0][1])["_config"]
+    assert config == encode_transfer_options_config(COPY_TUNED_PROFILE_WITHOUT_RETRIES)
+    assert "Retries" not in config
     rclone.close()
 
 
@@ -692,11 +703,9 @@ def test_move_applies_copys_tuned_profile_without_a_retries_setting() -> None:
     result = rclone.move(_COPY_SRC, _COPY_DST)
 
     assert result.ok is True
-    assert json.loads(binding.rpc_calls[0][1])["_config"] == {
-        "Checkers": _COPY_DEFAULT_CHECKERS,
-        "Transfers": _COPY_DEFAULT_TRANSFERS,
-        "LowLevelRetries": _COPY_DEFAULT_LOW_LEVEL_RETRIES,
-    }
+    config = json.loads(binding.rpc_calls[0][1])["_config"]
+    assert config == encode_transfer_options_config(COPY_TUNED_PROFILE_WITHOUT_RETRIES)
+    assert "Retries" not in config
     rclone.close()
 
 

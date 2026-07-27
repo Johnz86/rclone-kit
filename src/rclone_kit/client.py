@@ -99,7 +99,12 @@ from rclone_kit.operations.transfer_ops_embedded import (
     start_copy_files_embedded,
     start_delete_files_embedded,
 )
-from rclone_kit.operations.transfer_options import TransferOptions, encode_transfer_options_config
+from rclone_kit.operations.transfer_options import (
+    COPY_TUNED_PROFILE,
+    COPY_TUNED_PROFILE_WITHOUT_RETRIES,
+    TransferOptions,
+    encode_transfer_options_config,
+)
 from rclone_kit.operations.walk import walk
 from rclone_kit.optional_dependency import MissingOptionalDependencyError
 from rclone_kit.partitioned_job import PartitionedJobHandle
@@ -140,15 +145,6 @@ logger = logging.getLogger(__name__)
 _JOB_SHUTDOWN_DEADLINE_SECONDS = 10.0
 
 _CLEANUP_FAILURE_MESSAGE = "one or more tracked resources failed to close"
-
-# copy()'s aggressive tuned profile, shared by sync()/move() (minus
-# _COPY_DEFAULT_RETRIES, which only the retry-aware copy endpoint reads).
-# copy_dir()/copy_remote() must not inherit these - they use rclone's own
-# defaults instead.
-_COPY_DEFAULT_CHECKERS = 1000
-_COPY_DEFAULT_TRANSFERS = 32
-_COPY_DEFAULT_LOW_LEVEL_RETRIES = 10
-_COPY_DEFAULT_RETRIES = 3
 
 # RC method and `OperationResult.operation` label per directory-level
 # transfer entry point.
@@ -955,15 +951,19 @@ class Rclone:
             src: Source directory
             dst: Destination directory
         """
+        tuned = TransferOptions(
+            checkers=checkers,
+            transfers=transfers,
+            low_level_retries=low_level_retries,
+            retries=retries,
+        ).with_defaults_from(COPY_TUNED_PROFILE)
         handle = self.start_copy(
             src,
             dst,
-            transfers=_COPY_DEFAULT_TRANSFERS if transfers is None else transfers,
-            checkers=_COPY_DEFAULT_CHECKERS if checkers is None else checkers,
-            low_level_retries=(
-                _COPY_DEFAULT_LOW_LEVEL_RETRIES if low_level_retries is None else low_level_retries
-            ),
-            retries=_COPY_DEFAULT_RETRIES if retries is None else retries,
+            transfers=tuned.transfers,
+            checkers=tuned.checkers,
+            low_level_retries=tuned.low_level_retries,
+            retries=tuned.retries,
             multi_thread_streams=multi_thread_streams,
             check=check,
         )
@@ -1002,14 +1002,15 @@ class Rclone:
         when it is left `None`; any explicit value is passed through
         unchanged.
         """
+        tuned = TransferOptions(
+            checkers=checkers, transfers=transfers, low_level_retries=low_level_retries
+        ).with_defaults_from(COPY_TUNED_PROFILE_WITHOUT_RETRIES)
         handle = self.start_sync(
             src,
             dst,
-            transfers=_COPY_DEFAULT_TRANSFERS if transfers is None else transfers,
-            checkers=_COPY_DEFAULT_CHECKERS if checkers is None else checkers,
-            low_level_retries=(
-                _COPY_DEFAULT_LOW_LEVEL_RETRIES if low_level_retries is None else low_level_retries
-            ),
+            transfers=tuned.transfers,
+            checkers=tuned.checkers,
+            low_level_retries=tuned.low_level_retries,
             multi_thread_streams=multi_thread_streams,
             create_empty_src_dirs=create_empty_src_dirs,
             check=check,
@@ -1044,14 +1045,15 @@ class Rclone:
 
         Tuning defaults match `copy()`'s tuned profile, as `sync()`'s do.
         """
+        tuned = TransferOptions(
+            checkers=checkers, transfers=transfers, low_level_retries=low_level_retries
+        ).with_defaults_from(COPY_TUNED_PROFILE_WITHOUT_RETRIES)
         handle = self.start_move(
             src,
             dst,
-            transfers=_COPY_DEFAULT_TRANSFERS if transfers is None else transfers,
-            checkers=_COPY_DEFAULT_CHECKERS if checkers is None else checkers,
-            low_level_retries=(
-                _COPY_DEFAULT_LOW_LEVEL_RETRIES if low_level_retries is None else low_level_retries
-            ),
+            transfers=tuned.transfers,
+            checkers=tuned.checkers,
+            low_level_retries=tuned.low_level_retries,
             multi_thread_streams=multi_thread_streams,
             create_empty_src_dirs=create_empty_src_dirs,
             delete_empty_src_dirs=delete_empty_src_dirs,
