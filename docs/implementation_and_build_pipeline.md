@@ -688,24 +688,56 @@ domain layer accounts for 3 of 101 findings; the mass is
 unblock typing, and aim the typing push at `s3/multipart/` and `fs/`,
 which is also where the remaining concurrency hazards live.
 
-The open work, in priority order. Two defects this pass fixed have
-unfixed twins: `operations/walk.py`'s consumer loop still carries the
-`except KeyboardInterrupt: pass` that was removed from
-`scan_missing_folders.py`, and it backs the more prominent
-`Rclone.walk()`; and `scan_missing_folders.py`'s inner
-`walk_runner_depth_first` queue is still unbounded, the defect
-`fs/walk.py` just had fixed. `_JobMonitor` classifies `RuntimeClosedError`
-and `NativeNotInitializedError` as transient, so a client whose injected
-runtime was closed by its owner never settles - the same failure mode as
-the job-identity defect above, newly reachable now that `shared_runtime()`
-is a documented multi-client pattern. `RcloneRuntime.close()` waits on
-in-flight calls with no timeout, so a synchronous `check()` over a large
-tree makes `Rclone.close()` unbounded despite every other step in it being
-deadline-bounded. And the error taxonomy has five disjoint roots with no
-exception exported from `rclone_kit` at all, so `production_usage.md`'s
-own recommended `except RcloneKitError` does not catch `RcCallError`,
-`NativeError`, or `MissingOptionalDependencyError` - all of which that
-same document shows escaping.
+A second follow-up pass then closed everything that review raised except
+the deferred domain freeze. Both twins are fixed: `operations/walk.py`
+no longer swallows a consumer `KeyboardInterrupt`, which had ended the
+generator normally and so handed back a *silently truncated* listing
+indistinguishable from a complete one - the dangerous shape for the "list
+the tree, then reconcile against it" pattern `walk()` exists to serve.
+`scan_missing_folders`' inner queue turned out **not** to be fixable the
+way the review proposed: its `walk_runner_depth_first` call is
+synchronous and fills the queue completely before the drain loop starts,
+so bounding that queue would block the runner's own `put()` in the very
+thread that would later drain it, and deadlock outright. The real defect
+was that it materialised an entire missing subtree's listings at once; it
+now reuses `walk()`, which already runs the runner on its own thread
+behind a bounded queue and re-raises runner failures identically.
+
+`_JobMonitor` now settles a job on `RuntimeClosedError` instead of
+classifying it as transient. `RcloneRuntime`'s closed flag is a one-way
+latch, so every later poll raised it too and the record never settled -
+`wait()` blocked forever, `close()` burned its whole deadline, and the
+monitor thread logged a fresh traceback every 500 ms for the remaining
+life of the process. `NativeNotInitializedError` was deliberately left in
+the transient branch: unlike the closed latch, it does not describe a
+permanently unrecoverable runtime, and a job being polled at all implies
+an initialize that already succeeded, so treating it as terminal would
+settle on a contradiction rather than on evidence.
+
+`RcloneRuntime.close()`'s wait on in-flight calls is now reported rather
+than bounded. A timeout there cannot be made safe - finalizing while a
+call is still dispatched tears down state that call is using, which is a
+process-level crash, not a recoverable error - so the wait still never
+gives up, but logs every 10 s naming how many calls are outstanding,
+turning a silent hang into a diagnosable one.
+
+The error taxonomy is now single-rooted: `RcCallError`, `NativeError`,
+`RcJobNotFoundError` and `RcloneRuntimeError` all subclass
+`RcloneKitError`, so `production_usage.md`'s own recommended
+`except RcloneKitError` finally catches a failed RC call - by far the most
+common way an operation fails. Reparenting is non-breaking: it only widens
+what the root catches. Every exception type is now exported from
+`rclone_kit`, so writing that handler no longer means importing from
+internal subpackages. `MissingOptionalDependencyError` stays outside the
+root by design, since it subclasses `ImportError` to mark a deployment
+packaging fault the docs handle permanently, ahead of the catch-all.
+
+Finally, `[tool.pyright]` gained an `exclude`. A bare `uv run pyright` -
+what an editor's language server runs - reported 123 errors, every one
+from the gitignored `reference/` checkout of rclone's own sources, the Go
+submodule, or generated build output. It now reports 0, so the default
+invocation agrees with the explicit one in the contributing docs instead
+of burying real findings in vendored noise.
 
 Four operations from the original proposal were dropped without a
 recorded decision and are listed here rather than lost: `hashsum()`
