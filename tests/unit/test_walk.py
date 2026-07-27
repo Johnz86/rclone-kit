@@ -191,3 +191,22 @@ def test_walk_generator_yields_every_directory(breadth_first: bool) -> None:
     assert len(listings) == _TOTAL_DIR_COUNT
     discovered_names = {d.name for listing in listings for d in listing.dirs}
     assert discovered_names == _ALL_NON_ROOT_NAMES
+
+
+@pytest.mark.parametrize("breadth_first", [True, False], ids=["breadth_first", "depth_first"])
+def test_walk_generator_propagates_a_consumer_keyboard_interrupt(breadth_first: bool) -> None:
+    """Ctrl+C during iteration must reach the caller.
+
+    `walk()` used to catch `KeyboardInterrupt` in its consumer loop and
+    `pass`, which ended the generator normally - so an interrupted walk
+    handed back a silently truncated listing indistinguishable from a
+    complete one. That is the dangerous shape for the "list the tree, then
+    reconcile against it" pattern `walk()` exists to serve: a caller
+    deleting whatever the walk did not report would delete live data.
+    """
+    root = _FakeTreeRclone(_TREE).root()
+    listings = walk(root, breadth_first=breadth_first, max_depth=-1)
+    next(listings)
+
+    with pytest.raises(KeyboardInterrupt):
+        listings.throw(KeyboardInterrupt())

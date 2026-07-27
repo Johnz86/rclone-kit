@@ -108,6 +108,12 @@ def _drain_queue_until_sentinel(out_queue: Queue[DirListing | None]) -> None:
     run to completion. Without this, the background walk thread would
     block forever on `out_queue.put()` once nobody drains its bounded
     queue, leaking a permanently blocked thread.
+
+    `KeyboardInterrupt` is suppressed *here only*, never in `walk()`'s own
+    consumer loop: this drain is the teardown itself, and abandoning it
+    halfway recreates exactly the blocked thread it exists to prevent. An
+    interrupt that started the teardown keeps propagating once this
+    returns - only a further Ctrl+C landing inside the drain is dropped.
     """
     with contextlib.suppress(KeyboardInterrupt):
         while out_queue.get() is not None:
@@ -121,6 +127,14 @@ def walk(
     order: Order = Order.NORMAL,
 ) -> Generator[DirListing]:
     """Walk through the given directory recursively.
+
+    A `KeyboardInterrupt` raised in the consumer loop propagates rather
+    than being swallowed. Catching it here used to end the generator
+    normally, so a Ctrl+C partway through handed the caller a *silently
+    truncated* listing that was indistinguishable from a complete one -
+    the dangerous shape for the "list the tree, then reconcile against it"
+    pattern this function exists to serve. Teardown still runs in the
+    `finally` below, so the background thread is not leaked either way.
 
     Args:
         dir: Directory or Remote to walk through
@@ -167,8 +181,6 @@ def walk(
                 sentinel_seen = True
                 break
             yield dirlisting
-    except KeyboardInterrupt:
-        pass
     finally:
         if not sentinel_seen:
             _drain_queue_until_sentinel(out_queue)
