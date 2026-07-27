@@ -31,7 +31,7 @@ from rclone_kit.exceptions import (
     OperationTimeoutError,
 )
 from rclone_kit.job import _IDENTITY_MISMATCH_STATUS_ERROR
-from rclone_kit.operation import JobState, JobStatus, TransferStats
+from rclone_kit.operation import JobState, TransferStats
 from rclone_kit.rc.jobs import RcJobNotFoundError, RcJobRef
 
 
@@ -573,14 +573,6 @@ class TestJobIdentityMismatch:
     def test_identity_mismatch_forgets_the_record_and_stops_polling_it(self) -> None:
         job_client = FakeJobClient()
         monitor = _monitor(job_client)
-        polled: list[RcJobRef] = []
-        original_status = job_client.status
-
-        def _counting_status(ref: RcJobRef) -> JobStatus:
-            polled.append(ref)
-            return original_status(ref)
-
-        job_client.status = _counting_status  # type: ignore[method-assign]
         handle = monitor.start_job(
             "sync/copy", {}, group="g1", operation="copy", source="a", destination="b", check=False
         )
@@ -591,11 +583,11 @@ class TestJobIdentityMismatch:
 
         with pytest.raises(JobIdentityError):
             handle.wait(timeout=_WAIT_TIMEOUT)
-        polls_at_settle = len(polled)
+        reads_at_settle = len(job_client.status_reads)
         time.sleep(_POLL_INTERVAL * 5)
 
         assert handle.job_id not in monitor._records
-        assert len(polled) == polls_at_settle
+        assert len(job_client.status_reads) == reads_at_settle
 
     def test_shutdown_settles_a_job_that_failed_identity_validation(self) -> None:
         # Regression guard for `Rclone.close()`: an unsettled record makes
