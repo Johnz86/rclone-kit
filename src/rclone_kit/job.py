@@ -10,6 +10,13 @@ caches the latest typed status/stats, and captures a job's terminal state
 `job/status` expiry window can lose it. No user code runs on the monitor
 thread; progress is pull-based through `JobHandle.status()`/`.stats()`.
 
+One tick of that thread costs one RC round-trip regardless of how many
+jobs it tracks, because it polls them all through `job/batch`
+(`RcBatchStatusClient`). A partitioned copy over a wide file set starts
+one job per partition, so the per-job polling this replaced made the
+effective poll interval - and with it every `watch()`/`on_progress()`
+consumer - degrade linearly with partition count.
+
 `JobState.CANCELLED`/`JobState.LOST` never come out of `rc/jobs.py`'s
 parser - only this module produces them, since only this module tracks
 "did *this* client ask to cancel this job" and "did this job's terminal
@@ -39,12 +46,17 @@ from rclone_kit.operation import JobState, JobStatus, OperationResult, TransferS
 from rclone_kit.progress import _DEFAULT_WATCH_INTERVAL_SECONDS, ProgressSubscription
 from rclone_kit.progress import on_progress as _on_progress
 from rclone_kit.progress import watch as _watch
-from rclone_kit.rc.jobs import RcJobNotFoundError, RcJobRef, parse_operation_attempts
+from rclone_kit.rc.jobs import (
+    RcBatchStatusClient,
+    RcJobNotFoundError,
+    RcJobRef,
+    parse_operation_attempts,
+)
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator, Mapping
+    from collections.abc import Callable, Iterator, Mapping, Sequence
 
-    from rclone_kit.rc.jobs import RcJobClient
+    from rclone_kit.rc.jobs import RcJobClient, RcJobStatusResult
 
 logger = logging.getLogger(__name__)
 
@@ -76,9 +88,21 @@ _EMPTY_STATS = TransferStats(
 class _JobRecord:
     """Mutable state for one job, owned by `_JobMonitor`. All mutation and
     all reads of mutable fields happen under `condition`'s lock; `poll_lock`
-    separately serializes the RC calls a poll makes, so a `cancel()`-
+    separately serializes *acting on* a poll outcome, so a `cancel()`-
     triggered poll and the monitor thread's own poll of the same job can
-    never both dispatch RC calls or both settle the record."""
+    never both settle the record or both dispatch a settle's RC calls
+    (`core/stats`, `core/stats-delete`).
+
+    Fetching a status sits outside `poll_lock`, since the monitor fetches
+    every tracked job's status in one batched call that no single record's
+    lock can span. That is safe because the fetch is a pure read with no
+    effect on rclone, and because every applier re-checks `is_settled`
+    under `poll_lock` before acting: an outcome that raced a settle is
+    discarded unapplied. Two racing non-terminal snapshots can still land
+    out of order, which at worst rewinds an advisory field such as
+    `duration` by less than one poll interval; settling - the one decision
+    that must never be raced - stays strictly serialized.
+    """
 
     ref: RcJobRef
     operation: str
@@ -234,7 +258,7 @@ class _JobMonitor:
 
     The thread is created on the first `start_job()` call, never at
     import or client construction, and serves every job the client starts
-    - not one thread per job.
+    - not one thread per job, and not one RC call per job per tick.
     """
 
     def __init__(
@@ -245,6 +269,9 @@ class _JobMonitor:
         close_wait_seconds: float = _DEFAULT_CLOSE_WAIT_SECONDS,
     ) -> None:
         self._job_client = job_client
+        self._batch_client: RcBatchStatusClient | None = (
+            job_client if isinstance(job_client, RcBatchStatusClient) else None
+        )
         self._poll_interval_seconds = poll_interval_seconds
         self.close_wait_seconds = close_wait_seconds
         self._records_lock = threading.Lock()
@@ -390,40 +417,101 @@ class _JobMonitor:
     def _poll_once(self) -> None:
         with self._records_lock:
             pending = [r for r in self._records.values() if not r.is_settled]
-        for record in pending:
-            self._poll_record(record)
+        if not pending:
+            return
+        polled = self._batched_statuses(pending)
+        if polled is None:
+            for record in pending:
+                self._poll_record(record)
+            return
+        for record, outcome in polled:
+            self._apply_poll_outcome(record, outcome)
+
+    def _batched_statuses(
+        self, records: Sequence[_JobRecord]
+    ) -> list[tuple[_JobRecord, RcJobStatusResult]] | None:
+        """Poll every record in one `job/batch` round-trip, or return `None`
+        when this monitor has no usable batch transport and the caller must
+        poll each record individually.
+
+        Batching is disabled permanently on the first whole-call failure.
+        The realistic causes are structural - a native build predating
+        `job/batch`, or a response this client cannot read - so retrying
+        every tick would only spend a doomed extra round-trip forever,
+        whereas the per-job path it falls back to is exactly what this
+        monitor did before batching existed and settles jobs just as
+        reliably. Only the monitor thread ever reads or writes
+        `_batch_client`, so this needs no lock.
+        """
+        batch_client = self._batch_client
+        if batch_client is None:
+            return None
+        try:
+            outcomes = batch_client.statuses([record.ref for record in records])
+        except Exception:
+            logger.warning(
+                "batched job polling failed; falling back to one status call per job",
+                exc_info=True,
+            )
+            self._batch_client = None
+            return None
+        if len(outcomes) != len(records):
+            logger.warning(
+                "batched job polling returned %d outcomes for %d jobs; "
+                "falling back to one status call per job",
+                len(outcomes),
+                len(records),
+            )
+            self._batch_client = None
+            return None
+        return list(zip(records, outcomes, strict=True))
 
     def _poll_record(self, record: _JobRecord) -> None:
+        """Poll exactly one record through its own `job/status` call.
+
+        Used by `poll_now()` and by `cancel()`'s follow-up poll - a single
+        record is never worth a `job/batch` envelope - and as the fallback
+        `_poll_once` degrades to when batching is unavailable.
+        """
+        with record.condition:
+            if record.is_settled:
+                return
+        self._apply_poll_outcome(record, self._fetch_status(record.ref))
+
+    def _fetch_status(self, ref: RcJobRef) -> RcJobStatusResult:
+        try:
+            return self._job_client.status(ref)
+        except Exception as error:
+            return error
+
+    def _apply_poll_outcome(self, record: _JobRecord, outcome: RcJobStatusResult) -> None:
+        """Settle or refresh `record` from one poll's outcome, under
+        `poll_lock` so exactly one poller ever makes that decision."""
         with record.poll_lock:
             if record.is_settled:
                 return
-            try:
-                status = self._job_client.status(record.ref)
-            except RcJobNotFoundError:
-                self._settle_lost(record)
-                return
-            except JobIdentityError as error:
-                self._settle_identity_mismatch(record, error)
-                return
-            except Exception:
-                # Transient: a status-call/parsing error does not mean the
-                # job itself failed or disappeared - only `RcJobNotFoundError`
-                # is authoritative for that. Leave the record unsettled and
-                # still tracked so the next scheduled poll retries; settling
-                # here would falsely report a still-running job as failed.
-                logger.warning(
-                    "transient error polling job %s; will retry",
-                    record.ref.job_id,
-                    exc_info=True,
-                )
-                return
-
-            if status.state.is_terminal:
-                self._settle_terminal(record, status)
-            else:
-                with record.condition:
-                    record.latest_status = status
-                    record.condition.notify_all()
+            match outcome:
+                case RcJobNotFoundError():
+                    self._settle_lost(record)
+                case JobIdentityError() as error:
+                    self._settle_identity_mismatch(record, error)
+                case Exception():
+                    # Transient: a status-call/parsing error does not mean the
+                    # job itself failed or disappeared - only `RcJobNotFoundError`
+                    # is authoritative for that. Leave the record unsettled and
+                    # still tracked so the next scheduled poll retries; settling
+                    # here would falsely report a still-running job as failed.
+                    logger.warning(
+                        "transient error polling job %s; will retry",
+                        record.ref.job_id,
+                        exc_info=outcome,
+                    )
+                case status if status.state.is_terminal:
+                    self._settle_terminal(record, status)
+                case status:
+                    with record.condition:
+                        record.latest_status = status
+                        record.condition.notify_all()
 
     def _settle_terminal(self, record: _JobRecord, status: JobStatus) -> None:
         try:

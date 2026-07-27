@@ -16,6 +16,9 @@ from rclone_kit.exceptions import JobIdentityError, OperationStartError
 from rclone_kit.operation import JobState
 from rclone_kit.rc.errors import RcCallError
 from rclone_kit.rc.jobs import (
+    _BATCH_METHOD,
+    _BATCH_PATH_FIELD,
+    _STATUS_METHOD,
     RcJobNotFoundError,
     RcJobRef,
     RcloneRcJobClient,
@@ -263,6 +266,191 @@ class TestStatus:
         states = [job_client.status(ref).state for _ in range(3)]
 
         assert states == [JobState.RUNNING, JobState.RUNNING, JobState.SUCCEEDED]
+
+
+_FIRST_REF = RcJobRef(job_id=1, execute_id="exec-1", group="g")
+_SECOND_REF = RcJobRef(job_id=2, execute_id="exec-1", group="g")
+
+
+def _batch_failure(*, error: str, job_id: int, status: int = 500) -> dict:
+    """One `rc.Error` blob as `job/batch` reports a failed input - notably
+    without the `finished` flag every real `job/status` payload carries."""
+    return {
+        "error": error,
+        "input": {"jobid": job_id},
+        "path": _STATUS_METHOD,
+        "status": status,
+    }
+
+
+class TestStatuses:
+    def test_one_batch_call_carries_a_status_input_per_ref(self) -> None:
+        client = FakeRcClient()
+        client.queue(
+            _BATCH_METHOD,
+            {"results": [_running_status(job_id=1), _running_status(job_id=2)]},
+        )
+        job_client = RcloneRcJobClient(client)
+
+        job_client.statuses([_FIRST_REF, _SECOND_REF])
+
+        assert client.calls == [
+            (
+                _BATCH_METHOD,
+                {
+                    "inputs": [
+                        {_BATCH_PATH_FIELD: _STATUS_METHOD, "jobid": 1},
+                        {_BATCH_PATH_FIELD: _STATUS_METHOD, "jobid": 2},
+                    ]
+                },
+            )
+        ]
+
+    def test_no_refs_makes_no_rc_call(self) -> None:
+        client = FakeRcClient()
+        job_client = RcloneRcJobClient(client)
+
+        assert job_client.statuses([]) == []
+        assert client.calls == []
+
+    def test_results_are_parsed_in_the_order_of_the_refs(self) -> None:
+        client = FakeRcClient()
+        client.queue(
+            _BATCH_METHOD,
+            {"results": [_running_status(job_id=1), _finished_status(ok=True, id=2)]},
+        )
+        job_client = RcloneRcJobClient(client)
+
+        first, second = job_client.statuses([_FIRST_REF, _SECOND_REF])
+
+        assert not isinstance(first, Exception)
+        assert first.state is JobState.RUNNING
+        assert not isinstance(second, Exception)
+        assert second.state is JobState.SUCCEEDED
+
+    def test_a_failed_job_is_a_successful_entry_not_a_batch_failure(self) -> None:
+        """A polled job that itself failed reports a non-empty `error` in an
+        otherwise ordinary payload; only a payload without `finished` is an
+        `rc.Error` blob."""
+        client = FakeRcClient()
+        client.queue(
+            _BATCH_METHOD,
+            {"results": [_finished_status(ok=False, error="directory not found")]},
+        )
+        job_client = RcloneRcJobClient(client)
+
+        (result,) = job_client.statuses([_FIRST_REF])
+
+        assert not isinstance(result, Exception)
+        assert result.state is JobState.FAILED
+        assert result.error == "directory not found"
+
+    def test_a_not_found_entry_becomes_that_jobs_rc_job_not_found_error(self) -> None:
+        client = FakeRcClient()
+        client.queue(
+            _BATCH_METHOD,
+            {
+                "results": [
+                    _batch_failure(error="job not found", job_id=1),
+                    _running_status(job_id=2),
+                ]
+            },
+        )
+        job_client = RcloneRcJobClient(client)
+
+        first, second = job_client.statuses([_FIRST_REF, _SECOND_REF])
+
+        assert isinstance(first, RcJobNotFoundError)
+        assert first.job_id == 1
+        assert not isinstance(second, Exception)
+        assert second.state is JobState.RUNNING
+
+    def test_any_other_failed_entry_becomes_that_jobs_rc_call_error(self) -> None:
+        client = FakeRcClient()
+        client.queue(_BATCH_METHOD, {"results": [_batch_failure(error="internal error", job_id=1)]})
+        job_client = RcloneRcJobClient(client)
+
+        (result,) = job_client.statuses([_FIRST_REF])
+
+        assert isinstance(result, RcCallError)
+        assert result.status == 500
+
+    def test_an_execute_id_mismatch_becomes_that_jobs_identity_error(self) -> None:
+        client = FakeRcClient()
+        client.queue(
+            _BATCH_METHOD,
+            {
+                "results": [
+                    _finished_status(ok=True, executeId="exec-DIFFERENT"),
+                    _running_status(job_id=2),
+                ]
+            },
+        )
+        job_client = RcloneRcJobClient(client)
+
+        first, second = job_client.statuses([_FIRST_REF, _SECOND_REF])
+
+        assert isinstance(first, JobIdentityError)
+        assert first.actual_execute_id == "exec-DIFFERENT"
+        assert not isinstance(second, Exception)
+
+    def test_an_unparsable_entry_becomes_that_jobs_error_only(self) -> None:
+        client = FakeRcClient()
+        malformed = _running_status(job_id=1)
+        malformed["startTime"] = "0001-01-01T00:00:00Z"
+        client.queue(_BATCH_METHOD, {"results": [malformed, _running_status(job_id=2)]})
+        job_client = RcloneRcJobClient(client)
+
+        first, second = job_client.statuses([_FIRST_REF, _SECOND_REF])
+
+        assert isinstance(first, ValueError)
+        assert not isinstance(second, Exception)
+
+    def test_a_non_object_entry_becomes_that_jobs_error_only(self) -> None:
+        client = FakeRcClient()
+        client.queue(_BATCH_METHOD, {"results": ["not an object", _running_status(job_id=2)]})
+        job_client = RcloneRcJobClient(client)
+
+        first, second = job_client.statuses([_FIRST_REF, _SECOND_REF])
+
+        assert isinstance(first, ValueError)
+        assert not isinstance(second, Exception)
+
+    def test_a_non_list_results_field_fails_the_whole_call(self) -> None:
+        client = FakeRcClient()
+        client.queue(_BATCH_METHOD, {"results": {"not": "a list"}})
+        job_client = RcloneRcJobClient(client)
+
+        with pytest.raises(ValueError, match="results"):
+            job_client.statuses([_FIRST_REF])
+
+    def test_a_missing_results_field_fails_the_whole_call(self) -> None:
+        client = FakeRcClient()
+        client.queue(_BATCH_METHOD, {})
+        job_client = RcloneRcJobClient(client)
+
+        with pytest.raises(KeyError):
+            job_client.statuses([_FIRST_REF])
+
+    def test_a_result_count_mismatch_fails_the_whole_call(self) -> None:
+        """Results are matched to refs by index, so a short list cannot be
+        attributed to any particular job."""
+        client = FakeRcClient()
+        client.queue(_BATCH_METHOD, {"results": [_running_status(job_id=1)]})
+        job_client = RcloneRcJobClient(client)
+
+        with pytest.raises(ValueError, match="results for 2 inputs"):
+            job_client.statuses([_FIRST_REF, _SECOND_REF])
+
+    def test_an_unsupported_batch_method_fails_the_whole_call(self) -> None:
+        client = FakeRcClient()
+        unsupported = RcCallError(_BATCH_METHOD, 404, {"error": "couldn't find method"})
+        client.queue(_BATCH_METHOD, unsupported)
+        job_client = RcloneRcJobClient(client)
+
+        with pytest.raises(RcCallError) as excinfo:
+            job_client.statuses([_FIRST_REF])
+        assert excinfo.value is unsupported
 
 
 class TestStop:
