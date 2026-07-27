@@ -5,22 +5,24 @@ import atexit
 import logging
 import os
 import shutil
+import tempfile
 import threading
 import warnings
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
+from rclone_kit.chunk_store import get_staging_root
 from rclone_kit.exceptions import S3UploadError
 from rclone_kit.http_server import HttpServer
 from rclone_kit.s3.multipart.access import MultipartAccess
 from rclone_kit.s3.multipart.info_json import InfoJson
+from rclone_kit.settings import LogSettings
 from rclone_kit.types import (
     PartInfo,
     Range,
     SizeSuffix,
 )
-from rclone_kit.util import random_str
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +30,8 @@ _LOCK = threading.Lock()
 
 _TMP_UPLOAD_DIRS: set[Path] = set()
 _MIN_PART_UPLOAD_SIZE = SizeSuffix("5MB")
+_UPLOAD_CHUNKS_DIR_PREFIX = "chunks-"
+_UPLOAD_LOG_DIR_NAME = "log"
 
 
 def _cleanup_tmp_upload_dirs() -> None:
@@ -63,15 +67,39 @@ def _register_exit_cleanup_handlers() -> None:
 _register_exit_cleanup_handlers()
 
 
-def _append_upload_log(filename: str, msg: str) -> None:
-    if os.getenv("LOG_UPLOAD_S3_RESUMABLE") == "1":
-        log_path = Path("log") / filename
-        with _LOCK:
-            log_path.parent.mkdir(parents=True, exist_ok=True)
+def _make_chunk_staging_dir() -> Path:
+    """Create a fresh, private directory to stage this upload's chunk files in.
 
-            with open(log_path, mode="a", encoding="utf-8") as f:
-                f.write(msg)
-                f.write("\n")
+    Lives under `chunk_store.get_staging_root()` - the operating system's
+    temporary directory unless `RCLONE_KIT_TMP_DIR` says otherwise - rather
+    than the current working directory, which a library must not write
+    into. `mkdtemp` rather than a random name of our own, so the directory
+    is created atomically and two concurrent uploads can never pick the
+    same one.
+    """
+    staging_root = get_staging_root()
+    staging_root.mkdir(parents=True, exist_ok=True)
+    return Path(tempfile.mkdtemp(prefix=_UPLOAD_CHUNKS_DIR_PREFIX, dir=staging_root))
+
+
+def _append_upload_log(filename: str, msg: str) -> None:
+    """Append one line to this upload's opt-in debug log.
+
+    Gated through `LogSettings.enable_upload_parts_logging`, the public
+    accessor that already owns this toggle's environment variable, rather
+    than re-reading it here under a second, stricter spelling. Written
+    under `chunk_store.get_staging_root()` for the same reason the chunk
+    files are: a library must not write into the current working
+    directory.
+    """
+    if not LogSettings.enable_upload_parts_logging():
+        return
+    log_path = get_staging_root() / _UPLOAD_LOG_DIR_NAME / filename
+    with _LOCK:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(log_path, mode="a", encoding="utf-8") as f:
+            f.write(msg)
+            f.write("\n")
 
 
 def _log(msg: str) -> None:
@@ -296,11 +324,10 @@ def upload_parts_resumable(
     logger.debug("%s", info_json)
 
     finished_tasks: list[UploadPart] = []
-    tmp_dir = str(Path("chunks") / random_str(12))
-    _TMP_UPLOAD_DIRS.add(Path(tmp_dir))
+    tmp_dir = _make_chunk_staging_dir()
+    _TMP_UPLOAD_DIRS.add(tmp_dir)
 
     with self.serve_http(src_dir) as http_server:
-        tmpdir: Path = Path(tmp_dir)
         write_semaphore = threading.Semaphore(threads)
         with (
             ThreadPoolExecutor(max_workers=threads) as upload_executor,
@@ -318,7 +345,7 @@ def upload_parts_resumable(
                 def _read_task(
                     src_name=src_name,
                     http_server=http_server,
-                    tmpdir=tmpdir,
+                    tmpdir=tmp_dir,
                     offset=offset,
                     length=length,
                     part_dst=part_dst,
@@ -356,7 +383,7 @@ def upload_parts_resumable(
     exceptions: list[Exception] = [t.exception for t in finished_tasks if t.exception is not None]
 
     shutil.rmtree(tmp_dir, ignore_errors=True)
-    _TMP_UPLOAD_DIRS.discard(Path(tmp_dir))
+    _TMP_UPLOAD_DIRS.discard(tmp_dir)
 
     if len(exceptions) > 0:
         msg = f"Failed to copy parts: {exceptions}"
