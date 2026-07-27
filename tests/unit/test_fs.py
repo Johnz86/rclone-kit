@@ -25,12 +25,17 @@ DB_PATH = HERE / "test.db"
 os.environ["DB_PATH"] = str(DB_PATH)
 
 _BACKSLASH_NAME = "weird" + chr(92) + "name.txt"
+_REMOTE_SRC = "remote:base"
 
 
 def _bare_remote_fs() -> RemoteFS:
-    fs = object.__new__(RemoteFS)
-    fs.shutdown = True
-    return fs
+    """A `RemoteFS` bound to a fake client that performs no I/O.
+
+    Path-math tests need a real instance, not `object.__new__`: `RemoteFS`
+    is now a value keyed on `src` and its bound client, so both attributes
+    must exist for equality and hashing to work.
+    """
+    return RemoteFS(FakeRemoteFSAccess(), _REMOTE_SRC)
 
 
 class RcloneFSTester(unittest.TestCase):
@@ -91,10 +96,13 @@ class RcloneFSTester(unittest.TestCase):
         self.assertEqual(suffix, ".db")
 
     def test_set_membership(self) -> None:
+        """An `FSPath` is looked up by the path it denotes, not by object
+        identity - `RealFS.from_path` mints a fresh `RealFS` each call, and
+        that must not make an equal path miss in a set."""
         path = RealFS.from_path(HERE / "test.db")
         path_set: set[FSPath] = {path}
         self.assertIn(path, path_set)
-        self.assertNotIn(RealFS.from_path(HERE / "test.db"), path_set)
+        self.assertIn(RealFS.from_path(HERE / "test.db"), path_set)
 
     def test_create_and_remove(self) -> None:
         """Test create and remove functionality."""

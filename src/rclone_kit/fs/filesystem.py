@@ -134,6 +134,14 @@ class FS(abc.ABC):
 
 
 class RealFS(FS):
+    """The local filesystem. Stateless, therefore a value: every instance
+    addresses exactly the same thing, so all of them compare equal.
+
+    This matters because `from_path` mints a fresh `RealFS` per call -
+    without value semantics, two `FSPath`s built from the same local path
+    would compare unequal and hash apart.
+    """
+
     @staticmethod
     def from_path(path: Path | str) -> "FSPath":
         path_str = Path(path).as_posix()
@@ -141,6 +149,12 @@ class RealFS(FS):
 
     def __init__(self) -> None:
         super().__init__()
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, RealFS)
+
+    def __hash__(self) -> int:
+        return hash(RealFS)
 
     def ls(self, path: Path | str) -> tuple[list[str], list[str]]:
         files: list[str] = []
@@ -212,6 +226,13 @@ class RemoteFS(FS):
     An HTTP server is created only on explicit, on-demand request via
     `serve()` - for a future consumer that genuinely needs a real listener
     (e.g. multipart/resumable downloads) - never implicitly.
+
+    Equality and hashing are over what the filesystem addresses - the
+    bound client and its `src` root - not over object identity, so that
+    two facades onto the same root are interchangeable keys. The lifecycle
+    attributes `server`/`shutdown` are deliberately excluded: serving is a
+    side effect on the same filesystem, not a different one, and including
+    mutable state would let a hashed instance drift out of its bucket.
     """
 
     def __init__(self, rclone: RemoteFSAccess, src: str) -> None:
@@ -220,6 +241,14 @@ class RemoteFS(FS):
         self.shutdown = False
         self.server: HttpServer | None = None
         self.rclone = rclone
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, RemoteFS):
+            return False
+        return self.src == other.src and self.rclone == other.rclone
+
+    def __hash__(self) -> int:
+        return hash((RemoteFS, self.src, self.rclone))
 
     def serve(self, addr: str | None = None) -> HttpServer:
         """Start (or return the already-started) HTTP server for this
@@ -508,12 +537,16 @@ class FSPath:
         return FSPath(self.fs, new_path.as_posix())
 
     def __hash__(self) -> int:
-        out = hash(f"{self.fs!r}:{self.path}")
-        return out
+        """Hash the `FS` object itself, never `repr(self.fs)`.
+
+        `FS` implementations now carry value semantics, but neither
+        defines `__repr__`, so the default one embeds `id()` - hashing
+        that string would key every instance separately and contradict
+        `__eq__`.
+        """
+        return hash((self.fs, self.path))
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, FSPath):
             return False
-        if self.fs != other.fs:
-            return False
-        return self.path == other.path
+        return self.fs == other.fs and self.path == other.path
