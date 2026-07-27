@@ -1,5 +1,4 @@
 import logging
-import warnings
 from dataclasses import dataclass
 from typing import Any
 
@@ -50,10 +49,7 @@ def _create_s3_client(
         and endpoint_url is not None
         and not endpoint_url.startswith("http")
     ):
-        if s3_config.verbose:
-            warnings.warn(
-                f"Endpoint URL is schema naive: {endpoint_url}, assuming HTTPS", stacklevel=2
-            )
+        logger.warning("Endpoint URL is schema naive: %s, assuming HTTPS", endpoint_url)
         endpoint_url = f"https://{endpoint_url}"
     s3_config.resolve_defaults()
     session = Session()

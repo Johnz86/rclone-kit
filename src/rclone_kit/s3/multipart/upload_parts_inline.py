@@ -2,8 +2,6 @@ import contextlib
 import logging
 import os
 import threading
-import traceback
-import warnings
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
@@ -20,7 +18,6 @@ from rclone_kit.s3.multipart.upload_info import UploadInfo
 from rclone_kit.s3.multipart.upload_state import UploadState
 from rclone_kit.s3.types import MultiUploadResult
 from rclone_kit.types import EndOfStream
-from rclone_kit.util import locked_print
 
 logger = logging.getLogger(__name__)
 
@@ -43,8 +40,10 @@ def upload_task(
     for retry in range(retries):
         try:
             if retry > 0:
-                locked_print(f"Retrying part {part_number} for {info.src_file_path}")
-            locked_print(f"Uploading part {part_number} for {info.src_file_path} of size {size}")
+                logger.warning("Retrying part %d for %s", part_number, info.src_file_path)
+            logger.info(
+                "Uploading part %d for %s of size %d", part_number, info.src_file_path, size
+            )
 
             with open(file, "rb") as f:
                 part = info.s3_client.upload_part(
@@ -59,10 +58,10 @@ def upload_task(
             return out
         except Exception as e:
             if retry == retries - 1:
-                locked_print(f"Error uploading part {part_number}: {e}")
+                logger.exception("Error uploading part %d, retries exhausted", part_number)
                 chunk.dispose()
                 raise
-            locked_print(f"Error uploading part {part_number}: {e}, retrying")
+            logger.warning("Error uploading part %d: %s, retrying", part_number, e)
     raise AssertionError("Unreachable: the loop above always returns or raises")
 
 
@@ -87,9 +86,7 @@ def handle_upload(
         )
         return part
     except Exception as e:
-        stacktrace = traceback.format_exc()
-        msg = f"Error uploading part {part_number}: {e}\n{stacktrace}"
-        warnings.warn(msg, stacklevel=2)
+        logger.exception("Error uploading part %s", part_number)
         return e
     finally:
         fp.dispose()
@@ -106,7 +103,7 @@ def prepare_upload_file_multipart(
 ) -> UploadInfo:
     """Upload a file to the bucket using multipart upload with customizable chunk size."""
 
-    locked_print(f"Creating multipart upload for {file_path} to {bucket_name}/{object_name}")
+    logger.info("Creating multipart upload for %s to %s/%s", file_path, bucket_name, object_name)
     mpu = s3_client.create_multipart_upload(Bucket=bucket_name, Key=object_name)
     upload_id = mpu["UploadId"]
 
@@ -134,7 +131,7 @@ def _abort_previous_upload(upload_state: UploadState) -> None:
                 UploadId=upload_state.upload_info.upload_id,
             )
         except Exception as e:
-            locked_print(f"Error aborting previous upload: {e}")
+            logger.warning("Error aborting previous upload: %s", e)
 
 
 def upload_runner(
@@ -164,7 +161,7 @@ def upload_runner(
                     semaphore.release()
                     result = fut.result()
                     if isinstance(result, Exception):
-                        warnings.warn(f"Error uploading part: {result}, skipping", stacklevel=2)
+                        logger.warning("Error uploading part: %s, skipping", result)
                         return
 
                     upload_state.add_finished(result)
@@ -199,18 +196,18 @@ def upload_file_multipart(
 
     def get_upload_state() -> UploadState | None:
         if resumable_info_path is None:
-            locked_print(f"No resumable info path provided for {file_path}")
+            logger.info("No resumable info path provided for %s", file_path)
             return None
         if not resumable_info_path.exists():
-            locked_print(
-                f"Resumable info path {resumable_info_path} does not exist for {file_path}"
+            logger.info(
+                "Resumable info path %s does not exist for %s", resumable_info_path, file_path
             )
             return None
         upload_state = UploadState.load(s3_client=s3_client, path=resumable_info_path)
         return upload_state
 
     def make_new_state() -> UploadState:
-        locked_print(f"Creating new upload state for {file_path}")
+        logger.info("Creating new upload state for %s", file_path)
         upload_info = prepare_upload_file_multipart(
             s3_client=s3_client,
             bucket_name=bucket_name,
@@ -236,7 +233,7 @@ def upload_file_multipart(
         upload_state = new_state
 
     elif loaded_state.upload_info.fingerprint() != new_state.upload_info.fingerprint():
-        locked_print(f"Cannot resume upload: file size changed, starting over for {file_path}")
+        logger.warning("Cannot resume upload: file size changed, starting over for %s", file_path)
         _abort_previous_upload(loaded_state)
         upload_state = new_state
     else:
@@ -245,7 +242,7 @@ def upload_file_multipart(
     try:
         upload_state.update_source_file(file_path, file_size)
     except ValueError as e:
-        locked_print(f"Cannot resume upload: {e}, size changed, starting over")
+        logger.warning("Cannot resume upload: %s, size changed, starting over", e)
         _abort_previous_upload(upload_state)
         upload_state = make_new_state()
         upload_state.save()
@@ -253,7 +250,7 @@ def upload_file_multipart(
         return MultiUploadResult.ALREADY_DONE
     finished = upload_state.finished()
     if finished > 0:
-        locked_print(f"Resuming upload for {file_path}, {finished} parts already uploaded")
+        logger.info("Resuming upload for %s, %d parts already uploaded", file_path, finished)
     started_new_upload = finished == 0
     upload_info = upload_state.upload_info
 
@@ -314,24 +311,20 @@ def upload_file_multipart(
             upload_state.save()
             return MultiUploadResult.SUSPENDED
 
-        msg = "\n########################################"
-        msg += f"# Upload complete, sorting {len(upload_state.parts)} parts to complete upload"
-        msg += "########################################\n"
-        locked_print(msg)
         parts: list[FinishedPiece] = [
             p for p in upload_state.parts if not isinstance(p, EndOfStream)
         ]
-        locked_print(f"Upload complete, sorting {len(parts)} parts to complete upload")
+        logger.info("Upload complete, sorting %d parts to complete upload", len(parts))
         parts.sort(key=lambda x: x.part_number)
         parts_s3: list[dict] = [{"ETag": p.etag, "PartNumber": p.part_number} for p in parts]
-        locked_print(f"Sending multi part completion message for {file_path}")
+        logger.info("Sending multi part completion message for %s", file_path)
         s3_client.complete_multipart_upload(
             Bucket=bucket_name,
             Key=object_name,
             UploadId=upload_info.upload_id,
             MultipartUpload={"Parts": parts_s3},
         )
-        locked_print(f"Multipart upload completed: {file_path} to {bucket_name}/{object_name}")
+        logger.info("Multipart upload completed: %s to %s/%s", file_path, bucket_name, object_name)
     except Exception:
         if upload_info.upload_id and abort_transfer_on_failure:
             with contextlib.suppress(Exception):

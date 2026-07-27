@@ -1,6 +1,6 @@
 import contextlib
+import logging
 import random
-import warnings
 from collections.abc import Generator
 from concurrent.futures import ThreadPoolExecutor
 from queue import Queue
@@ -10,6 +10,8 @@ from rclone_kit.dir import Dir
 from rclone_kit.dir_listing import DirListing
 from rclone_kit.operations.walk import walk_runner_depth_first
 from rclone_kit.types import ListingOption, Order
+
+logger = logging.getLogger(__name__)
 
 _MAX_OUT_QUEUE_SIZE = 50
 _WORKER_JOIN_TIMEOUT_SECONDS = 30.0
@@ -193,10 +195,10 @@ def scan_missing_folders(
             _drain_queue_until_sentinel(out_queue)
         worker.join(timeout=_WORKER_JOIN_TIMEOUT_SECONDS)
         if worker.is_alive():
-            warnings.warn(
+            logger.warning(
                 "scan_missing_folders background walk did not finish within "
-                f"{_WORKER_JOIN_TIMEOUT_SECONDS}s of generator teardown",
-                stacklevel=2,
+                "%ss of generator teardown",
+                _WORKER_JOIN_TIMEOUT_SECONDS,
             )
     if errors:
         raise errors[0]

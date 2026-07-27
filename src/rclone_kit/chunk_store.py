@@ -6,13 +6,14 @@ merging or uploading them. `get_staging_root` is also the single place that
 decides where every large temporary file this library writes goes.
 """
 
+import logging
 import os
 import tempfile
 import time
 from pathlib import Path
 from threading import Lock
 
-from rclone_kit.util import locked_print
+logger = logging.getLogger(__name__)
 
 STAGING_DIR_ENV_VAR = "RCLONE_KIT_TMP_DIR"
 
@@ -54,14 +55,14 @@ def _clean_old_files(out: Path) -> None:
             f = Path(root) / name
             age_days = (now - f.stat().st_mtime) / _SECONDS_PER_DAY
             if age_days > _STALE_FILE_AGE_DAYS:
-                locked_print(f"Removing old file: {f}")
+                logger.info("Removing old file: %s", f)
                 f.unlink()
 
     for root, dirs, _files in os.walk(out):
         for dir_name in dirs:
             d = Path(root) / dir_name
             if not list(d.iterdir()):
-                locked_print(f"Removing empty directory: {d}")
+                logger.info("Removing empty directory: %s", d)
                 d.rmdir()
 
 

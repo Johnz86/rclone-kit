@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -10,7 +11,8 @@ from rclone_kit.chunk_store import get_chunk_tmpdir
 from rclone_kit.s3.multipart.finished_piece import FinishedPiece
 from rclone_kit.s3.multipart.upload_info import UploadInfo
 from rclone_kit.types import EndOfStream, SizeSuffix
-from rclone_kit.util import locked_print
+
+logger = logging.getLogger(__name__)
 
 _SAVE_STATE_LOCK = Lock()
 
@@ -93,7 +95,7 @@ class UploadState:
             try:
                 last_upload_state = UploadState.from_json(s3_client, path)
             except Exception as e:
-                locked_print(f"Error loading state: {e}")
+                logger.warning("Error loading state from %s: %s", path, e)
                 last_upload_state = None
 
             if last_upload_state is not None:

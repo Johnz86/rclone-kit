@@ -1,10 +1,12 @@
 import json
-import warnings
+import logging
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import PurePosixPath
 
 from rclone_kit.rpath import RcloneJsonEntry, RPath
+
+logger = logging.getLogger(__name__)
 
 _STRING_INTERNER: dict[str, str] = {}
 
@@ -55,7 +57,7 @@ def _get_suffix(name: str, chop_compressed_suffixes: bool = True) -> str:
             parts = parts[:-1]
         return ".".join(parts[-1:])
     except IndexError:
-        warnings.warn(f"Invalid name: {name} for normal suffix extraction", stacklevel=2)
+        logger.warning("Invalid name: %s for normal suffix extraction", name)
         suffix = PurePosixPath(name).suffix
         if suffix.startswith("."):
             return suffix[1:]
@@ -117,8 +119,8 @@ class FileItem:
                 mime_type=mime_type,
                 mod_time=mod_time,
             )
-        except KeyError:
-            warnings.warn(f"Invalid data: {data}", stacklevel=2)
+        except KeyError as missing_key:
+            logger.warning("Invalid data, missing key %s: %s", missing_key, data)
             return None
 
     @staticmethod
@@ -126,8 +128,8 @@ class FileItem:
         try:
             data_dict = json.loads(data)
             return FileItem.from_json(remote, data_dict)
-        except json.JSONDecodeError:
-            warnings.warn(f"Invalid JSON data: {data}", stacklevel=2)
+        except json.JSONDecodeError as error:
+            logger.warning("Invalid JSON data: %s: %s", error, data)
             return None
 
     def __hash__(self) -> int:

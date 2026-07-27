@@ -6,6 +6,7 @@ containing a `<span class="name"><a href="...">NAME</a></span>`, with a
 trailing slash on the name distinguishing a directory from a file.
 """
 
+import logging
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -152,7 +153,7 @@ class _ShortRangeResponse:
 
 
 def test_download_rejects_short_ranged_response(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     server = HttpServer("http://localhost:8080", "", process=_stub_process())
     destination = tmp_path / "download"
@@ -164,10 +165,14 @@ def test_download_rejects_short_ranged_response(
     monkeypatch.setattr(http_server_module, "_range", lambda _count: iter((0,)))
     monkeypatch.setattr(time, "sleep", lambda _seconds: None)
 
-    with pytest.warns(UserWarning), pytest.raises(HttpFetchError):
+    with (
+        caplog.at_level(logging.WARNING, logger=http_server_module.logger.name),
+        pytest.raises(HttpFetchError),
+    ):
         server.download("file.bin", destination, Range(0, 4))
 
     assert not destination.exists()
+    assert "retrying" in caplog.text
 
 
 def test_download_after_shutdown_raises_runtime_error(tmp_path: Path) -> None:

@@ -1,8 +1,10 @@
+import logging
 import re
-import warnings
 from dataclasses import dataclass
 from enum import Enum
 from typing import Self
+
+logger = logging.getLogger(__name__)
 
 _MIN_S3_PATH_PARTS = 2
 
@@ -287,9 +289,11 @@ class PartInfo:
         minimum_bytes = (src_size.as_int() + _MAX_PART_NUMBER - 1) // _MAX_PART_NUMBER
         min_chunk_size = SizeSuffix(minimum_bytes)
         if min_chunk_size > target_chunk_size:
-            warnings.warn(
-                f"min_chunk_size: {min_chunk_size} is greater than target_chunk_size: {target_chunk_size}, adjusting target_chunk_size to min_chunk_size",
-                stacklevel=2,
+            logger.warning(
+                "min_chunk_size: %s is greater than target_chunk_size: %s, "
+                "adjusting target_chunk_size to min_chunk_size",
+                min_chunk_size,
+                target_chunk_size,
             )
             chunk_size = SizeSuffix(min_chunk_size)
         else:

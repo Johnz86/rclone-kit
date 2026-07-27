@@ -1,6 +1,7 @@
 """Unit tests for `rclone_kit.s3.multipart.upload_parts_server_side_merge`."""
 
 import json
+import logging
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any, cast
@@ -10,6 +11,7 @@ import pytest
 from rclone_kit.client import Rclone
 from rclone_kit.exceptions import S3MergeError
 from rclone_kit.operation import OperationResult
+from rclone_kit.s3.multipart import upload_parts_server_side_merge as merge_module
 from rclone_kit.s3.multipart.info_json import InfoJson
 from rclone_kit.s3.multipart.merge_state import MergeState, Part
 from rclone_kit.s3.multipart.upload_parts_server_side_merge import (
@@ -279,7 +281,7 @@ def _stub_info_for_begin_or_resume() -> InfoJson:
 
 
 def test_begin_or_resume_merge_falls_back_to_fresh_merge_on_corrupt_state(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     """A malformed prior merge.json must not abort the merge: `MergeState.from_json`
     raises `KeyError`/`MergeStateError`, which `_begin_or_resume_merge` treats as "no
@@ -293,9 +295,10 @@ def test_begin_or_resume_merge_falls_back_to_fresh_merge_on_corrupt_state(
         lambda **_kwargs: _FakeS3ClientForNewUpload(),
     )
 
-    with pytest.warns(UserWarning, match="Failed to resume merge"):
+    with caplog.at_level(logging.WARNING, logger=merge_module.logger.name):
         merger = _begin_or_resume_merge(rclone=rclone, info=_stub_info_for_begin_or_resume())
 
+    assert "Failed to resume merge" in caplog.text
     assert merger.state is not None
     assert merger.state.upload_id == "new-upload-id"
     assert merger.state.finished == []

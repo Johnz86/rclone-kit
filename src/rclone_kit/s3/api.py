@@ -1,4 +1,4 @@
-import warnings
+import logging
 
 from botocore.client import BaseClient
 
@@ -16,6 +16,8 @@ from rclone_kit.s3.types import (
     S3MutliPartUploadConfig,
     S3UploadTarget,
 )
+
+logger = logging.getLogger(__name__)
 
 _MIN_THRESHOLD_FOR_CHUNKING = 5 * 1024 * 1024
 
@@ -71,9 +73,11 @@ class S3Client:
                 filesize = upload_target.src_file_size
 
             if filesize < _MIN_THRESHOLD_FOR_CHUNKING:
-                warnings.warn(
-                    f"File size {filesize} is less than the minimum threshold for chunking ({_MIN_THRESHOLD_FOR_CHUNKING}), switching to single threaded upload.",
-                    stacklevel=2,
+                logger.info(
+                    "File size %d is less than the minimum threshold for chunking (%d), "
+                    "switching to single threaded upload.",
+                    filesize,
+                    _MIN_THRESHOLD_FOR_CHUNKING,
                 )
                 self.upload_file(upload_target)
                 return MultiUploadResult.UPLOADED_FRESH
@@ -96,10 +100,13 @@ class S3Client:
             endpoint_url = self.credentials.endpoint_url
             provider = self.credentials.provider.value
             region_name = self.credentials.region_name
-            warnings.warn(
-                "Error uploading file "
-                f"{key!r} to bucket {bucket_name!r} via {provider!r} "
-                f"at {endpoint_url!r} in region {region_name!r}: {type(e).__name__}",
-                stacklevel=2,
+            logger.exception(
+                "Error uploading file %r to bucket %r via %r at %r in region %r: %s",
+                key,
+                bucket_name,
+                provider,
+                endpoint_url,
+                region_name,
+                type(e).__name__,
             )
             raise

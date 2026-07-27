@@ -7,8 +7,8 @@ path return any children" would be.
 
 from __future__ import annotations
 
+import logging
 import random
-import warnings
 from collections.abc import Generator
 from fnmatch import fnmatch
 from tempfile import TemporaryDirectory
@@ -32,6 +32,8 @@ from rclone_kit.util import get_check, to_path, write_files_from
 if TYPE_CHECKING:
     from rclone_kit.access import ListingAccess
     from rclone_kit.rc.list_stream import RcListStreamClient
+
+logger = logging.getLogger(__name__)
 
 _DIFF_OPTION_TO_RC_FLAG = {
     DiffOption.COMBINED: "combined",
@@ -185,7 +187,8 @@ def fetch_size_files_embedded(
     file regardless of how many directories/remotes they span.
 
     `check=True` (never the default) lets the RC failure (`RcCallError`)
-    propagate; `check=False` warns and reports an empty listing instead.
+    propagate; `check=False` logs a warning and reports an empty listing
+    instead.
     """
     check = get_check(check)
     if not files:
@@ -195,9 +198,9 @@ def fetch_size_files_embedded(
         tmp = access.size_file(full_path)
         return SizeResult(prefix=src, total_size=tmp.as_int(), file_sizes={files[0]: tmp.as_int()})
     if fast_list:
-        warnings.warn(
-            "It's not recommended to use --fast-list with size_files as this will perform poorly on large repositories since the entire repository has to be scanned.",
-            stacklevel=2,
+        logger.warning(
+            "It's not recommended to use --fast-list with size_files as this will perform "
+            "poorly on large repositories since the entire repository has to be scanned."
         )
 
     target = RcPath.parse(src)
@@ -217,7 +220,7 @@ def fetch_size_files_embedded(
         except RcCallError as error:
             if check:
                 raise
-            warnings.warn(f"Error getting file sizes: {error}", stacklevel=2)
+            logger.warning("Error getting file sizes: %s", error)
             result = {"list": []}
 
     remote_name, parent_path = split_remote_and_path(src)

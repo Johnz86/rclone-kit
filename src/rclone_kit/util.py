@@ -12,11 +12,10 @@ import string
 import subprocess
 import tempfile
 import threading
-import warnings
 from collections.abc import Callable
 from pathlib import Path
 from threading import Lock
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from rclone_kit.dir import Dir
 from rclone_kit.rc.paths import split_remote_and_path
@@ -27,8 +26,6 @@ if TYPE_CHECKING:
     from rclone_kit.access import ListingAccess
 
 logger = logging.getLogger(__name__)
-
-_PRINT_LOCK = Lock()
 
 _TMP_CONFIG_DIR_PREFIX = "rclone-kit-config-"
 _RCLONE_CONFIGS_LIST: list[Path] = []
@@ -184,11 +181,6 @@ def format_command(command: list[str]) -> str:
     return subprocess.list2cmdline(redacted)
 
 
-def locked_print(*args: object, **kwargs: Any) -> None:
-    with _PRINT_LOCK:
-        print(*args, **kwargs)
-
-
 def port_is_free(port: int) -> bool:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         return s.connect_ex(("localhost", port)) != 0
@@ -205,7 +197,7 @@ def find_free_port() -> int:
         if port_is_free(port):
             return port
         port = _random_port()
-    warnings.warn(f"Failed to find a free port, so using {port}", stacklevel=2)
+    logger.warning("Failed to find a free port, so using %d", port)
     return port
 
 

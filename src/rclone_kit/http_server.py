@@ -2,7 +2,6 @@
 
 import logging
 import time
-import warnings
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
@@ -125,11 +124,11 @@ def _concatenate_chunks(chunk_files: list[Path], dst_path: Path) -> None:
         dst_path.parent.mkdir(parents=True, exist_ok=True)
     with open(dst_path, "wb") as file:
         for chunk_file in chunk_files:
-            logger.info(f"Appending {chunk_file} to {dst_path}")
+            logger.info("Appending %s to %s", chunk_file, dst_path)
             with open(chunk_file, "rb") as part:
                 while chunk := part.read(_CHUNK_READ_SIZE):
                     file.write(chunk)
-            logger.info(f"Removing {chunk_file}")
+            logger.info("Removing %s", chunk_file)
             chunk_file.unlink()
 
 
@@ -171,7 +170,7 @@ class HttpServer:
             response = httpx.head(url)
             return response.status_code == httpx.codes.OK
         except Exception as e:
-            warnings.warn(f"Failed to check if {self.url}/{path} exists: {e}", stacklevel=2)
+            logger.warning("Failed to check if %s/%s exists: %s", self.url, path, e)
             return False
 
     def size(self, path: str) -> int:
@@ -195,15 +194,13 @@ class HttpServer:
         """
         if not _PUT_WARNING_EMITTED.is_set():
             _PUT_WARNING_EMITTED.set()
-            warnings.warn(
-                "PUT method not implemented on the rclone binary as of 1.69", stacklevel=2
-            )
+            logger.warning("PUT method not implemented on the rclone binary as of 1.69")
         self._ensure_running()
         url = self._get_file_url(path)
         headers = {"Content-Type": "application/octet-stream"}
         try:
             response = httpx.post(url, content=data, timeout=_TIMEOUT, headers=headers)
-            logger.info(f"Allowed methods: {response.headers.get('Allow')}")
+            logger.info("Allowed methods: %s", response.headers.get("Allow"))
             response.raise_for_status()
         except httpx.HTTPError as e:
             raise HttpFetchError(path, e) from e
@@ -265,11 +262,14 @@ class HttpServer:
                     if range:
                         length = range.end - range.start
                         logger.info(
-                            f"Downloaded bytes starting at {range.start} with size {length} to {dst}"
+                            "Downloaded bytes starting at %s with size %s to %s",
+                            range.start,
+                            length,
+                            dst,
                         )
                     else:
                         size = dst.stat().st_size
-                        logger.info(f"Downloaded {size} bytes to {dst}")
+                        logger.info("Downloaded %d bytes to %s", size, dst)
                     if range is not None:
                         expected_size = (range.end - range.start).as_int()
                         actual_size = dst.stat().st_size
@@ -289,9 +289,12 @@ class HttpServer:
                 return attempt()
             except HttpFetchError as error:
                 last_error = error
-                warnings.warn(
-                    f"Failed to download {path} to {dst}: {error}, retrying ({attempt_number})",
-                    stacklevel=2,
+                logger.warning(
+                    "Failed to download %s to %s: %s, retrying (%d)",
+                    path,
+                    dst,
+                    error,
+                    attempt_number,
                 )
                 time.sleep(_DOWNLOAD_RETRY_DELAY_SECONDS)
         assert last_error is not None
@@ -349,7 +352,7 @@ class HttpServer:
                         on_progress(bytes_completed, total_bytes)
 
                 if errors:
-                    warnings.warn(f"Failed to download chunked: {errors}", stacklevel=2)
+                    logger.warning("Failed to download chunked: %s", errors)
                     raise HttpFetchError(src_path, errors[0]) from errors[0]
 
                 _concatenate_chunks(finished, dst_path)
@@ -360,7 +363,7 @@ class HttpServer:
                     if f.exists():
                         f.unlink()
                 except OSError as ee:
-                    warnings.warn(f"Failed to delete file {f}: {ee}", stacklevel=2)
+                    logger.warning("Failed to delete file %s: %s", f, ee)
             raise
 
     def __enter__(self) -> Self:
