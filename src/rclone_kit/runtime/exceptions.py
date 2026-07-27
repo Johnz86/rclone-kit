@@ -3,10 +3,16 @@
 Centralizing every runtime exception here keeps `platform.py`,
 `native_platform.py`, and `hashing.py` free of duplicated error definitions
 and avoids import cycles between them.
+
+Rooted in `RcloneKitError` so a platform/download/cache fault reaches the
+same documented `except RcloneKitError` boundary handler as every other
+library failure.
 """
 
+from rclone_kit.exceptions import RcloneKitError
 
-class RcloneRuntimeError(Exception):
+
+class RcloneRuntimeError(RcloneKitError):
     """Base type for every exception raised by `rclone_kit.runtime`."""
 
 
