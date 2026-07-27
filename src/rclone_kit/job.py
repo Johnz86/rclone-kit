@@ -12,8 +12,9 @@ thread; progress is pull-based through `JobHandle.status()`/`.stats()`.
 
 `JobState.CANCELLED`/`JobState.LOST` never come out of `rc/jobs.py`'s
 parser - only this module produces them, since only this module tracks
-"did *this* client ask to cancel this job" and "did rclone's own record
-disappear before we ever saw a terminal state".
+"did *this* client ask to cancel this job" and "did this job's terminal
+state become permanently unobservable" (rclone's record expired, or the
+job id was reused by a restarted rclone).
 """
 
 from __future__ import annotations
@@ -28,7 +29,9 @@ from typing import TYPE_CHECKING, Self
 
 from rclone_kit.exceptions import (
     JobExpiredError,
+    JobIdentityError,
     OperationCancelledError,
+    OperationError,
     OperationFailedError,
     OperationTimeoutError,
 )
@@ -48,6 +51,10 @@ logger = logging.getLogger(__name__)
 _DEFAULT_POLL_INTERVAL_SECONDS = 0.5
 _DEFAULT_CLOSE_WAIT_SECONDS = 5.0
 _CANCELLATION_ERROR_MARKER = "context canceled"
+_EXPIRED_STATUS_ERROR = "job record expired before its terminal state could be observed"
+_IDENTITY_MISMATCH_STATUS_ERROR = (
+    "job id was reused by a restarted rclone before this job's terminal state could be observed"
+)
 
 _EMPTY_STATS = TransferStats(
     bytes=0,
@@ -395,6 +402,9 @@ class _JobMonitor:
             except RcJobNotFoundError:
                 self._settle_lost(record)
                 return
+            except JobIdentityError as error:
+                self._settle_identity_mismatch(record, error)
+                return
             except Exception:
                 # Transient: a status-call/parsing error does not mean the
                 # job itself failed or disappeared - only `RcJobNotFoundError`
@@ -464,6 +474,40 @@ class _JobMonitor:
         self._forget(record)
 
     def _settle_lost(self, record: _JobRecord) -> None:
+        """Rclone's own job record is gone, so its terminal state expired
+        before this client could observe it."""
+        self._settle_unobservable(
+            record,
+            JobExpiredError(record.ref.job_id, record.ref.execute_id),
+            status_error=_EXPIRED_STATUS_ERROR,
+        )
+
+    def _settle_identity_mismatch(self, record: _JobRecord, error: JobIdentityError) -> None:
+        """A mismatched `execute_id` is a permanent identity fault, not a
+        transient poll failure: rclone restarted, job ids restarted from
+        one, and this job id now belongs to an unrelated job. Retrying
+        could only ever re-observe that unrelated job, so the record is
+        settled here instead of being left tracked forever - an unsettled
+        record blocks `wait()` indefinitely and burns the whole
+        `Rclone.close()` shutdown deadline."""
+        self._settle_unobservable(record, error, status_error=_IDENTITY_MISMATCH_STATUS_ERROR)
+
+    def _settle_unobservable(
+        self, record: _JobRecord, error: OperationError, *, status_error: str
+    ) -> None:
+        """Settle `record` terminally when this job's real outcome can
+        never be observed, reporting `JobState.LOST`.
+
+        `LOST` is documented in terms of rclone's expiry window, which
+        describes an expired record exactly and an identity mismatch only
+        by analogy. A dedicated enum member would still be the worse
+        trade: `JobState` is public API, so every consumer matching
+        exhaustively on it would break, while the two causes are the same
+        fact to a caller - this handle's job is terminal and its outcome
+        is unknowable. Which cause it was stays available in
+        `JobStatus.error` and, authoritatively, in the `OperationError`
+        subclass `wait()` re-raises.
+        """
         now = datetime.now(UTC)
         with record.condition:
             started_at = record.latest_status.started_at if record.latest_status else now
@@ -475,10 +519,9 @@ class _JobMonitor:
             started_at=started_at,
             ended_at=now,
             duration=(now - started_at).total_seconds(),
-            error="job record expired before its terminal state could be observed",
+            error=status_error,
             output={},
         )
-        error = JobExpiredError(record.ref.job_id, record.ref.execute_id)
         with record.condition:
             record.latest_status = lost_status
             record.terminal_exception = error

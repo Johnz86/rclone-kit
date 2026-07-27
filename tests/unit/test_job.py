@@ -25,11 +25,13 @@ from fake_job_client import wait_until as _wait_until
 
 from rclone_kit.exceptions import (
     JobExpiredError,
+    JobIdentityError,
     OperationCancelledError,
     OperationFailedError,
     OperationTimeoutError,
 )
-from rclone_kit.operation import JobState, TransferStats
+from rclone_kit.job import _IDENTITY_MISMATCH_STATUS_ERROR
+from rclone_kit.operation import JobState, JobStatus, TransferStats
 from rclone_kit.rc.jobs import RcJobNotFoundError, RcJobRef
 
 
@@ -531,6 +533,88 @@ class TestTransientPollingErrors:
 
         assert result.ok is True
         assert handle.status().state is JobState.SUCCEEDED
+
+    def test_a_transient_status_error_leaves_the_record_tracked_for_retry(self) -> None:
+        # The complement of the identity-mismatch case below: an error the
+        # monitor cannot prove is permanent must keep the record tracked and
+        # unsettled, however many polls in a row it fails.
+        job_client = FakeJobClient()
+        monitor = _monitor(job_client)
+        handle = monitor.start_job(
+            "sync/copy", {}, group="g1", operation="copy", source="a", destination="b", check=False
+        )
+        job_client.queue_status(handle.job_id, RuntimeError("transient network error"))
+
+        time.sleep(_POLL_INTERVAL * 5)
+
+        assert not handle.done
+        assert handle.job_id in monitor._records
+
+
+class TestJobIdentityMismatch:
+    def test_identity_mismatch_settles_the_job_and_wait_reraises_it(self) -> None:
+        job_client = FakeJobClient()
+        monitor = _monitor(job_client)
+        handle = monitor.start_job(
+            "sync/copy", {}, group="g1", operation="copy", source="a", destination="b", check=True
+        )
+        job_client.queue_status(
+            handle.job_id,
+            JobIdentityError(handle.job_id, handle.execute_id, "exec-after-rclone-restart"),
+        )
+
+        with pytest.raises(JobIdentityError):
+            handle.wait(timeout=_WAIT_TIMEOUT)
+
+        assert handle.done
+        assert handle.status().state is JobState.LOST
+        assert handle.status().error == _IDENTITY_MISMATCH_STATUS_ERROR
+
+    def test_identity_mismatch_forgets_the_record_and_stops_polling_it(self) -> None:
+        job_client = FakeJobClient()
+        monitor = _monitor(job_client)
+        polled: list[RcJobRef] = []
+        original_status = job_client.status
+
+        def _counting_status(ref: RcJobRef) -> JobStatus:
+            polled.append(ref)
+            return original_status(ref)
+
+        job_client.status = _counting_status  # type: ignore[method-assign]
+        handle = monitor.start_job(
+            "sync/copy", {}, group="g1", operation="copy", source="a", destination="b", check=False
+        )
+        job_client.queue_status(
+            handle.job_id,
+            JobIdentityError(handle.job_id, handle.execute_id, "exec-after-rclone-restart"),
+        )
+
+        with pytest.raises(JobIdentityError):
+            handle.wait(timeout=_WAIT_TIMEOUT)
+        polls_at_settle = len(polled)
+        time.sleep(_POLL_INTERVAL * 5)
+
+        assert handle.job_id not in monitor._records
+        assert len(polled) == polls_at_settle
+
+    def test_shutdown_settles_a_job_that_failed_identity_validation(self) -> None:
+        # Regression guard for `Rclone.close()`: an unsettled record makes
+        # shutdown() burn its whole deadline and report False, leaving the
+        # native runtime open.
+        job_client = FakeJobClient()
+        monitor = _monitor(job_client)
+        handle = monitor.start_job(
+            "sync/copy", {}, group="g1", operation="copy", source="a", destination="b", check=False
+        )
+        job_client.queue_status(
+            handle.job_id,
+            JobIdentityError(handle.job_id, handle.execute_id, "exec-after-rclone-restart"),
+        )
+
+        all_settled = monitor.shutdown(deadline_seconds=_WAIT_TIMEOUT)
+
+        assert all_settled is True
+        assert handle.done
 
 
 class TestJobExpiry:
