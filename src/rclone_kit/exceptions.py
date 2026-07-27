@@ -45,10 +45,16 @@ class ConfigParseError(RcloneKitError):
 
 
 class RcloneCommandError(RcloneKitError):
-    """Raised when an `rclone` subprocess invocation fails.
+    """Raised when one of the operations named after an rclone command
+    (`copyto`, `cat`, `liststream`) fails.
 
-    Carries the rclone executable's stderr output, and the underlying
-    `subprocess.CalledProcessError` or `OSError` as `__cause__`.
+    No subprocess is involved: these run against the embedded runtime, so
+    `stderr` carries whatever diagnostic text the failure produced -
+    `OperationResult.error` for a failed job, or the stream's own error
+    for a listing - and `cause` is the underlying `OperationError`,
+    `FileNotFoundError`, or `RuntimeError`, also set as `__cause__`. The
+    attribute keeps its `stderr` name because it is part of this type's
+    published surface, not because a process wrote to a pipe.
     """
 
     def __init__(self, command: str, stderr: str, cause: Exception) -> None:
