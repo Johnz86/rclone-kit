@@ -732,6 +732,35 @@ internal subpackages. `MissingOptionalDependencyError` stays outside the
 root by design, since it subclasses `ImportError` to mark a deployment
 packaging fault the docs handle permanently, ahead of the catch-all.
 
+`client.py`'s size was then measured rather than argued about, since the
+review had flagged its growth to 1387 lines and 54 public methods as the
+god-class complaint getting worse. Parsing the class: 58 of its 69 methods
+are single-expression delegations, only 11 contain any control flow, and 7
+of those 11 are lifecycle plumbing (`__init__`, `close`, the `_ensure_*`
+accessors). The file is 294 declared parameters and ~370 docstring lines
+wrapped around almost no logic - it is a facade, and its size is API
+surface, not tangle. The six methods it gained were new operations.
+
+So no structural split was done, and the reasoning is recorded so it is
+not relitigated. Namespaces stay rejected for the `rclone.config`
+collision above. Mixins were rejected too: each would need
+`self._rc_client`, `self._client_id`, `self.config` and
+`self._ensure_job_monitor()` without owning any of them, so type-checking
+them means a shared Protocol every mixin inherits - trading one greppable
+file for six plus a protocol, moving lines while removing nothing.
+
+What was done instead is remove from `client.py` the things that were not
+facade: the six `_COPY_RC_METHOD`/`_COPY_OPERATION`-family constants moved
+beside `start_directory_transfer_embedded`, whose `method`/`operation`
+vocabulary they are; `save_to_db`'s body - the one method with real logic,
+an optional-dependency guard around a paging loop - moved to
+`operations/db_ops.py`, which must live outside `rclone_kit.db` because
+importing that module is exactly what fails without the extra; and the
+retry-asymmetry explanation, which the module docstring states in full and
+five methods each restated at length before referring to it anyway. A
+stale `detail.walk.walk_runner_depth_first` reference and two `Args:`
+blocks that duplicated their own prose went with them.
+
 Finally, `[tool.pyright]` gained an `exclude`. A bare `uv run pyright` -
 what an editor's language server runs - reported 123 errors, every one
 from the gitignored `reference/` checkout of rclone's own sources, the Go
