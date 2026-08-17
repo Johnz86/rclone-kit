@@ -20,12 +20,11 @@ def parse_file(file_path: str) -> RcPathParts:
     calls this on real local paths too (via `RemoteFS.remove()`), and on
     Linux those never contain a colon at all. A Windows path also parses
     with `remote=""` and its drive letter (`C:\\...`) folded into
-    `parents`/`name` via `RcPath.parse_parts` - not the pre-existing
-    accidental `remote="C"` split this used to do by hand, which never
-    split on `\\` at all and so collapsed a Windows path's whole
-    directory structure into one opaque `name` (see `_colonify` for how
-    `group_files` reassembles a Windows drive's parent path once split
-    this way).
+    `parents`/`name` via `RcPath.parse_parts`, rather than splitting on
+    the drive colon into an accidental `remote="C"` - a split that ignores
+    `\\` entirely and collapses a Windows path's whole directory structure
+    into one opaque `name` (see `_colonify` for how `group_files`
+    reassembles a Windows drive's parent path once split that way).
     """
     if file_path.endswith("/"):
         raise ValueError(f"This looks like a directory path: {file_path!r}")

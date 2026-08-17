@@ -1,7 +1,7 @@
-"""Native-backed parity check for the embedded async copy engine (ledger
-rows T03-T05: `start_copy()`, `copy()`, `copy_dir()`, `copy_remote()`)
-against the real built native library, including the Phase D4
-`rclonekit/copy` Go endpoint.
+"""Native-backed coverage for the embedded async copy engine
+(`start_copy()`, `copy()`, `copy_dir()`, `copy_remote()`) against the real
+built native library, including the fork-owned `rclonekit/copy` Go
+endpoint.
 
 Skipped automatically when no built native library exists (run
 `scripts/native/build.py` first).
@@ -144,7 +144,7 @@ def test_start_copy_cancel_does_not_crash_and_settles(tmp_path: Path, embedded: 
     assert handle.done
 
 
-def test_copy_returns_a_completed_process(tmp_path: Path, embedded: Rclone) -> None:
+def test_copy_reports_success_and_reproduces_the_tree(tmp_path: Path, embedded: Rclone) -> None:
     embedded_src = tmp_path / "embedded_src"
     embedded_dst = tmp_path / "embedded_dst"
     _make_nested_tree(embedded_src)
@@ -216,7 +216,7 @@ def test_rc_job_client_used_directly_still_works_end_to_end(
     tmp_path: Path, embedded: Rclone
 ) -> None:
     # Sanity check that the public facade and the lower-level RcloneRcJobClient
-    # (Phase D2) agree - both are exercised by the same underlying RcClient.
+    # agree - both are exercised by the same underlying RcClient.
     src = tmp_path / "src"
     dst = tmp_path / "dst"
     _make_nested_tree(src)

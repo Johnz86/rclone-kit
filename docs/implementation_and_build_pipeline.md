@@ -3,13 +3,9 @@
 ## Purpose and status
 
 This is the current maintainer guide for the `rclone-kit` implementation,
-test strategy, build pipeline, and safe contribution workflow. It replaces
-the historical build and source improvement proposals: the build
-recommendations, focused source fixes, and the larger source redesign (the
-client-architecture refactor around a single `Rclone` class and narrow
-`RcloneBackend` boundary) have all been implemented. See "Improvement
-roadmap" below for what remains: typing/linting depth, release-pipeline
-refinement, build isolation, and source distributions.
+test strategy, build pipeline, and safe contribution workflow. See
+"Improvement roadmap" below for what remains: typing/linting depth,
+release-pipeline refinement, build isolation, and source distributions.
 
 The authoritative configuration remains in the code:
 
@@ -21,8 +17,10 @@ The authoritative configuration remains in the code:
   systems and machine architectures; `runtime/native_platform.py` maps them
   to certified `NativeTarget`s (wheel platform tag, library/executable
   filenames).
-- `native/toolchain.toml` pins the rclone fork commit/branch, the Go
-  version, and the Windows/Linux compiler toolchains a native build uses.
+- `native/toolchain.toml` pins the rclone fork URL and branch names, the Go
+  version, and the Windows/Linux compiler toolchains a native build uses;
+  the fork *commit* is pinned by the `native/rclone` submodule gitlink, not
+  by this file.
 - `.github/workflows/ci.yml` defines the required CI graph.
 - `docs/release_process.md` defines release recording and publication.
 
@@ -121,6 +119,62 @@ mechanism to interrupt it with). This is why a slow call - e.g. an
 `ls_stream()` pull awaiting new items - does not starve an unrelated
 job-status check or cancellation the way full serialization would.
 
+That wait is unbounded by design: finalizing while a call is still
+dispatched would tear down state the call is using, which is a
+process-level crash rather than a recoverable error, so no timeout could
+safely give up and finalize anyway. Instead the wait reports itself,
+logging every 10s how many calls are still outstanding, so a slow drain
+is diagnosable rather than a silent hang.
+
+No library code writes into the current working directory.
+`chunk_store.get_staging_root()` is the single place that decides where
+large temporary files go - byte-range chunk downloads, S3 multipart upload
+chunks, and the opt-in upload log. It defaults to an `rclone-kit`
+subdirectory of the OS temporary directory and honours `RCLONE_KIT_TMP_DIR`,
+re-reading the environment on every call so a deployment or a test can
+move the location after import. Temporary config files go under the OS
+temporary directory too, via `tempfile.mkdtemp`.
+
+### Resource ownership and exit cleanup
+
+Every type that owns an operating-system resource exposes an idempotent
+teardown method, and the ones used in a scoped way also implement the
+context-manager protocol. The method name splits by lineage rather than by
+accident: `JobHandle`, `DB`, `FSWalkThread`, `FSWalker`, and
+`WriteMergeStateThread`/`S3MultiPartMerger` in
+`s3/multipart/upload_parts_server_side_merge.py` expose `close()`, while
+`MountHandle`, `ServeHandle`, and `RemoteFS` expose `dispose()` - the name
+`Rclone.close()` itself calls when it drains its tracked resources. Either
+way the method is reachable without `with`, so a caller that owns the
+object across a wider scope is not forced into the protocol.
+
+Exit-time cleanup goes through `util.make_atexit_registrar`, which
+registers exactly one `atexit` handler per module and drains a registry of
+live objects. A closure registered per instance or per call would instead
+pin its captured arguments for the rest of the process and grow without
+bound. `file_part.py` and `util.py` use it.
+`s3/multipart/upload_parts_resumable.py` instead registers its own single
+module-level `atexit` handler directly, and does so at import time rather
+than lazily on first use, which is correct there because the module is
+only ever imported function-locally at its one real call site - import and
+first use already coincide.
+
+`fs/walk.py`'s module-level `ThreadPoolExecutor` is an intentional
+process-lifetime singleton, shared by every `FSPath` walk and sized once
+at import from `FS_WALK_THREAD_MAX_BACKLOG`.
+
+`walk()` and `scan_missing_folders()` share one background-thread
+lifecycle, `background_producer.iter_background_producer`: the traversal
+runs on a daemon thread that feeds a bounded queue and always ends by
+putting a `None` sentinel, while the caller sees a generator. That module
+owns the parts easy to get wrong in a copy - draining the queue when a
+consumer stops iterating early, so the producer is not left blocked
+forever on a queue nobody reads; joining with a timeout and reporting an
+overrun; re-raising the producer's exception from the consumer's own call
+rather than signalling it with `_thread.interrupt_main()`; and letting a
+consumer's `KeyboardInterrupt` propagate instead of returning a silently
+truncated listing.
+
 ### Domain and feature modules
 
 - `file.py`, `dir.py`, `remote.py`, `rpath.py`, and `types.py` hold the
@@ -136,10 +190,74 @@ job-status check or cancellation the way full serialization would.
   library resolution (`library.py`), the `ctypes` runtime binding
   (`runtime.py`), and build-info reporting (`build_info.py`).
 
+Rclone paths (`remote:bucket/path`) are parsed with `PurePosixPath`, never
+`pathlib.Path`. `Path` resolves to `WindowsPath` on Windows, which treats a
+literal `\` inside a segment - a valid character in many remote object
+keys - as a directory separator, silently splitting one object name into
+two path components; the same code is `PosixPath` on Linux and shows no
+symptom there. `group_files`, `Dir`/`File`'s path math, `FileItem.from_json`,
+`RemoteFS._to_remote_path`, and `FSPath` all follow this rule. `FSPath` is
+shared by `RealFS`, which legitimately wants native `Path` semantics, and
+`RemoteFS`, which does not, so it branches on its `FS` type in
+`_pure_path()`.
+
+`RealFS.ls` returns full path strings while `RemoteFS.ls` returns bare
+names (directories keep a trailing `/` marker). That asymmetry is
+load-bearing rather than an inconsistency to clean up: `FSPath.__truediv__`
+and `fs_walk`'s `current / name` join work uniformly across both only
+because `pathlib`'s `/` discards its left side when the right side is
+itself absolute. `FS.ls`'s abstract method documents the contract.
+
 S3 and database dependencies are optional and imported lazily. Missing
 packages raise `MissingOptionalDependencyError` with the extra to install.
 Importing `rclone_kit` itself must not require optional extras, configure the
 root logger, start a thread, or spawn a process.
+
+`s3/multipart/` holds three structurally different upload strategies -
+inline, resumable, and server-side merge - rather than one state machine,
+because their shapes genuinely differ. Only the server-side merge persists
+progress as an object: `MergeState` in `merge.json`, written by a
+`WriteMergeStateThread` fed over a queue. That thread's `close()` always
+sends the end-of-stream sentinel itself before joining, so a caller cannot
+orphan the writer by forgetting to; `_do_upload_task`'s
+`executor.shutdown(..., cancel_futures=True)` on a retry-exhausted part
+copy would otherwise cancel a not-yet-started sentinel task and leave the
+writer blocked on `queue.get()` forever. `merge()` closes the thread in a
+`finally`, so it happens on success and failure alike, and `close()`
+raises `S3MergeError` on a join timeout rather than warning, because a
+merge whose state never reached `merge.json` is a correctness signal, not
+a best-effort cleanup miss. The resumable strategy has no equivalent
+persisted state by design: it treats rclone's own listing of the parts
+directory as the source of truth for which parts finished.
+
+### Diagnostics and the error taxonomy
+
+Every runtime diagnostic goes through `logging`. `T201` is enforced under
+`src/rclone_kit/`, with narrow per-file exceptions for the console scripts,
+`scripts/`, the tests, and the single deliberate `print` implementing
+`Rclone.print()`, so a stray `print` in library code is a lint error.
+`warnings` is reserved for the one thing it is actually right for:
+`RemoteFS.mkdir`'s caller-misuse report, which tells a programmer they
+called something their backend cannot do. Per-item runtime diagnostics must
+not use it, because the warnings channel deduplicates on
+`(message, category, module, lineno)` and would fire once per process and
+then drop everything after.
+
+`RcloneKitError` is the single root of the hierarchy: the per-subsystem
+base types `RcCallError` (a failed RC call), `NativeError` (an ABI-level
+fault), `RcJobNotFoundError`, and `RcloneRuntimeError` (a platform or
+native-artifact fault) all subclass it, so the `except RcloneKitError`
+boundary handler `production_usage.md` recommends genuinely catches a
+failed RC call. `MissingOptionalDependencyError` is the one deliberate
+exclusion: it subclasses `ImportError` because a missing extra is a
+deployment packaging fault, and belongs in a permanent-failure branch
+ahead of the catch-all. The package root exports every type in
+`exceptions.py` plus each subsystem's base type; narrower subsystem
+subclasses (the `NativeError` family, `RcJobNotFoundError`,
+`RcloneRuntimeError`'s two subclasses) stay in their defining modules, so
+a boundary handler catches the base rather than enumerating them. The
+defining modules stay importable, but the package root is the supported
+import path.
 
 ### Job handles and the retry-aware copy endpoint
 
@@ -163,6 +281,63 @@ real result. Job identity is validated on both `jobid` and `executeId`:
 rclone restarts job IDs from 1 after a process restart, so `executeId` is
 what actually distinguishes an old job from a coincidentally reused ID; a
 mismatch raises `JobIdentityError` rather than silently trusting a stale ID.
+
+There is no fork-owned `rclonekit/sync` or `rclonekit/move`, so
+`sync()`/`start_sync()` and `move()`/`start_move()`/`move_to()` call
+upstream `sync/sync`/`sync/move` directly. The underlying operation runs
+exactly once, `OperationResult.attempts` is always empty for them, and
+they expose no `retries` parameter, because `_config.Retries` is read only
+by the command-level loop they do not have. Per-file `low_level_retries`
+still applies, since it is enforced inside the operation. The loop is
+deliberately not reimplemented in Python: rclone resets its accounting
+group's error state between attempts, which an out-of-process caller
+cannot do, so a naive retry would double-count stats and misattribute an
+abandoned attempt's errors.
+
+One `_JobMonitor` tick costs one RC round-trip no matter how many jobs it
+tracks: it polls them all through `job/batch` (`RcBatchStatusClient`), so
+the effective poll interval does not degrade with partition count. A
+whole-call failure there disables batching permanently and falls back to
+one `job/status` per job on the same tick. `job/list` is not used, because
+`librclone.RPC` registers every RC call as a job, which would size the
+response by all of the process's bookkeeping jobs rather than by the
+tracked ones.
+
+Three poll outcomes are permanent rather than transient, and settle the
+record terminally as `JobState.LOST`: rclone's own record expired
+(`JobExpiredError`), the job id was reused by a restarted rclone
+(`JobIdentityError`), and the polling runtime was closed
+(`JobRuntimeClosedError` - `RcloneRuntime`'s closed flag is a one-way
+latch). An unsettled record would block `wait()` indefinitely and burn the
+whole `Rclone.close()` shutdown deadline. `NativeNotInitializedError` stays
+in the transient branch: a job being polled at all implies an initialize
+that already succeeded. `LOST` covers all three because `JobState` is
+public API and they are the same fact to a caller - terminal, outcome
+unknowable; which one it was stays in `JobStatus.error` and in the
+`OperationError` subclass `wait()` re-raises.
+
+Progress is pulled, never pushed, and that is a considered choice rather
+than a missing feature. rclone has nothing to push from: its own
+`--progress` flag is a 500ms ticker goroutine (`cmd/progress.go`)
+repainting from the same mutex-protected `StatsInfo` that `core/stats`
+reads on demand, the Prometheus exporter polls that same structure again,
+and the finest granularity the accounting layer produces is a ~1s-averaged
+speed figure. A push channel would also be the first reverse-direction
+call in the ABI - Go invoking a C function pointer needs a cgo trampoline,
+since cgo only makes the C-calls-Go direction free - and would require an
+`RCLONEKIT_ABI_VERSION` bump with negotiation between older and newer
+library/binding pairs. So `JobHandle.watch()` is a generator sleeping
+between `stats()` calls and `on_progress()` runs that generator on its own
+thread (`progress.py`, shared with `PartitionedJobHandle` through the
+narrow `ProgressSource` protocol); neither adds anything below the
+`_JobMonitor` boundary.
+
+`check()` is the one operation that is not a job. It is a direct
+synchronous `operations/check` call returning a frozen `CheckResult`,
+because the report *is* the RC output and the job types deliberately
+surface only `attempts` from that output. It therefore has no `JobHandle`
+and cannot be cancelled or progress-polled; it blocks nothing but its own
+caller, since `RcloneRuntime.call` holds no lock for a call's duration.
 
 `copy_files()`/`delete_files()` write each partition's file list to a
 temporary `_filter.FilesFrom` file rather than passing paths inline - RC has
@@ -269,8 +444,9 @@ The canonical command performs one atomic sequence:
 8. runs the installed-wheel smoke test; and
 9. prints the verified wheel path and SHA-256.
 
-Staged executables never touch the tracked `src/` tree. Temporary staging and
-the smoke environment are removed after success or failure.
+Staging happens in an isolated copy of the source tree, so the tracked `src/`
+is byte-identical before and after a build. Temporary staging and the smoke
+environment are removed after success or failure.
 
 If verification or the smoke test fails after wheel construction, treat any
 wheel left in the output directory as unverified. Diagnose it, then use a new
@@ -333,8 +509,8 @@ tests-linux ----/
   on Linux, mirroring `native/README.md`'s manual recipe rather than GHA's
   `container:` job directive, since that would run JS-based actions inside
   the container's old glibc), builds the native library
-  (`scripts/native/build.py --profile production`), runs `tests/native`
-  against the real library, runs the canonical build command
+  (`scripts/native/build.py --target <target> --profile production`), runs
+  `tests/native` against the real library, runs the canonical build command
   (`scripts/build_distribution.py`, which builds the library a second time
   in its own isolated temp dir by design), and uploads only its verified
   wheel;
@@ -380,9 +556,10 @@ uv run pytest tests/native
 
 Run `tests/unit` and `tests/native` as **separate** `pytest` invocations, not
 combined: `tests/cloud/conftest.py` and `tests/native/conftest.py` are both
-importable as the bare module name `conftest` (via `pyproject.toml`'s
-`pythonpath` setting), so a combined run can have one sibling's `conftest`
-silently win for both via Python's module cache.
+importable as the bare module name `conftest` (pytest's default `prepend`
+import mode inserts each conftest's own directory into `sys.path`, and
+neither directory is a package), so a combined run can have one sibling's
+`conftest` silently win for both via Python's module cache.
 
 The suites have different purposes:
 
@@ -394,9 +571,9 @@ The suites have different purposes:
   (DLL/SO-backed integration tests). Skips automatically when no built
   library exists at `build/native/<target>/` - run
   `scripts/native/build.py --target <target> --profile production` first
-  (see `native/README.md`). This is the current replacement for what used
-  to be a `tests/integration` suite against a real CLI `rclone` executable;
-  that suite and the executable it depended on are both gone.
+  (see `native/README.md`). This is the suite that covers real
+  library-backed behavior; there is no subprocess-level integration suite,
+  because there is no executable to drive.
 - `tests/cloud` is opt-in and mutates real remote storage. Use dedicated test
   credentials and the documented environment variables in `tests/helpers.py`.
   Mount tests additionally require WinFsp on Windows or FUSE and a usable
@@ -439,13 +616,14 @@ The suites have different purposes:
     config file and no Google Cloud Console setup (it uses rclone's own
     built-in shared client_id, the same as plain interactive `rclone config
     create`), but does need a native library built locally
-    (`uv run python scripts/native/build.py`) and, unlike every other suite
-    here, a real human present: it blocks mid-run waiting for someone to
-    approve access in a real browser, so it can never be scripted further
-    without violating the provider's terms of service. Uses its own remote
-    name (`gdrive-authtest`) and config file (`rclone-gdrive-authtest.conf`)
-    so it never touches `tests/live/gdrive`'s remote or file. Run it
-    explicitly with:
+    (`uv run python scripts/native/build.py --target <target> --profile
+    production`; `--target` is required, e.g. `windows-amd64`) and, unlike
+    every other suite here, a real human present: it blocks mid-run waiting
+    for someone to approve access in a real browser, so it can never be
+    scripted further without violating the provider's terms of service.
+    Uses its own remote name (`gdrive-authtest`) and config file
+    (`rclone-gdrive-authtest.conf`) so it never touches
+    `tests/live/gdrive`'s remote or file. Run it explicitly with:
 
     ```bash
     uv run pytest tests/live/gdrive_authorization -m live_gdrive_authorization
@@ -474,26 +652,29 @@ The suites have different purposes:
   run does for collection alone, even when all end up deselected -
   whichever sibling's `conftest.py` happened to import first silently wins
   for all of them (confirmed live: it swapped `LIVE_REMOTE` between the s3
-  and gdrive suites before the fixture-based fix). This constraint carries
-  forward to every future provider (or new suite for an existing one) added
-  under `tests/live/`.
+  and gdrive suites). This constraint applies to every provider - and every
+  new suite for an existing one - added under `tests/live/`.
 
-  Live-testing Drive surfaced two real gaps in the generic (non-S3) listing
-  path, both rooted in the same fact: `ls()` on a nonexistent leaf path
-  fails outright on a backend with real hierarchical directories (Drive,
-  SFTP, local, ...) instead of returning an empty listing the way it does
-  for an S3-style prefix, since S3 has no real "directory" to fail to
-  resolve. `fetch_stat()`/`fetch_size_file()` (`operations/listing_ops.py`)
-  are fixed: they now catch that `CalledProcessError` and raise the
-  documented `FileNotFoundError`, the same way `check_exists()` already did
-  - `tests/live/gdrive/test_live_gdrive_ls_and_stat.py`'s missing-object
+  Two behaviors of the generic (non-S3) listing path - the path the Drive
+  suite actually exercises - follow from the same fact: `ls()` on a
+  nonexistent leaf path fails outright on a backend with real hierarchical
+  directories (Drive, SFTP, local, ...) instead of returning an empty
+  listing the way it does for an S3-style prefix, since S3 has no real
+  "directory" to fail to resolve.
+  `fetch_stat_embedded()`/`fetch_size_file_embedded()`
+  (`operations/listing_ops_embedded.py`) both go through `_stat_item`,
+  which raises the documented `FileNotFoundError` when `operations/stat`
+  returns no `item`; `check_exists_embedded()` catches that same
+  `FileNotFoundError` and returns `False` -
+  `tests/live/gdrive/test_live_gdrive_ls_and_stat.py`'s missing-object
   tests exercise this directly. `scan_missing_folders()` propagates the
-  same exception now too: its background thread collects the failure and
-  the generator re-raises it to the caller, so a dst root that doesn't
-  exist at all surfaces as that error rather than an empty (wrong) result.
+  listing failure itself (the `RcCallError` from `operations/list`): its
+  background thread collects it and the generator re-raises it to the
+  caller, so a dst root that doesn't exist at all surfaces as that error
+  rather than an empty (wrong) result.
   `test_scan_missing_folders_finds_the_nested_directory_before_any_copy`
-  still routes around it by writing a sibling file first so the dst root
-  exists, and says so in its own docstring.
+  routes around it by writing a sibling file first so the dst root exists,
+  and says so in its own docstring.
 
 Run the canonical platform build as well when changing packaging, the build
 backend, runtime artifact code, entry points, dependencies, licenses, or
@@ -503,7 +684,8 @@ platform declarations.
 
 Follow `code_style.md`. In particular:
 
-- preserve the public `Rclone` contract unless a deprecation path is provided;
+- change the public `Rclone` contract deliberately, updating its tests and
+  the documentation that describes it in the same change;
 - prefer small focused modules and pure command builders over adding more
   orchestration to `Rclone`;
 - use named constants instead of magic strings;
@@ -513,6 +695,22 @@ Follow `code_style.md`. In particular:
 - use named test constants and frozen case dataclasses for identical
   parametrized control flow; and
 - add regression tests before changing an established contract.
+
+`tests/cloud` builds its credentials once, in `tests/cloud/conftest.py`:
+`build_do_spaces_config()` builds the DigitalOcean Spaces `Config` and
+calls `pytest.skip` when `DIGITAL_OCEAN_SPACES_ENV_VARS` are missing. The
+session-scoped `cloud_runtime` initializes one process-wide
+`RcloneRuntime` from it - the native ABI permits initializing a runtime
+exactly once per process - and `cloud_rclone` hands out `Rclone` clients
+sharing that runtime and its already-configured `dst:` remote. Every
+client-using file injects one as `self.rclone` through an autouse
+`_inject_cloud_rclone(cloud_rclone)` method. Two files stay outside that
+client fixture: `test_s3.py` needs neither fixture, because it builds
+`S3Credentials`/`S3Client` directly and never constructs an `Rclone`; and
+`test_rclone_config.py` requests `do_spaces_config` directly, because it
+only parses the config text. `tests/cloud/test_conftest.py` covers the
+fixture's own skip and config-building logic offline with monkeypatched
+env vars, so it needs no `cloud` marker.
 
 Do not commit or push unless explicitly asked. Keep one logical change per
 commit and follow the authorship and commit-message rules in `code_style.md`.
@@ -532,7 +730,8 @@ commit and follow the authorship and commit-message rules in `code_style.md`.
 ### Change native build/toolchain handling
 
 Keep `native/toolchain.toml` as the single source of truth for the pinned Go
-version, C compiler toolchains, and the `native/rclone` fork commit/branch.
+version, C compiler toolchains, and the `native/rclone` fork URL and branch
+names; the commit itself is the submodule gitlink.
 `scripts/native/build.py` validates the resolved Go version and compiler
 paths against it and fails loudly on a mismatch, rather than silently
 building with the wrong toolchain.
@@ -573,464 +772,100 @@ distribution verifier and smoke test discover console scripts dynamically.
 
 ## Improvement roadmap
 
-The build pipeline is substantially complete. Source improvements were
-delivered as focused correctness, security, dependency, logging, cleanup, and
-test changes, and the broad architectural phases (error model, resource
-ownership, S3 multipart, client architecture, paths and filesystems, test
-isolation, and the post-1.1.1 review pass) are now also complete - only
-typing/linting, release publication refinement, build isolation, source
-distributions, and the deferred domain-layer freeze remain open. Improve
-them incrementally:
+What remains open: typing and linting depth, release publication
+refinement, build isolation, source distributions, retry-aware
+`sync`/`move`, and the domain-layer freeze. Improve them incrementally.
+Everything the "Implementation overview" above describes is current
+behavior, not a plan.
 
-The post-1.1.1 review pass is done. It closed six correctness defects, one
-scalability defect, one diagnostics-policy gap, and the three most
-conspicuous missing operations.
+Operations rclone exposes over RC that the client does not surface yet:
 
-Correctness: a `JobIdentityError` was treated as a transient poll failure
-and retried forever, so `wait()` blocked indefinitely and `close()` burned
-its whole shutdown deadline before leaving the runtime open permanently;
-it now settles the record terminally, reusing `JobState.LOST` rather than
-widening a public enum. `RPath`, `Remote`, `RealFS` and `RemoteFS` had
-identity semantics, which made `DirListing._dedupe` a no-op that filtered
-nothing and made two `FSPath`s for the same path compare unequal and hash
-apart - a test asserted the latter with `assertNotIn` and was inverted.
-`Rclone.close()` ran its cleanup loops unguarded, so one raising stream or
-session skipped the job shutdown and the runtime close; each release is
-now isolated and the failures surface as an `ExceptionGroup` after the
-runtime is closed. `copy()` selected its tuned defaults with `or`, so an
-explicit `0` was silently replaced. `TransferOptions` rejected
-`multi_thread_streams=0`, which is rclone's own documented way to disable
-multi-thread transfers (`doMultiThreadCopy` bails on `<= 1`). And
-`scan_missing_folders` still swallowed a real Ctrl+C through a handler
-that only existed for the retired `_thread.interrupt_main()` signalling.
+- `hashsum()` (`operations/hashsum`) - `FileItem.hash` exists and is never
+  populated;
+- `mkdir()`/`rmdir()` (`operations/mkdir`, `operations/rmdir`) -
+  `RemoteFS.mkdir` only warns that it is not supported;
+- `about()` (`operations/about`), for quota and free space;
+- runtime bandwidth limiting (`core/bwlimit`).
 
-The library also wrote into the current working directory - `chunk_store/`,
-`chunks/`, and the opt-in upload log - which fails outright under a
-read-only or shared working directory and collides between processes
-started from the same one. `chunk_store.get_staging_root()` is now the one
-place that decides where large temporary files go, under the OS temp
-directory unless `RCLONE_KIT_TMP_DIR` says otherwise.
+29 test files still use `unittest.TestCase` instead of the pytest style
+`docs/code_style.md` prescribes: 22 under `tests/cloud`, 6 under
+`tests/unit`, and 1 at the `tests/` root.
 
-Scalability: `fs_walk` submitted every discovered subdirectory
-immediately, so its pending-future map held one entry per directory in the
-whole tree (200 outstanding listings against a pool of 16 on a wide fake
-tree), and rescanned that set after every completion, making a walk
-quadratic. It is now bounded and O(1) per listing. Its docstring's claim
-of submission order was false and is now true. Separately, `_JobMonitor`
-issued one `job/status` per tracked job per tick, degrading the poll
-interval linearly with partition count; one `job/batch` per tick replaced
-it, behind an optional protocol with a same-tick fallback to per-job
-polling, since no native library is available to test the batch path
-against locally. `job/list` was rejected because `librclone.RPC` registers
-every RC call as a job, so its response is sized by all bookkeeping jobs in
-the process rather than by the tracked ones.
-
-Diagnostics are now a single policy. 26 `warnings.warn` sites were runtime
-events on a channel that deduplicates by (message, category, module,
-lineno), so per-item diagnostics fired once per process and were dropped
-thereafter; ~25 `locked_print` sites wrote library output straight to
-stdout. Both are `logging` now, `locked_print` is deleted, and `T201`
-moved from the global ignore list to narrow per-file exceptions, so a
-stray `print` under `src/rclone_kit/` is a lint error. `warnings` is kept
-only for a genuine `DeprecationWarning` and for `RemoteFS.mkdir`'s
-caller-misuse report.
-
-`sync()`/`start_sync()`, `move()`/`start_move()`, `move_to()` and
-`check()` fill the API's most conspicuous gaps, all on RC methods the
-pinned build already registers. `sync`/`move` run upstream
-`sync/sync`/`sync/move`, which have no equivalent of the fork's
-retry-aware `rclonekit/copy`: they run exactly once, their
-`OperationResult.attempts` is always empty, and they deliberately expose
-no `retries` parameter, because `_config.Retries` is read only by a
-command-level retry loop they do not have. A retry-aware `rclonekit/sync`
-and `rclonekit/move` in the fork would close that gap and is the natural
-follow-up; it needs a native rebuild and a submodule pin move, so it was
-out of scope here. `check()` runs synchronously and returns a validated
-frozen `CheckResult`, because its report *is* the RC output and the job
-types deliberately surface only `attempts` from that output.
-
-Hygiene in the same pass: the tuned copy profile was declared twice
-verbatim and is now one `TransferOptions` value applied through
-`with_defaults_from`, with a test pinning that `copy()` and `copy_files()`
-emit identical config; the post-CLI dead code in `util.py`
-(`format_command`, `find_free_port`/`port_is_free`,
-`clear_temp_config_file`) is gone along with two documentation claims that
-the library redacts credential arguments, which it no longer does;
-`http_server`'s private `FileList` no longer collides with the exported
-one; `rclone_verbose` lost the `from_api` back door that suppressed its
-own deprecation warning; `SizeSuffix` no longer accepts a `float` its
-annotation excluded; and `FileItem`'s module-level string interner became
-`sys.intern` after measurement showed the dict retained 211 MB for the
-process lifetime on a 2M-file low-fanout listing while `sys.intern` cost
-under 1 MB more and frees with the last referencing item.
-
-Two things were considered and deliberately not done. Mirroring the client
-under `rclone.s3`/`rclone.mounts`/`rclone.serve`/`rclone.config`
-namespaces was rejected: `rclone.config` is already a documented public
-`Config` attribute, so that namespace cannot exist without breaking it,
-and keeping every method as a delegating alias would have added a second
-spelling for a dozen calls while removing none. What the client actually
-had was misplaced logic, and that moved into `operations/` with no public
-name added, removed, or renamed. Retiring `RPath`'s mutable `rclone`
-back-reference and `set_rclone` - so `Dir.ls`/`Dir.walk`'s
-`assert self.path.rclone is not None` invariant stops being an assertion -
-is a breaking change needing a deprecation cycle, and belongs in its own
-release rather than bolted onto this pass.
-
-A follow-up architecture review of this branch corrected one claim made
-here and found work this pass left open; both are recorded so the next
-session does not re-derive them. The claim: the domain-layer freeze was
-described as unblocking "a large share of the untyped legacy surface the
-`ANN` rollout is waiting on". Measured with `ruff --select ANN src`, the
-domain layer accounts for 3 of 101 findings; the mass is
-`fs/filesystem.py` (16), `s3/multipart/*` (31), and `fs/walk_threaded*`
-(15). Do the freeze for its own reasons - see its roadmap row - not to
-unblock typing, and aim the typing push at `s3/multipart/` and `fs/`,
-which is also where the remaining concurrency hazards live.
-
-A second follow-up pass then closed everything that review raised except
-the deferred domain freeze. Both twins are fixed: `operations/walk.py`
-no longer swallows a consumer `KeyboardInterrupt`, which had ended the
-generator normally and so handed back a *silently truncated* listing
-indistinguishable from a complete one - the dangerous shape for the "list
-the tree, then reconcile against it" pattern `walk()` exists to serve.
-`scan_missing_folders`' inner queue turned out **not** to be fixable the
-way the review proposed: its `walk_runner_depth_first` call is
-synchronous and fills the queue completely before the drain loop starts,
-so bounding that queue would block the runner's own `put()` in the very
-thread that would later drain it, and deadlock outright. The real defect
-was that it materialised an entire missing subtree's listings at once; it
-now reuses `walk()`, which already runs the runner on its own thread
-behind a bounded queue and re-raises runner failures identically.
-
-`_JobMonitor` now settles a job on `RuntimeClosedError` instead of
-classifying it as transient. `RcloneRuntime`'s closed flag is a one-way
-latch, so every later poll raised it too and the record never settled -
-`wait()` blocked forever, `close()` burned its whole deadline, and the
-monitor thread logged a fresh traceback every 500 ms for the remaining
-life of the process. `NativeNotInitializedError` was deliberately left in
-the transient branch: unlike the closed latch, it does not describe a
-permanently unrecoverable runtime, and a job being polled at all implies
-an initialize that already succeeded, so treating it as terminal would
-settle on a contradiction rather than on evidence.
-
-`RcloneRuntime.close()`'s wait on in-flight calls is now reported rather
-than bounded. A timeout there cannot be made safe - finalizing while a
-call is still dispatched tears down state that call is using, which is a
-process-level crash, not a recoverable error - so the wait still never
-gives up, but logs every 10 s naming how many calls are outstanding,
-turning a silent hang into a diagnosable one.
-
-The error taxonomy is now single-rooted: `RcCallError`, `NativeError`,
-`RcJobNotFoundError` and `RcloneRuntimeError` all subclass
-`RcloneKitError`, so `production_usage.md`'s own recommended
-`except RcloneKitError` finally catches a failed RC call - by far the most
-common way an operation fails. Reparenting is non-breaking: it only widens
-what the root catches. Every exception type is now exported from
-`rclone_kit`, so writing that handler no longer means importing from
-internal subpackages. `MissingOptionalDependencyError` stays outside the
-root by design, since it subclasses `ImportError` to mark a deployment
-packaging fault the docs handle permanently, ahead of the catch-all.
-
-`client.py`'s size was then measured rather than argued about, since the
-review had flagged its growth to 1387 lines and 54 public methods as the
-god-class complaint getting worse. Parsing the class: 58 of its 69 methods
-are single-expression delegations, only 11 contain any control flow, and 7
-of those 11 are lifecycle plumbing (`__init__`, `close`, the `_ensure_*`
-accessors). The file is 294 declared parameters and ~370 docstring lines
-wrapped around almost no logic - it is a facade, and its size is API
-surface, not tangle. The six methods it gained were new operations.
-
-So no structural split was done, and the reasoning is recorded so it is
-not relitigated. Namespaces stay rejected for the `rclone.config`
-collision above. Mixins were rejected too: each would need
-`self._rc_client`, `self._client_id`, `self.config` and
+Two structural changes to `client.py` were evaluated against its measured
+shape and rejected; the measurement is what makes them re-decidable rather
+than re-arguable. The class is 69 methods, of which 49 have a single
+statement under their docstring; 11 of the remaining 20 are lifecycle
+plumbing (`__init__`, `close`, `_close_tracked_resources`,
+`_embedded_config_path`, three `_ensure_*` accessors, four `_track_*`
+helpers), leaving 9 methods that hold any real logic. Its size is 294
+declared parameters and 353 docstring lines of API surface wrapped around
+almost no logic, which is a facade, not a tangle. Mirroring the surface
+under `rclone.s3`/`rclone.mounts`/`rclone.serve`/`rclone.config` namespaces
+cannot work, because `rclone.config` is already a documented public
+`Config` attribute. Splitting the methods across mixins would give each
+mixin `self._rc_client`, `self._client_id`, `self.config` and
 `self._ensure_job_monitor()` without owning any of them, so type-checking
-them means a shared Protocol every mixin inherits - trading one greppable
-file for six plus a protocol, moving lines while removing nothing.
+them needs a shared Protocol every mixin inherits - six files plus a
+protocol in place of one greppable file, moving lines while removing none.
+Logic that was not facade lives in `operations/` instead: the copy/sync/move
+RC-method constants beside `start_directory_transfer_embedded`, and
+`save_to_db`'s optional-dependency guard and paging loop in
+`operations/db_ops.py`, which must sit outside `rclone_kit.db` because
+importing that package is exactly what fails without the `database` extra.
 
-What was done instead is remove from `client.py` the things that were not
-facade: the six `_COPY_RC_METHOD`/`_COPY_OPERATION`-family constants moved
-beside `start_directory_transfer_embedded`, whose `method`/`operation`
-vocabulary they are; `save_to_db`'s body - the one method with real logic,
-an optional-dependency guard around a paging loop - moved to
-`operations/db_ops.py`, which must live outside `rclone_kit.db` because
-importing that module is exactly what fails without the extra; and the
-retry-asymmetry explanation, which the module docstring states in full and
-five methods each restated at length before referring to it anyway. A
-stale `detail.walk.walk_runner_depth_first` reference and two `Args:`
-blocks that duplicated their own prose went with them.
+Typing and linting made a first pass, not the full rollout. Pyright
+`strict` covers `settings.py` and `group_files.py` (both genuinely
+0-error, not just near-zero); every other module trialed
+returns only `reportMissingTypeStubs` cross-module noise from importing a
+non-strict sibling, so broadening the list should wait on real `ANN`
+progress rather than adding more noisy modules. Current ignore-family
+counts over `src`, `tests`, and `scripts` together: `S101` 1427, `TRY` 244
+(`TRY003` 191 of it), `ANN` 211 (`ANN001` 129), `FBT001`/`FBT002`/`FBT003`
+96/51/28, `PLR0913` 52, `PTH` 28, `A001`/`A002` 13/10. These move with
+every commit - re-run `uv run ruff check --select <CODE> --no-cache
+--statistics .` before trusting them. `T201` is not among them: it is
+enforced rather than ignored, as "Diagnostics and the error taxonomy"
+describes.
 
-Finally, `[tool.pyright]` gained an `exclude`. A bare `uv run pyright` -
-what an editor's language server runs - reported 123 errors, every one
-from the gitignored `reference/` checkout of rclone's own sources, the Go
-submodule, or generated build output. It now reports 0, so the default
-invocation agrees with the explicit one in the contributing docs instead
-of burying real findings in vendored noise.
+Aim the `ANN` work at `s3/multipart/` (39 findings) and `fs/` (33 -
+`fs/filesystem.py` 16, `fs/walk_threaded*` 15), which together are most of
+the remaining surface and also where the remaining concurrency hazards
+live. The domain layer accounts for 3 findings, so the domain-layer freeze
+below is worth doing for its own reasons, not as a typing unblock.
 
-Four operations from the original proposal were dropped without a
-recorded decision and are listed here rather than lost: `hashsum()`
-(`operations/hashsum`; `FileItem.hash` exists and is never populated),
-`mkdir()`/`rmdir()` (`operations/mkdir`/`rmdir`; `RemoteFS.mkdir` still
-only warns "not supported"), `about()` (`operations/about`, for quota and
-free space), and runtime `bwlimit` (`core/bwlimit`). So was migrating the
-30 remaining `unittest.TestCase` files to the pytest style
-`docs/code_style.md` prescribes.
-
-The error model phase is done: `rclone_kit.exceptions` now holds a typed
-`RcloneKitError` hierarchy (`FilesystemError`, `ConfigParseError`,
-`RcloneCommandError`, `HttpFetchError`, `MergeStateError`, `S3MergeError`,
-`S3UploadError`), every internal call site that used to return `Exception`
-as data now raises, and the transitional `_raise_if_exception` bridge has
-been removed along with its last call site.
-
-The resource ownership phase is done except for one item folded into the S3
-multipart phase below: `Process` and `rclone_execute` no longer register a
-per-instance/per-call `atexit` closure (replaced by a single import-time
-registration draining a `WeakSet` registry, mirroring `mount_util.py`'s
-existing mount registry); `FilePart` prunes its exit-cleanup list and its
-`dispose()` is idempotent; `scan_missing_folders` no longer leaks a blocked
-background thread when a caller stops iterating early; `FSWalkThread` and
-`FSWalker` gained an idempotent `close()` reachable outside the
-context-manager protocol, which also fixed a latent double-`Thread.start()`
-bug; `upload_parts_resumable` reuses the same registry pattern instead of a
-per-call `atexit` closure; `RemoteFS` and `DB` gained context-manager support
-to match their sibling resource owners; and `fs/walk.py`'s module-level
-thread pool is now documented as an intentional process-lifetime singleton
-rather than an undocumented oversight. `mount_util.py` and
-`upload_parts_resumable.py` register their `atexit` handler at import time
-rather than lazily on first use, unlike the other modules above; their
-`_register_exit_cleanup_handlers` docstrings now explain why that is still
-correct there instead of a leftover eager pattern - both modules are
-themselves only ever imported function-locally at their one real call site,
-so module import and first real use already coincide. `WriteMergeStateThread` and
-`S3MultiPartMerger` in `upload_parts_server_side_merge.py` still need an
-explicit `close()`/`stop()` and confirmed ownership; that is deferred to the
-S3 multipart phase since it touches the same state machine.
-
-The S3 multipart phase is done for its ownership and evidence goals; the
-underlying upload algorithms were intentionally not rewritten. Rather than
-force a single state machine across three structurally different
-strategies, the ownership gap was closed and the implicit states each
-strategy already had were named and tested: `WriteMergeStateThread` gained
-an idempotent `close()` that always sends its end-of-stream sentinel before
-joining (fixing a real bug where `_do_upload_task`'s
-`executor.shutdown(..., cancel_futures=True)` on a retry-exhausted part
-copy could cancel the not-yet-started sentinel task, orphaning the writer
-thread on `queue.get()` forever); `S3MultiPartMerger` gained a matching
-`close()`/context manager, and `merge()` now closes the write thread in a
-`finally` around the upload so it happens on both success and failure;
-`close()` raises `S3MergeError` on a join timeout rather than warning,
-since a merge whose state never reached `merge.json` is a correctness
-signal, not a best-effort cleanup miss. Two dead `is`/`is not EndOfStream`
-identity checks (comparing an instance to the class) were fixed to
-`isinstance`. New fake-S3 regression tests cover every required-evidence
-scenario: resume (`_begin_or_resume_merge` from a valid prior state),
-corruption (the same function falling back to a fresh merge on a malformed
-one), retry exhaustion and worker failure (a real retry-exhausted part
-copy through the actual `ThreadPoolExecutor` path), completion failure
-(every part succeeding but `complete_multipart_upload` itself failing), and
-cleanup (the write thread closed on every one of those paths). The
-resumable strategy's "finished part" tracking (a directory listing, not a
-persisted state object like `MergeState`) was deliberately left as-is: it
-already defers to `rclone`'s own listing as the source of truth, and
-introducing a parallel persisted-state mechanism there without a
-demonstrated need would just duplicate `MergeState`'s design. A
-`PartMergeState` naming/documentation pass was considered speculative and
-skipped.
-
-The client-architecture phase is done. Command flags live in
-`command_flags.py`; configuration discovery and its shared frozen
-`RclonePaths` parser live in `config_discovery.py`; and
-`backend.py` defines the structural `RcloneBackend` contract plus the
-`CliRcloneBackend` subprocess implementation. Operation modules consume the
-backend or a focused access protocol and import at module scope without
-depending on a concrete client. The former forwarding facade and duplicate
-implementation class were merged into `client.py:Rclone`; package-root
-imports are re-exports only, internal `.impl` access is gone, and the old
-implementation module was deleted. Public `write_text`, `write_bytes`, and
-`serve_http` signatures follow the former facade contract and have dedicated
-regression tests. Configuration parsing no longer imports discovery or the
-client, and operation modules no longer require a pre-initialized concrete
-client.
-
-The execution implementation is named `CliRcloneBackend` and remains an
-internal extension boundary rather than a package-root export. Repository
-history and documentation provided no evidence that `.impl` or direct
-implementation-class imports were supported public APIs, so no compatibility
-property or module was retained. `write_bytes` keeps the former facade's
-two-argument contract, while `serve_http` keeps its curated public options and
-uses the established minimal cache mode internally. Renaming `detail` to
-`operations` is deferred as a separate mechanical change.
-
-A follow-up review of the client-architecture commit against
-`docs/rclone_architecture_refactor_plan.md` and `docs/code_style.md` found the
-import boundaries genuinely hold (confirmed by both static reading and
-`test_import_boundaries.py`'s clean-interpreter check) and no behavioral
-bugs, with `ruff check`, `pyright`, and `pytest tests/unit` green throughout.
-Four small deviations were corrected: `s3/multipart/access.py`'s
-`MultipartAccess` protocol imported its annotation-only domain types at
-module scope instead of under `TYPE_CHECKING`, unlike the sibling
-`access.py`'s `DomainAccess`/`ListingAccess`; fixing it also required
-replacing its `Order.NORMAL`/`ListingOption.ALL` defaults with `...`
-placeholders, since parameter defaults are evaluated eagerly even under
-`from __future__ import annotations` and the real enum members were no
-longer in scope at runtime. `Rclone.__init__` gained a docstring recording
-that `self.config` is derived from `rclone_conf` independently of any
-caller-supplied `backend` - `RcloneBackend` is deliberately narrow and does
-not expose its own configuration, so a caller injecting both is responsible
-for keeping them consistent. The four test files still using
-`_bare_rclone_impl`/`_stub_rclone_impl` - the one place the retired
-`RcloneImpl` name survived in the repository - were renamed to
-`_bare_rclone`/`_stub_rclone`. `MultipartAccess`'s 11-method width was
-checked against every call site in `s3/multipart/`: each method is used by
-at least one strategy, so it is a genuinely shared subset rather than the
-oversized protocol the plan warns against. `docs/rclone_architecture_refactor_plan.md`
-was removed after this review: its "Current architecture" section described
-the pre-refactor `RcloneImpl`/facade duplication this phase already
-eliminated, every phase it planned through Phase 4 (plus the compatibility
-decisions from Phase 5) is complete and narrated above, and leaving it in
-place risked convincing a future reader the cycles it describes still exist.
-`detail/` was then renamed to `operations/` as its own separate, mechanical
-commit (no other changes mixed in), resolving the plan's last open naming
-decision - every module content is unchanged, only the package name and its
-importers moved. Every `detail/*.py`/`detail.*` reference elsewhere in this
-document below is describing history from before that rename and is
-accurate for the point in time it narrates, not a live path.
-
-The paths-and-filesystems phase is done. The "local paths, rclone paths,
-and strings still overlap" complaint turned out to be a real, reproducible
-bug, not just an architectural smell: `group_files._get_prefix`,
-`Dir.relative_to`/`Dir.__truediv__`, `File.relative_to`,
-`FileItem.from_json`, `RemoteFS._to_remote_path`, and `FSPath`'s
-path-math methods all parsed `remote:bucket/path`-style rclone paths with
-`pathlib.Path`. `Path` resolves to `WindowsPath` on Windows, which treats
-a literal `\` inside a path segment - a valid character in many remote
-object keys - as a directory separator, silently splitting one filename
-into two path components; `Path` is `PosixPath` on Linux, so the same code
-never showed the bug there. Verified live on a Windows dev machine:
-`group_under_one_prefix("src:", ["Bucket/subdir/weird\\name.txt"])`
-returned the file split into `"weird"` (folded into the prefix) and
-`"name.txt"` before the fix, and the correct single `"weird\\name.txt"`
-entry after. Every affected call site now uses `PurePosixPath` -
-`pathlib`'s existing immutable, platform-independent posix-style path
-type - instead of `Path`, which is the "local vs rclone path" distinction
-the roadmap asked for without inventing a new bespoke type;
-`runtime/archive_extract.py` already established this exact pattern for
-archive member names. `FSPath` (shared by `RealFS`, which legitimately
-wants native `Path`/`WindowsPath` local-filesystem semantics, and
-`RemoteFS`, which does not) now branches on its `FS` type via a
-`_pure_path()` helper. `FS.ls`'s abstract method gained a full contract
-docstring: `RealFS.ls` returns full path strings while `RemoteFS.ls`
-returns bare names (directories keep a trailing `/` marker); this
-asymmetry is load-bearing, since `FSPath.__truediv__`/`fs_walk`'s
-`current / name` join only works uniformly across both because
-`pathlib`'s `/` operator discards the left side when the right side is
-itself an absolute path - previously undocumented and one accidental
-"normalize `RealFS.ls` to bare names" cleanup away from breaking `walk`.
-
-The test-isolation phase is done for its "move shared setup to pytest
-fixtures" goal; "replace disabled tests with deterministic fakes" was
-assessed and deliberately not attempted. 18 of `tests/cloud`'s 21 files
-each duplicated their own `_generate_rclone_config()` (13 near-identical
-lines) plus a `unittest.TestCase.setUp()` calling `skip_if_missing_cloud_env`
-- exactly the legacy setup the roadmap named. `tests/cloud/conftest.py`
-gained a `do_spaces_config` fixture that builds the same `Config` and skips
-via `pytest.skip` when `DIGITAL_OCEAN_SPACES_ENV_VARS` are missing; every
-file using the standard DigitalOcean Spaces pattern now requests it through
-an autouse fixture method (confirmed live that pytest runs autouse fixtures
-on a `unittest.TestCase` before `setUp`, so files that build `self.rclone`
-in `setUp` can rely on `self.config` already being set) - a net -319 lines
-across those 18 files. Three files were deliberately left alone:
-`test_s3.py` builds `S3Credentials`/`S3Client` directly rather than an
-rclone `Config`; `test_copy_file_resumable_s3.py` and
-`test_read_write_text.py` build a differently-shaped config that doesn't
-fit the fixture. `tests/cloud/test_conftest.py` verifies the fixture's
-skip and config-building logic offline with monkeypatched env vars, no
-`@pytest.mark.cloud` marker needed since it never touches the network.
-
-For "replace disabled tests with deterministic fakes": every currently
-`@unittest.skip`'d cloud test either needs a real OS mount facility
-(FUSE/WinFsp) or exercises real byte-for-byte transfer, range-download, or
-multi-part-upload correctness against live provider behavior that a
-hand-rolled fake would not meaningfully validate (unlike the S3 multipart
-phase's fakes, which stood in for a well-defined boto3 method surface, not
-an entire storage backend's actual bytes). Building that infrastructure was
-judged out of scope for this pass. Every skip reason was rewritten from
-opaque text ("Skip for now", "Skip test") to state why it's disabled, so a
-future contributor doesn't have to re-derive the reasoning; one skip reason
-turned out to reference a real, still-open bug
-(`RemoteFS.exists()` in `test_fs_remote.py` reports a file present
-immediately after a successful `remove()`, likely an HTTP-serve caching
-layer) that couldn't be root-caused without live bucket access.
-
-The typing and linting phase made a first pass, not the full rollout: four
-small, independently-revertable ignore-list items are resolved, and the
-groundwork for a future Pyright-strict rollout is in place, but the large
-deferred families (`S101`, `ANN`, `TRY`, `FBT001`/`FBT002`/`FBT003`,
-`A001`/`A002`, `PLR0913`, `PTH`, `PLR0911`/`PLR0912`/`PLR0915`) and the
-strict-mode rollout itself are still open. Every `subprocess.CompletedProcess`
-return type and construction across `util.py`, `backend.py`, `client.py`,
-`completed_process.py`, and `detail/transfer_ops.py` (`backend.py` and the
-`detail/` package no longer exist post-CLI-removal; this measurement is of
-historical interest only, same as the `detail/` -> `operations/` rename
-noted later in this section) was
-parameterized as `CompletedProcess[str]` - true for every call site,
-since every `Popen` invocation already passes `encoding="utf-8"` - instead
-of the bare, effectively `Unknown`-typed generic Pyright previously
-inferred; a strict-mode trial on three already-clean modules
-(`detail/listing_ops.py`, `detail/transfer_ops.py`, `group_files.py`)
-dropped from 115 to 60 errors from this change alone, confirming it as
-the single largest source of strict-mode noise and the right prerequisite
-before any `strict = [...]` rollout. Three narrow ignore families are now
-fully resolved and removed: `S324` (the one `hashlib.md5()` finding in
-`s3/multipart/info_json.py` is a content-fingerprint hash, not a security
-use, so `usedforsecurity=False` documents that without changing the
-digest); `PLR2004` in `src/` (8 magic-value comparisons now have named
-constants - reusing `httpx.codes.OK` instead of a bespoke `200` in
-`http_server.py` - while the ignore itself moved to a
-`tests/**/*.py`-scoped `per-file-ignores` entry, since this project's test
-style guide already prefers literal expected values in parametrized
-cases); and `ARG002` (the stale `config_paths` example in the old ignore
-comment no longer applied - `fetch_config_paths` already consumes its
-reserved parameters via `del` - and the 5 remaining findings, all
-signature-bound to the `FS` abstract base class or a test double's
-`Protocol`/duck-typed contract, were suppressed the same way rather than
-by loosening any signature). `group_files.py`'s one strict-mode finding
-(`reportUnnecessaryIsInstance` on `TreeNode.__repr__`'s child loop) is also
-resolved: `child_nodes: dict[str, "TreeNode"]` already guarantees every
-value is a `TreeNode`, so the `isinstance` check and its dead `else` branch
-were removed. Re-measured after the post-1.1.1 review pass: `S101` 1415,
-`TRY` 245 (`TRY003` 192 of it), `ANN` 211 (`ANN001` 129), `FBT001`/`FBT002`/
-`FBT003` 95/51/28, `PLR0913` 52, `PTH` 28, `A001`/`A002` 15/10. These are
-counted over `src`, `tests`, and `scripts` together, and the suite grew from
-834 to 974 tests during that pass, so they are not comparable like-for-like
-with the earlier figures above - re-run `uv run ruff check --select <CODE>
---no-cache --statistics .` before trusting either set.
-
-`T201` left the ignore list entirely in that pass and is not in these
-counts: it is now enforced under `src/rclone_kit/`, with narrow per-file
-exceptions for the console scripts, `scripts/`, tests, and the single
-deliberate `print` implementing `Rclone.print()`.
+The `@unittest.skip`'d tests in `tests/cloud` are not a backlog of missing
+fakes. Each one either needs a real OS mount facility (FUSE/WinFsp) or
+exercises byte-for-byte transfer, range-download, or multi-part-upload
+correctness against live provider behavior that a hand-rolled fake would
+not meaningfully validate - unlike the S3 multipart fakes, which stand in
+for a well-defined boto3 method surface rather than for an entire storage
+backend's actual bytes. Every skip reason states why that test is
+disabled; one of them records a still-open bug, `RemoteFS.exists()` in
+`test_fs_remote.py` reporting a file present immediately after a
+successful `remove()`. `exists()` is a direct `operations/stat` call with
+no HTTP serve in the path, so the cause is on the rclone or provider side -
+most likely backend listing consistency after a delete - and it cannot be
+root-caused without live bucket access.
 
 | Area | Current constraint | Preferred next step | Required evidence |
 |---|---|---|---|
-| Typing and linting | `S101`, `ANN`, `TRY`, `FBT001`/`FBT002`/`FBT003`, `A001`/`A002`, `PLR0913`, `PTH`, `PLR0911`/`PLR0912`/`PLR0915` remain globally ignored. Pyright `strict` now covers `command_flags.py`, `settings.py`, and `group_files.py` (all genuinely 0-error, not just near-zero) - every other module trialed (`access.py`, `backend.py`, `chunk_store.py`, `completed_process.py`, `config_discovery.py`) still returns only `reportMissingTypeStubs` cross-module noise from importing a non-strict sibling, so broadening the list further should wait on real `ANN` progress rather than adding more noisy modules. | Make progress on the `ANN` family (even partial) before adding more files to `strict = [...]`; re-trial candidates afterward, since most of the remaining ones are only "near-zero" because of the cross-module noise, not their own quality. | Quality gates pass with a smaller ignore surface and no broad `Any` escape hatches in changed code. |
+| Typing and linting | `S101`, `ANN`, `TRY`, `FBT001`/`FBT002`/`FBT003`, `A001`/`A002`, `PLR0913`, `PTH`, `PLR0911`/`PLR0912`/`PLR0915` remain globally ignored. Pyright `strict` covers `settings.py` and `group_files.py`; every other candidate trialed (`access.py`, `chunk_store.py`, `config_discovery.py`) returns only `reportMissingTypeStubs` cross-module noise from importing a non-strict sibling, so broadening the list further should wait on real `ANN` progress rather than adding more noisy modules. | Make progress on the `ANN` family (even partial) before adding more files to `strict = [...]`; re-trial candidates afterward, since most of the remaining ones are only "near-zero" because of the cross-module noise, not their own quality. | Quality gates pass with a smaller ignore surface and no broad `Any` escape hatches in changed code. |
 | Release publication | Done: `.github/workflows/release.yaml` builds, verifies, and publishes both certified wheels to PyPI via trusted publishing (OIDC, no stored token) on `v*` tags, gated by the `pypi-release` GitHub Environment. See `docs/release_process.md`. Artifact attestations (`actions/attest-build-provenance` or equivalent) are not yet added. | Add build provenance attestations to the `publish` job's uploaded wheels if supply-chain verification beyond trusted publishing becomes a requirement. | A published wheel carries a verifiable attestation, not just a trusted-publishing OIDC trail. |
-| Domain-layer freeze | `RPath` carries a mutable `rclone` back-reference wired in after construction by `set_rclone`, which is why it cannot be a frozen dataclass and why `Dir.__init__`/`Dir.ls`/`Dir.walk` each guard it with `assert self.path.rclone is not None` - a nullable-then-asserted invariant the type system cannot help with. The post-1.1.1 pass gave these types value semantics but left the back-reference in place, because removing it is a breaking change. That pass also made the freeze more urgent than it was: `RPath` is now hashable *and* still fully mutable, so mutating any of the seven fields `_value()` reads after inserting one into a set or dict silently corrupts the container - a hazard identity semantics did not have. `operations/listing_ops_embedded.py` already mutates `d.path.path` in place. | Make `RPath` frozen with no client reference and move `Dir.ls`/`Dir.walk`/`File.read_text` onto the client, which already has `rclone.ls(dir)`. Keep deprecated shims for one minor version. `Dir.__truediv__`, `operations/traversal_ops._to_walk_dir`, and `util.to_path` are the three internal constructors that call `set_rclone` and will need rewriting. Note the cheap half is non-breaking and need not wait: replacing `dir.py`'s three `assert self.path.rclone is not None` guards with a raised error restores an invariant that currently vanishes under `python -O`, since `S101` is globally ignored. | The `assert`-as-invariant pattern is gone from `dir.py`, `RPath` is frozen, and the deprecation shims carry a documented removal version. |
+| Domain-layer freeze | `RPath` carries a mutable `rclone` back-reference wired in after construction by `set_rclone`, which is why it cannot be a frozen dataclass and why `Dir.__init__`/`Dir.ls`/`Dir.walk` each guard it with `assert self.path.rclone is not None` - a nullable-then-asserted invariant the type system cannot help with. Removing the back-reference means rewriting every construction site and moving the convenience methods off the domain values, which is simply not done yet. Meanwhile `RPath` is hashable *and* fully mutable, so mutating any of the seven fields `_value()` reads after inserting one into a set or dict silently corrupts the container; `operations/listing_ops_embedded.py` already mutates `d.path.path` in place. | Make `RPath` frozen with no client reference and move `Dir.ls`/`Dir.walk`/`File.read_text` onto the client, which already has `rclone.ls(dir)`. Every `RPath` construction site that calls `set_rclone` needs rewriting - currently seven, in six functions: `Dir.__init__` and `Dir.__truediv__` (`dir.py`), `_stat_item` and the listing constructor in `fetch_ls_embedded` (`operations/listing_ops_embedded.py`), `_to_walk_dir` (`operations/traversal_ops.py`), and both branches of `to_path` (`util.py`). Note the cheap half is independent and need not wait: replacing `dir.py`'s three `assert self.path.rclone is not None` guards with a raised error restores an invariant that currently vanishes under `python -O`, since `S101` is globally ignored. | The `assert`-as-invariant pattern is gone from `dir.py`, `RPath` is frozen, and `Dir.ls`/`Dir.walk`/`File.read_text` live on the client. |
 | Retry-aware `sync`/`move` | `sync()`/`move()` call upstream `sync/sync`/`sync/move`, which run once with no command-level retry loop, so their `OperationResult.attempts` is always empty and they expose no `retries` parameter - unlike `copy()`, which uses the fork's `rclonekit/copy`. The loop is deliberately not reimplemented in Python: rclone resets its accounting group's error state between attempts, which an out-of-process caller cannot do, so a naive retry would double-count stats and misattribute an abandoned attempt's errors. | Add `rclonekit/sync` and `rclonekit/move` to the fork alongside `rclonekit/copy`, reusing its `runWithRetries`. Needs a native rebuild and a submodule pin move, so it cannot ride along with a Python-only change. | `sync()`/`move()` report populated `attempts` and honour `retries`/`retries_sleep`, with the same job-level tests `copy()` has. |
-| Build isolation | Smoke tests poison proxies but do not enforce network denial. | Run them in a network-disabled container or namespace where supported. | A deliberate network attempt fails while the bundled executable still runs. |
+| Build isolation | Smoke tests poison proxies but do not enforce network denial. | Run them in a network-disabled container or namespace where supported. | A deliberate network attempt fails while the bundled native library still initializes and reports `BuildInfo`. |
 | Source distributions | An sdist cannot yet build a complete certified wheel. | Keep wheel-only releases, or add a verified artifact input/download hook and test sdist-to-wheel builds on every target. | A built-from-sdist wheel passes the same verifier and smoke test. |
-| `scan_missing_folders()` on hierarchical backends | Done: originally found live against `tests/live/gdrive`, where a dst root that doesn't exist at all on a backend with real directories (Drive, SFTP, local, ...) makes the underlying `ls()` call fail inside the background walk thread. That failure is now collected by the walk thread and re-raised by the generator to its own caller after teardown, instead of being signalled with `_thread.interrupt_main()` and then swallowed by the read loop's `except KeyboardInterrupt: pass`. Both halves of the old behaviour are gone: the caller sees the real error rather than an empty result, and a user-issued Ctrl+C during iteration propagates rather than silently truncating the scan. `_drain_queue_until_sentinel` keeps a deliberately narrower `KeyboardInterrupt` suppression, because abandoning that drain halfway leaves the walk thread blocked forever on the bounded queue it exists to empty. | Optional, only if callers turn out to want it: report a wholly missing dst root as "every src directory is missing" instead of raising the listing error. | `tests/unit/test_scan_missing_folders.py` proves a background walk failure reaches the caller, and that a consumer's `KeyboardInterrupt` propagates while the worker is still joined. |
+| `scan_missing_folders()` on a wholly missing dst root | On a backend with real directories (Drive, SFTP, local, ...), a `dst` root that does not exist makes the underlying `ls()` fail in the background walk thread. That failure is collected there and re-raised by the generator to its caller after teardown, so the caller gets the real error - not an empty result, and not a silently truncated scan. Whether "the whole dst is missing" deserves a report rather than an error is still open. | Optional, only if callers turn out to want it: report a wholly missing dst root as "every src directory is missing" instead of raising the listing error. | `tests/unit/test_scan_missing_folders.py` proves a background walk failure reaches the caller, and that a consumer's `KeyboardInterrupt` propagates while the worker is still joined. |
 
 Keep improvement pull requests small. Establish the contract with tests,
-change one boundary, preserve compatibility, and remove the old path only
-after all callers have migrated.
+change one boundary, and remove the old path in the same change once its
+in-tree callers have migrated.
 
 ## Pull request checklist
 
 - [ ] The change is one coherent behavior or refactoring.
-- [ ] Public compatibility is preserved or has a documented deprecation.
+- [ ] Public API changes are intentional, with their tests and documentation
+      updated alongside them.
 - [ ] Unit tests cover success, failure, cleanup, and platform edge cases.
 - [ ] Optional features still import without their extras installed.
 - [ ] Diagnostics and log records never carry credentials or config secrets.

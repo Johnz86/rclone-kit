@@ -8,7 +8,7 @@ long-lived token.
 
 Run from a clean checkout of the commit being released, on each certified
 target platform (currently Windows AMD64 and Linux AMD64 — see
-`src/rclone_kit/runtime/platform.py`'s `SUPPORTED_ARTIFACTS`):
+`src/rclone_kit/runtime/native_platform.py`'s `SUPPORTED_NATIVE_TARGETS`):
 
 ```powershell
 uv sync --locked --all-groups --all-extras
@@ -16,22 +16,30 @@ uv run ruff format --check .
 uv run ruff check .
 uv run pyright _build_backend.py src tests scripts
 uv run pytest tests/unit
-uv run pytest tests/integration
+uv run python scripts/native/verify_submodule_pin.py
+uv run python scripts/native/build.py --target <windows|linux>-amd64 --profile production
+uv run pytest tests/native
 uv run python scripts/build_distribution.py --target <windows|linux>-amd64 --out-dir dist
 uv publish --check-url https://pypi.org/simple
 ```
+
+This is the same order `.github/workflows/release.yaml` runs: quality gates,
+then the submodule pin check, then the native build, then `tests/native`
+against that freshly built library, then the wheel.
 
 Two details matter when actually executing it:
 
 - **One canonical command replaces the manual staging/build/verify/smoke-test
   sequence.** `scripts/build_distribution.py` (see
-  `docs/implementation_and_build_pipeline.md`) stages the certified rclone
-  artifact into an isolated temporary copy of the source tree, verifies the
-  extracted executable's digest, builds exactly one wheel, runs every
-  `scripts/verify_distribution.py` check, installs the wheel into a clean
-  environment, and runs the bundled-executable and console-script smoke
-  tests — all as one atomic step. Nothing under
-  `src/rclone_kit/assets/rclone/` is ever written into this checkout; the
+  `docs/implementation_and_build_pipeline.md`) builds the certified native
+  library from the `native/rclone` submodule with `--profile production`,
+  stages it into an isolated temporary copy of the source tree, verifies the
+  staged library's SHA-256 against its shipped manifest, builds exactly one
+  wheel, runs every `scripts/verify_distribution.py` check, installs the
+  wheel into a clean environment, and runs the bundled-library (import,
+  resolve, initialize, report `BuildInfo`) and console-script smoke tests —
+  all as one atomic step. Nothing under
+  `src/rclone_kit/assets/native/` is ever written into this checkout; the
   tracked tree is byte-identical before and after the command, whether it
   succeeds or fails. `--out-dir` must be empty or nonexistent; omit it to
   let the script create a fresh temporary directory itself.
@@ -71,19 +79,28 @@ Every release must have a record — in the GitHub Release description, a
 CHANGELOG entry, or equivalent — capturing:
 
 - [ ] `rclone-kit` version (from `pyproject.toml`'s `[project] version`)
-- [ ] Bundled rclone version (`RCLONE_VERSION` in
-      `src/rclone_kit/runtime/platform.py`)
+- [ ] Bundled rclone version (`rclone_upstream_version` in
+      `native/toolchain.toml` plus the pinned `native/rclone` submodule
+      commit; the value the shipped library itself reports is
+      `NativeBuildInfo.rclone_version` — `src/rclone_kit/native/build_info.py`)
 - [ ] Supported wheel platforms (the `wheel_platform_tag` values in
-      `SUPPORTED_ARTIFACTS`, e.g. `win_amd64`, `manylinux2014_x86_64`)
+      `SUPPORTED_NATIVE_TARGETS`, `src/rclone_kit/runtime/native_platform.py`
+      — e.g. `win_amd64`, `manylinux2014_x86_64`)
 - [ ] Python version requirement (`requires-python` in `pyproject.toml`)
 - [ ] Direct dependency changes since the previous release (diff
       `[project.dependencies]`, `[project.optional-dependencies]`, and
       `[dependency-groups]` against the prior tag)
 - [ ] SHA-256 digests for every published wheel (`dist/*.whl` — `uv
       publish` prints these; `sha256sum dist/*` reproduces them)
-- [ ] Known external mount prerequisites (WinFsp on Windows, FUSE plus a
-      usable unmount command on Linux — see `rclone_kit.mount_util`'s
-      availability checks)
+- [ ] Known external mount prerequisites (WinFsp on Windows, FUSE on
+      Linux). The library detects neither: `mount()` fails at the
+      `mount/mount` RC call when the platform facility is absent. On
+      Windows the bundled library carries mount support only when built
+      with `-tags cmount`, which `--profile production` sets; on Linux
+      `cmd/mount` needs no build tag, so every certified Linux build has
+      it — see `scripts/native/build.py`'s `_build_tags` and `rc/mount.py`
+- [ ] Version strings in `docs/production_usage.md`'s install block match
+      the released version
 
 ## PyPI trusted publishing
 

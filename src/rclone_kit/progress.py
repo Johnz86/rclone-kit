@@ -4,11 +4,11 @@
 Both types already expose `.done`/`.stats()` - the pull-based primitives
 `_JobMonitor` backs. `watch()`/`on_progress()` add nothing to that
 boundary: `watch()` is a plain generator sleeping between `stats()` calls,
-`on_progress()` runs it on its own dedicated thread. No `_JobMonitor`
-internals change, and no native/ABI changes are involved - see
-`docs/progress_monitoring_design.md` for the full design rationale,
-including why a native push-callback mechanism is deliberately out of
-scope here.
+`on_progress()` runs it on its own dedicated thread. Nothing here reaches
+below the `_JobMonitor` boundary, and no native/ABI change is involved -
+see "Job handles and the retry-aware copy endpoint" in
+`docs/implementation_and_build_pipeline.md` for why progress is pulled
+rather than pushed.
 
 Defined against one narrow `ProgressSource` `Protocol` (matching this
 codebase's existing narrow-Protocol pattern, `RcJobClient` in
@@ -30,7 +30,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Matches `_JobMonitor._DEFAULT_POLL_INTERVAL_SECONDS` (`job.py`): a snapshot
+# Matches `job.py`'s module-level `_DEFAULT_POLL_INTERVAL_SECONDS`: a snapshot
 # from `watch()`/`on_progress()` is never staler than the monitor's own
 # cached status already is, and there is no reason to poll less often than
 # the underlying cache can actually change.

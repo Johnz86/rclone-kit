@@ -1,8 +1,7 @@
 """Public, execution-independent operation result/status value types.
 
 `JobHandle` (the RC job boundary) produces these types, never raw RC JSON
-or ctypes structures - callers never see a `subprocess.CompletedProcess`/
-`Process`-shaped value.
+or ctypes structures - callers never see a process-shaped value.
 
 This module is a leaf: it imports no native, RC, client, or subprocess
 modules, and depends on nothing else in this package. Wire parsing (the RC

@@ -2,8 +2,8 @@
 
 Run with the Python interpreter of a clean virtual environment that has only
 the built wheel installed (no dev dependency group) — see
-`scripts/build_distribution.py` and `.github/workflows/ci.yml`'s `package`
-job. Confirms:
+`scripts/build_distribution.py` and `.github/workflows/ci.yml`'s
+`wheel-windows`/`wheel-linux` jobs. Confirms:
 
 - importing `rclone_kit` has no observable side effect (no root logging
   handler, no background thread, no child process);
@@ -28,14 +28,6 @@ from pathlib import Path
 
 _RCLONE_KIT_MODULE_PREFIX = "rclone_kit"
 _HELP_FLAG = "--help"
-
-# rclone-kit-install-bins ignores --help entirely (a pre-existing gap, not
-# introduced here) and unconditionally tries to resolve/download the rclone
-# CLI executable - which the wheel no longer bundles now that packaging is
-# native-library-only, so it always falls through to a live download this
-# smoke test's network isolation correctly blocks. Excluded until CLI
-# removal deletes this console script outright (a separate, later stage).
-_SMOKE_EXCLUDED_CONSOLE_SCRIPTS = frozenset({"rclone-kit-install-bins"})
 
 
 def _root_logging_handler_count() -> int:
@@ -107,7 +99,6 @@ def _rclone_kit_console_script_names() -> list[str]:
         entry_point.name
         for entry_point in console_scripts
         if entry_point.module.startswith(_RCLONE_KIT_MODULE_PREFIX)
-        and entry_point.name not in _SMOKE_EXCLUDED_CONSOLE_SCRIPTS
     )
 
 

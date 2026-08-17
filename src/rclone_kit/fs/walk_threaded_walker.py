@@ -28,10 +28,9 @@ class FSWalker:
     blocks on a full `result_queue` as soon as a consumer stops early, and
     only `close()` unblocks it, so a lazily started walker would silently
     strand a thread for the life of the process - exactly the leak
-    `close()` exists to prevent. Before, `walk()` failed at that point
-    too, but with a bare `AttributeError: 'FSWalker' object has no
-    attribute 'walker'` that pointed at the implementation rather than at
-    the missing `with`.
+    `close()` exists to prevent. `walk()` therefore raises
+    `_NOT_ENTERED_MESSAGE`, which names the missing `with` instead of
+    pointing at this class's internals.
     """
 
     fspath: FSPath

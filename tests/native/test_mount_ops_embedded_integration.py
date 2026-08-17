@@ -83,7 +83,7 @@ def test_mount_dispose_is_idempotent(tmp_path: Path, embedded: Rclone) -> None:
     handle.dispose()
 
     assert handle.closed is True
-    # a disposed handle must not stay tracked forever - see finding #5's
+    # a disposed handle must not stay tracked forever - see the
     # "disposed serve/mount handles stay in the client's tracking sets"
     assert handle not in embedded._mount_handles
 

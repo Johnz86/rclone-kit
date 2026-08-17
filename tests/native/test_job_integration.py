@@ -114,7 +114,8 @@ def test_cancel_a_real_job_does_not_crash_and_settles(
     # a fast local copy commonly finishes before cancellation lands, so
     # this only asserts the handle settled cleanly either way - real
     # cancellation-interrupts-an-active-attempt coverage belongs to the
-    # downstream Go endpoint's own test suite (Phase D4), not here.
+    # downstream Go endpoint's own test suite
+    # (native/rclone/librclone/rclonekit/rc/copy_test.go), not here.
     assert result.ok or result.cancelled or result.error is not None
     assert handle.done
     monitor.shutdown(deadline_seconds=5.0)

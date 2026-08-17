@@ -2,10 +2,9 @@
 `walk_runner_breadth_first`, run entirely offline against an in-memory fake
 directory tree (no subprocess or network calls).
 
-Neither function had any unit test coverage before this file: the only
-caller-side coverage was `tests/cloud/test_walk.py`, which is gated behind
-real cloud credentials and only ever prints results without asserting
-completeness - it could not have caught either bug fixed here.
+`tests/cloud/test_walk.py` drives the same functions against a real remote,
+but it is gated behind cloud credentials and only prints what it finds, so
+these are the tests that assert completeness.
 
 Each walker enqueues exactly one `DirListing` per directory it visits
 (that directory's own children, not the directory itself), so a tree with
@@ -85,9 +84,8 @@ class _FakeTreeRclone:
 class _FailingAtPathRclone(_FakeTreeRclone):
     """Fails `Dir.ls()` for one specific path, to exercise walker error
     handling - both walkers must still queue the sentinel and propagate
-    the failure rather than swallowing it, since a swallowed non-
-    `KeyboardInterrupt` failure used to leave `walk()`'s consumer blocked
-    on `out_queue.get()` forever.
+    the failure rather than swallowing it, since a swallowed failure
+    leaves `walk()`'s consumer blocked on `out_queue.get()` forever.
     """
 
     def __init__(self, tree: dict, fail_path: str) -> None:
@@ -167,11 +165,12 @@ def test_walker_queues_sentinel_and_reraises_on_a_listing_failure(walker) -> Non
 
 @pytest.mark.parametrize("breadth_first", [True, False], ids=["breadth_first", "depth_first"])
 def test_walk_generator_reraises_a_background_listing_failure(breadth_first: bool) -> None:
-    # Regression test: a non-KeyboardInterrupt failure in the background
-    # walk thread used to propagate straight out of the walker without ever
-    # queuing the sentinel, leaving walk()'s consumer loop blocked on
-    # out_queue.get() forever. It must now both terminate and surface the
-    # real failure to the caller, not swallow it.
+    """A failure in the background walk thread must both terminate the
+    generator and surface the real exception to the caller.
+
+    The walker queues its sentinel even when it fails, so the consumer
+    loop is never left blocked on `out_queue.get()`.
+    """
     root = _FailingAtPathRclone(_TREE, fail_path="root/A").root()
 
     with pytest.raises(RuntimeError, match="simulated listing failure"):
@@ -197,12 +196,12 @@ def test_walk_generator_yields_every_directory(breadth_first: bool) -> None:
 def test_walk_generator_propagates_a_consumer_keyboard_interrupt(breadth_first: bool) -> None:
     """Ctrl+C during iteration must reach the caller.
 
-    `walk()` used to catch `KeyboardInterrupt` in its consumer loop and
-    `pass`, which ended the generator normally - so an interrupted walk
-    handed back a silently truncated listing indistinguishable from a
-    complete one. That is the dangerous shape for the "list the tree, then
-    reconcile against it" pattern `walk()` exists to serve: a caller
-    deleting whatever the walk did not report would delete live data.
+    Catching it in the consumer loop would end the generator normally, so
+    an interrupted walk would hand back a silently truncated listing
+    indistinguishable from a complete one. That is the dangerous shape for
+    the "list the tree, then reconcile against it" pattern `walk()` exists
+    to serve: a caller deleting whatever the walk did not report would
+    delete live data.
     """
     root = _FakeTreeRclone(_TREE).root()
     listings = walk(root, breadth_first=breadth_first, max_depth=-1)

@@ -12,9 +12,9 @@ dist/
 *.egg
 MANIFEST
 
-# CI-only staged rclone binaries copied into package data before `uv build`;
-# never tracked source. See scripts/prepare_rclone_artifact.py.
-/src/rclone_kit/assets/rclone/
+# Defensive: scripts/build_distribution.py stages the native library into an
+# isolated temporary copy of the tree, so nothing should ever land here.
+/src/rclone_kit/assets/native/
 
 # Unpinned research checkout of upstream rclone/rclone - never a build
 # input. The production source is the native/rclone submodule.

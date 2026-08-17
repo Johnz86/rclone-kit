@@ -41,7 +41,7 @@ def test_dir_built_from_a_unix_local_path_reconstructs_without_a_stray_colon() -
 def test_dir_built_from_a_remote_object_is_unaffected() -> None:
     # `Dir(Remote(...))`'s own "remote:remote:" duplication (passing
     # `str(remote)`, itself already colon-suffixed, into `RPath.path`) is a
-    # separate, pre-existing quirk unrelated to finding #6 - this only
+    # separate quirk unrelated to the path-modeling bugs - this only
     # confirms the RPath.__str__ fix above did not change it further, since
     # `remote.name` is non-empty here.
     remote = Remote(name="remote", rclone=_FAKE_RCLONE)

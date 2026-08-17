@@ -1,6 +1,4 @@
-"""
-Unit test file for testing rclone mount functionality.
-"""
+"""Cloud tests for `serve_http()` and the `HttpServer` byte-range client."""
 
 import atexit
 import os

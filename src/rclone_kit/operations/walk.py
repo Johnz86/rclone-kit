@@ -1,19 +1,12 @@
-import contextlib
-import logging
 import random
 from collections.abc import Generator
 from queue import Queue
-from threading import Thread
 
+from rclone_kit.background_producer import iter_background_producer
 from rclone_kit.dir import Dir
 from rclone_kit.dir_listing import DirListing
 from rclone_kit.remote import Remote
 from rclone_kit.types import Order
-
-logger = logging.getLogger(__name__)
-
-_MAX_OUT_QUEUE_SIZE = 50
-_WORKER_JOIN_TIMEOUT_SECONDS = 30.0
 
 
 def walk_runner_breadth_first(
@@ -24,21 +17,18 @@ def walk_runner_breadth_first(
 ) -> None:
     """Breadth-first counterpart to `walk_runner_depth_first`.
 
-    Tracks remaining depth per queued node (`(Dir, depth)` tuples), not a
-    single `max_depth` counter decremented once per node dequeued: the
-    previous implementation exhausted that shared counter after processing
-    just one node per remaining depth level, regardless of how many
-    siblings existed at that level, so only the first branch was ever
-    walked past depth 1 - e.g. with three top-level children and
-    max_depth=2, only the first child's own children were visited; the
-    second and third children's subdirectories were silently skipped.
+    Remaining depth is tracked per queued node (`(Dir, depth)` tuples)
+    rather than by one counter shared across the traversal: every sibling
+    at a level is entitled to the full remaining depth, and a single
+    counter decremented once per dequeued node would exhaust after one
+    node per level, leaving only the first branch walked past depth 1.
 
     Always puts a `None` sentinel before returning, success or failure -
-    `walk()`'s consumer loop blocks on `out_queue.get()` forever otherwise.
-    Any exception simply propagates to whoever called this function - a
-    synchronous caller (e.g. `scan_missing_folders`) sees it directly;
-    `walk()` runs this as a background thread's target and captures it
-    itself to re-raise from its own consumer loop.
+    `walk()`'s consumer loop blocks on `out_queue.get()` forever
+    otherwise. Any exception simply propagates to whoever called this
+    function - a synchronous caller sees it directly; `walk()` runs this
+    as a background thread's target and captures it there to re-raise
+    from its own consumer loop.
     """
     queue: Queue[tuple[Dir, int]] = Queue()
     queue.put((dir, max_depth))
@@ -64,24 +54,19 @@ def walk_runner_depth_first(
 ) -> None:
     """Depth-first counterpart to `walk_runner_breadth_first`.
 
-    Uses a single iterative stack, not recursive self-calls: the previous
-    implementation recursed directly (`walk_runner_depth_first(subdir, ...)`)
-    instead of pushing onto `stack`, so every recursive call independently
-    put its own `None` sentinel onto the shared `out_queue`. The first
-    consumer (`walk()`'s `while ... : if dirlisting is None: break`) stopped
-    at the first sentinel it saw, silently truncating the walk to whatever
-    the first-visited subtree had produced - anything from later siblings,
-    or from the starting directory's own listing, was left unread in the
-    queue. Pushing subdirectories onto the shared stack instead means
-    exactly one sentinel is put, after the entire traversal completes.
+    Descends with a single iterative stack, not recursive self-calls:
+    exactly one sentinel may reach `out_queue`, and a recursive call
+    would put its own on return - stopping the consumer at the end of the
+    first subtree, with every later sibling's listing left unread in the
+    queue.
 
     Each directory's listing is put onto `out_queue` before its
     subdirectories are pushed (pre-order), matching
     `walk_runner_breadth_first`'s ordering.
 
-    Always puts a `None` sentinel before returning, success or failure - see
-    `walk_runner_breadth_first`'s docstring for why, and for how a failure
-    reaches the caller.
+    Always puts a `None` sentinel before returning, success or failure -
+    see `walk_runner_breadth_first`'s docstring for why, and for how a
+    failure reaches the caller.
     """
     try:
         stack = [(dir, max_depth)]
@@ -100,95 +85,27 @@ def walk_runner_depth_first(
         out_queue.put(None)
 
 
-def _drain_queue_until_sentinel(out_queue: Queue[DirListing | None]) -> None:
-    """Consume `out_queue` until the walk runner's sentinel `None` appears.
-
-    Used when a `walk()` consumer stops iterating early (`break`, or
-    garbage collection closing the generator) instead of letting the walk
-    run to completion. Without this, the background walk thread would
-    block forever on `out_queue.put()` once nobody drains its bounded
-    queue, leaking a permanently blocked thread.
-
-    `KeyboardInterrupt` is suppressed *here only*, never in `walk()`'s own
-    consumer loop: this drain is the teardown itself, and abandoning it
-    halfway recreates exactly the blocked thread it exists to prevent. An
-    interrupt that started the teardown keeps propagating once this
-    returns - only a further Ctrl+C landing inside the drain is dropped.
-    """
-    with contextlib.suppress(KeyboardInterrupt):
-        while out_queue.get() is not None:
-            pass
-
-
 def walk(
     dir: Dir | Remote,
     breadth_first: bool,
     max_depth: int = -1,
     order: Order = Order.NORMAL,
 ) -> Generator[DirListing]:
-    """Walk through the given directory recursively.
+    """Yield one `DirListing` per directory under `dir`, recursively
+    (`max_depth=-1` for unlimited).
 
-    A `KeyboardInterrupt` raised in the consumer loop propagates rather
-    than being swallowed. Catching it here used to end the generator
-    normally, so a Ctrl+C partway through handed the caller a *silently
-    truncated* listing that was indistinguishable from a complete one -
-    the dangerous shape for the "list the tree, then reconcile against it"
-    pattern this function exists to serve. Teardown still runs in the
-    `finally` below, so the background thread is not leaked either way.
-
-    Args:
-        dir: Directory or Remote to walk through
-        max_depth: Maximum depth to traverse (-1 for unlimited)
-
-    Yields:
-        DirListing: Directory listing for each directory encountered
+    `breadth_first` picks which runner traverses the tree; both put a
+    directory's own listing before descending into it. The traversal runs
+    on a background thread feeding a bounded queue, so listings arrive as
+    they are produced and the whole tree is never held in memory at once
+    - see `iter_background_producer` for that lifecycle.
     """
-    if isinstance(dir, Remote):
-        dir = Dir(dir)
-    out_queue: Queue[DirListing | None] = Queue(maxsize=_MAX_OUT_QUEUE_SIZE)
-    errors: list[BaseException] = []
+    root = Dir(dir) if isinstance(dir, Remote) else dir
 
-    def _task() -> None:
-        """Run the chosen walker, capturing any exception into `errors`
-        instead of letting it die as an uncaught background-thread
-        exception. Re-raised from the consumer loop below rather than
-        signaled via `_thread.interrupt_main()`: that call delivers an
-        async `KeyboardInterrupt` at the main thread's next bytecode
-        boundary, which can land after this generator has already
-        exhausted normally (sentinel already consumed) - surfacing as a
-        misleading `KeyboardInterrupt` in unrelated later code instead of
-        this real failure.
-        """
-        try:
-            if breadth_first:
-                walk_runner_breadth_first(dir, max_depth, out_queue, order)
-            else:
-                walk_runner_depth_first(dir, max_depth, out_queue, order)
-        except BaseException as exc:
-            errors.append(exc)
+    def produce(out_queue: Queue[DirListing | None]) -> None:
+        if breadth_first:
+            walk_runner_breadth_first(root, max_depth, out_queue, order)
+        else:
+            walk_runner_depth_first(root, max_depth, out_queue, order)
 
-    worker = Thread(
-        target=_task,
-        daemon=True,
-    )
-    worker.start()
-
-    sentinel_seen = False
-    try:
-        while True:
-            dirlisting = out_queue.get()
-            if dirlisting is None:
-                sentinel_seen = True
-                break
-            yield dirlisting
-    finally:
-        if not sentinel_seen:
-            _drain_queue_until_sentinel(out_queue)
-        worker.join(timeout=_WORKER_JOIN_TIMEOUT_SECONDS)
-        if worker.is_alive():
-            logger.warning(
-                "walk background thread did not finish within %ss of generator teardown",
-                _WORKER_JOIN_TIMEOUT_SECONDS,
-            )
-    if errors:
-        raise errors[0]
+    yield from iter_background_producer(produce, description="walk")

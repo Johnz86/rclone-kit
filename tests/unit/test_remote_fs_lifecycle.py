@@ -1,11 +1,11 @@
 """Unit tests for `rclone_kit.fs.filesystem.RemoteFS`'s resource-ownership
 lifecycle: context-manager support delegating to the existing idempotent
 `dispose()`, matching the pattern already used by its sibling resource
-owners `Mount` and `HttpServer`.
+owners `MountHandle` and `HttpServer`.
 
-`RemoteFS.__init__` spawns a real HTTP server process, so these tests
-build an instance via `object.__new__` and set only the attributes
-`dispose()` reads, rather than constructing one for real.
+These tests build an instance via `object.__new__` and set only the
+attributes `dispose()` reads, so they can drive the teardown path for an
+instance that has a live server without ever starting one.
 """
 
 from typing import cast

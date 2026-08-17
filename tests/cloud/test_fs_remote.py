@@ -36,11 +36,12 @@ class RcloneRemoteFSTester(unittest.TestCase):
                 remote_tester.rmtree(ignore_errors=True)
 
     @unittest.skip(
-        "Known bug, not yet root-caused: RemoteFS.exists() (backed by rclone's HTTP "
-        "serve autoindex) still reports the file present immediately after "
-        "new_file_path.remove() succeeds, presumably due to a caching layer between "
-        "the HTTP listing and the actual remote delete. Needs investigation against "
-        "a live bucket before re-enabling; not covered by a deterministic fake."
+        "Known bug, not yet root-caused: RemoteFS.exists() still reports the file "
+        "present immediately after new_file_path.remove() succeeds. exists() is a "
+        "direct operations/stat RC call - no HTTP serve is involved - so the cause "
+        "is on the rclone or provider side, most likely backend listing/metadata "
+        "consistency after a delete. Needs investigation against a live bucket "
+        "before re-enabling; not covered by a deterministic fake."
     )
     def test_create_and_remove_remote_fs(self) -> None:
         """Test create and remove functionality."""

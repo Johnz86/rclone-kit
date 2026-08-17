@@ -10,9 +10,10 @@ still returns every directory:
 - directories come out in submission (breadth-first) order, each exactly
   once, even when a later-submitted sibling finishes listing first.
 
-Both used to fail: every discovered subdirectory was submitted the moment
-it was seen, and each completion yielded whichever pending futures
-happened to be done.
+Neither property survives the obvious implementation - submitting every
+subdirectory the moment it is discovered, and yielding whichever pending
+futures happen to be done - so both are asserted directly rather than
+inferred from a complete result set.
 """
 
 import logging

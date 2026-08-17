@@ -539,9 +539,9 @@ class FSPath:
     def __hash__(self) -> int:
         """Hash the `FS` object itself, never `repr(self.fs)`.
 
-        `FS` implementations now carry value semantics, but neither
-        defines `__repr__`, so the default one embeds `id()` - hashing
-        that string would key every instance separately and contradict
+        `FS` implementations carry value semantics, but neither defines
+        `__repr__`, so the default one embeds `id()` - hashing that
+        string would key every instance separately and contradict
         `__eq__`.
         """
         return hash((self.fs, self.path))

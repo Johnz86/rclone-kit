@@ -1,7 +1,6 @@
 """Global logging and verbosity settings."""
 
 import os
-import warnings
 
 _UPLOAD_PARTS_LOGGING_ENV_VAR = "LOG_UPLOAD_S3_RESUMABLE"
 _RCLONE_VERBOSE_ENV_VAR = "RCLONE_KIT_VERBOSE"
@@ -22,26 +21,8 @@ class LogSettings:
     def rclone_verbose(value: bool | None = None) -> bool:
         """Get or set verbose rclone logging, backed by `RCLONE_KIT_VERBOSE`.
 
-        This is the implementation, not a forwarder: the module-level
-        `rclone_verbose` is the deprecated spelling and delegates here.
         Passing `None` reads the current setting without changing it.
         """
         if value is not None:
             os.environ[_RCLONE_VERBOSE_ENV_VAR] = "1" if value else "0"
         return bool(int(os.getenv(_RCLONE_VERBOSE_ENV_VAR, "0")))
-
-
-def rclone_verbose(value: bool | None = None) -> bool:
-    """Deprecated alias for `LogSettings.rclone_verbose`.
-
-    Kept only so existing imports of `rclone_kit.rclone_verbose` keep
-    working; it always warns, since there is no longer any caller for which
-    reaching it is the right thing to do. The `RCLONE_KIT_VERBOSE`
-    environment variable it reads and writes is *not* deprecated.
-    """
-    warnings.warn(
-        "rclone_verbose is deprecated. Use LogSettings.rclone_verbose instead.",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-    return LogSettings.rclone_verbose(value)

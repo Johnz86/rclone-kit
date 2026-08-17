@@ -29,12 +29,11 @@ class RcloneScanMissingFoldersTests(unittest.TestCase):
 
     @unittest.skip(
         "Manual test: exercises rclone.scan_missing_folders() end-to-end against a "
-        "live bucket. Its diff logic (the part that used to be buggy - see "
-        "tests/unit/test_scan_missing_folders_diff_logic.py) is now covered by a "
-        "deterministic fake; this test only remains for real end-to-end "
-        "verification. Also only ever compares src to itself here, so it can't "
-        "exercise a real diff even when enabled - worth rewriting to use two "
-        "distinct paths under the same bucket before relying on it."
+        "live bucket. The diff logic itself is covered deterministically by "
+        "tests/unit/test_scan_missing_folders_diff_logic.py; this test remains only "
+        "for real end-to-end verification. It also compares src to itself, so it "
+        "cannot exercise a real diff even when enabled - it needs two distinct "
+        "paths under the same bucket before it is worth relying on."
     )
     def test_scan_missing_folders(self) -> None:
         """Test copying a single file to remote storage."""

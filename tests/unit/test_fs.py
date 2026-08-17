@@ -1,6 +1,4 @@
-"""
-UUnit test file for the DB class.
-"""
+"""Unit tests for the filesystem adapters: `RealFS`, `RemoteFS`, and `FSPath`."""
 
 import os
 import shutil
@@ -32,14 +30,14 @@ def _bare_remote_fs() -> RemoteFS:
     """A `RemoteFS` bound to a fake client that performs no I/O.
 
     Path-math tests need a real instance, not `object.__new__`: `RemoteFS`
-    is now a value keyed on `src` and its bound client, so both attributes
-    must exist for equality and hashing to work.
+    is a value keyed on `src` and its bound client, so both attributes must
+    exist for equality and hashing to work.
     """
     return RemoteFS(FakeRemoteFSAccess(), _REMOTE_SRC)
 
 
 class RcloneFSTester(unittest.TestCase):
-    """Test DB functionality."""
+    """Filesystem adapter behaviour over a real local directory tree."""
 
     def test_os_walk(self) -> None:
         """Walking a real directory tree finds every file and directory.

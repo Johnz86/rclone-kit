@@ -7,30 +7,32 @@ long-running services.
 
 ## Supported runtime
 
-`rclone-kit` 1.0.0 requires Python 3.13 or newer. Published wheels support:
+`rclone-kit` requires Python 3.13 or newer. Published wheels support:
 
 - Windows amd64;
 - Linux amd64 using the `manylinux2014_x86_64` platform tag.
 
 Each supported wheel contains a native `librclone_kit` shared library, loaded
-in-process and verified by checksum against its own manifest at import time.
+in-process and verified by checksum against its own manifest the first time a
+runtime is loaded (`Rclone(...)` construction, or the first `shared_runtime()`
+call).
 A wheel installation therefore does not need a system rclone installation,
 `PATH` configuration, or a subprocess.
 
 Pin the application dependency in production:
 
 ```text
-rclone-kit==1.0.0
+rclone-kit==1.1.1
 ```
 
 Install only the optional features the process uses:
 
 ```bash
-pip install "rclone-kit==1.0.0"
-pip install "rclone-kit[s3]==1.0.0"
-pip install "rclone-kit[database]==1.0.0"
-pip install "rclone-kit[postgres]==1.0.0"
-pip install "rclone-kit[full]==1.0.0"
+pip install "rclone-kit==1.1.1"
+pip install "rclone-kit[s3]==1.1.1"
+pip install "rclone-kit[database]==1.1.1"
+pip install "rclone-kit[postgres]==1.1.1"
+pip install "rclone-kit[full]==1.1.1"
 ```
 
 The `s3` extra adds direct and multipart S3 support. The `database` extra adds
@@ -70,9 +72,11 @@ from rclone_kit import Rclone
 rclone = Rclone(None)
 ```
 
-Discovery checks `RCLONE_CONFIG` and then asks rclone for its active config
-path. A warning is emitted when no config can be found, so applications should
-treat that warning or a failed startup probe as a deployment error.
+`Rclone(None)` leaves config discovery to the embedded rclone runtime, which
+checks `RCLONE_CONFIG` and then its own default config path. Nothing is
+logged when no config is found, so a startup probe - `listremotes()`, or a
+representative read against each remote the service requires - is the only
+deployment check that will catch a missing or empty config.
 
 ### Build configuration in memory
 
@@ -141,8 +145,10 @@ output can contain secrets; never include it in routine production logs.
 | `RCLONE_CONFIG` | unset | Config file used when no path is passed to `Rclone`. |
 | `RCLONE_KIT_TMP_DIR` | `<os temp dir>/rclone-kit` | Directory the library stages large temporary files in. |
 | `RCLONE_KIT_CLEANUP` | `1` | `0` keeps temporary config directories after exit, for debugging. |
-| `RCLONE_KIT_VERBOSE` | `0` | `1` enables verbose rclone command logging. |
-| `RCLONE_KIT_CHECK` | `1` | `0` disables post-transfer verification by default. |
+| `RCLONE_KIT_VERBOSE` | `0` | `1` enables the library's verbose S3 and multipart logging (`LogSettings.rclone_verbose`). |
+| `RCLONE_KIT_CHECK` | `1` | Default for the `check=` parameter. `0` makes a failed operation return `ok=False` instead of raising. |
+| `LOG_UPLOAD_S3_RESUMABLE` | `0` | `1` enables resumable-upload part logging (`LogSettings.enable_upload_parts_logging`). |
+| `FS_WALK_THREAD_MAX_BACKLOG` | `16` | Worker count and outstanding-listing bound of the shared `FSPath` walk pool. Read once, at import. |
 
 The library never writes into the current working directory. Byte-range
 chunk downloads and S3 multipart upload chunks are staged under
@@ -325,9 +331,11 @@ if rclone.exists(path):
     print(modified_at, size.as_int())
 ```
 
-`stat()` and `size_file()` raise `FileNotFoundError` for a missing file.
-`size_file()` also raises `ValueError` when the path matches more than one
-file.
+`size_file()` raises `FileNotFoundError` when `src` does not name an existing
+file - a directory at that path included, since it resolves through a single
+`operations/stat` call with `filesOnly` set. `stat()` issues the same call
+*without* `filesOnly`, so it returns a `File` describing a directory at `src`
+and raises only when nothing exists there at all.
 
 For a selected group, `size_files()` returns the aggregate and individual
 sizes without listing unrelated objects:
@@ -361,8 +369,9 @@ with rclone.ls_stream(
         persist_inventory_page(page)
 ```
 
-Always use the context manager so the underlying process is terminated and
-its temporary configuration is removed if iteration stops early.
+Always use the context manager: it closes the underlying `rclonekit/liststream`
+cursor in the native runtime as soon as iteration stops, rather than leaving it
+open for the life of the runtime.
 
 `fast_list=True` reduces backend transactions on remotes where rclone
 supports it, but can consume much more memory because rclone loads a full
@@ -660,7 +669,8 @@ caller needs more than a blocking call.
 
 `copy()`/`copy_dir()`/`copy_remote()`/`sync()`/`move()` all block internally: they start the transfer as
 an embedded job and immediately wait for it. Call `start_copy()` (or `start_sync()`/`start_move()`,
-which take the same tuning parameters minus `retries`, plus `sync/move`'s `delete_empty_src_dirs`)
+which take the same tuning parameters minus `retries` - and, for `start_move()` only, add
+`delete_empty_src_dirs`)
 directly when the caller needs to observe progress, apply a bounded wait, or cancel a transfer already
 in flight:
 
@@ -801,7 +811,10 @@ rather than leaving it open for the life of the runtime.
 
 ## Streaming differences and reconciliation
 
-`diff()` streams comparison results while rclone is still running:
+`diff()` runs one blocking `operations/check` call and then yields the report
+it returned. The generator is lazy, but the whole comparison is already
+materialized in memory by the time the first item arrives, so size the process
+for the full report when diffing very large trees:
 
 ```python
 from rclone_kit import DiffOption, DiffType
@@ -849,7 +862,7 @@ with rclone.filesystem("archive:jobs") as remote_fs:
             print(current, dirnames, filenames)
 ```
 
-Scope `RemoteFS` with `with` regardless - it may still hold other resources (and its `dispose()` must
+Scope `RemoteFS` with `with` regardless - it owns the byte-range HTTP server when one was started (and its `dispose()` must
 run for those) even though the common path starts no server. `FSPath.write_bytes()` buffers its
 input, and remote `mkdir()` is not supported because object stores usually represent directories as
 prefixes. Call `remote_fs.serve(addr=...)` explicitly if some other code genuinely needs a real
@@ -909,8 +922,9 @@ real HTTP.
 
 ## Mounts and WebDAV
 
-Mounts require FUSE on Linux or WinFsp on Windows. Use a context manager so
-unmounting and optional cache cleanup happen on every exit path:
+Mounts require FUSE on Linux or WinFsp on Windows - the deployment supplies
+those, not the library. Use a context manager so the mount is unmounted on
+every exit path:
 
 ```python
 from pathlib import Path
@@ -1108,17 +1122,27 @@ except RcloneKitError as error:
 
 `RcloneKitError` is the root of the entire library hierarchy, so the last
 clause is a genuine catch-all: the per-subsystem base types (`RcCallError`
-for a failed RC call, `NativeError` for an ABI-level fault, and
-`RcloneRuntimeError` for a platform/download/cache fault) all subclass it.
+for a failed RC call, `NativeError` for an ABI-level fault,
+`RcJobNotFoundError` for a job rclone no longer knows about, and
+`RcloneRuntimeError` for a platform or native-artifact fault) all subclass it.
 `MissingOptionalDependencyError` is the one deliberate exception — it
 subclasses `ImportError`, because a missing extra is a deployment
 packaging fault rather than a storage operation failing, and belongs in a
 permanent-failure branch ahead of the catch-all rather than inside it.
 
-Every exception type in that hierarchy is importable directly from
-`rclone_kit`. The defining modules (`rclone_kit.exceptions`,
-`rclone_kit.rc.errors`, `rclone_kit.native.errors`) remain available, but
-only the package root carries a compatibility promise.
+The types an application catches are importable directly from `rclone_kit`:
+`RcloneKitError`, every `OperationError` subclass, the operational errors in
+`rclone_kit.exceptions` (`FilesystemError`, `ConfigParseError`,
+`RcloneCommandError`, `HttpFetchError`, `MergeStateError`, `S3MergeError`,
+`S3UploadError`), and each subsystem base type (`RcCallError`, `NativeError`,
+`RcloneRuntimeError`). `RcJobNotFoundError` (`rclone_kit.rc.jobs`) is a
+fourth subsystem root rather than a subclass of any of them, so catch it
+explicitly or fall through to `RcloneKitError`. Narrower subsystem
+subclasses - the `NativeError` family in `rclone_kit.native.errors` and
+`RcloneRuntimeError`'s two subclasses in `rclone_kit.runtime.exceptions` -
+stay in their defining modules; catch the subsystem base at the boundary
+instead. The defining modules remain
+importable, but the package root is the supported import path.
 
 `FileNotFoundError` is used for missing local or remote targets in several
 filesystem and metadata operations. `ValueError` generally means invalid or
@@ -1155,7 +1179,7 @@ Before rollout:
 - mount `rclone.conf` read-only from secret storage;
 - validate required remotes and a representative read during startup;
 - set explicit transfer, checker, partition-worker, and HTTP thread limits;
-- use context managers for `FilesStream`, `RemoteFS`, `HttpServer`,
+- use context managers for `EmbeddedFilesStream`, `RemoteFS`, `HttpServer`,
   `MountHandle`, and `ServeHandle`;
 - make source data immutable during multipart and verification workflows;
 - copy and verify before any purge or delete;

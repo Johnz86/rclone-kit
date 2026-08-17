@@ -1,11 +1,10 @@
-"""Proves that every currently-ported embedded operation completes without
-spawning a subprocess.
+"""Proves that embedded operations complete without spawning a subprocess.
 
-`subprocess.Popen` is patched to raise before a single currently-ported
-public `Rclone` method is called against the real built native library, so
-a regression that quietly reintroduces a subprocess call (directly or
-through a helper that still shells out) fails loudly here instead of only
-showing up as a slow/flaky parity mismatch.
+`subprocess.Popen` is patched to raise before each public `Rclone` method
+is called against the real built native library, so a regression that
+quietly reintroduces a subprocess call - directly or through a helper -
+fails loudly here rather than silently reintroducing a process dependency
+the wheel does not ship.
 
 Deliberately uses the real DLL (not a fake `RcClient`) - a fake can't prove
 the *production* code path takes no subprocess branch, only that the test's

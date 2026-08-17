@@ -13,8 +13,8 @@ build input.
 - `master`: tracks upstream `rclone/rclone` `master` without downstream
   product commits.
 - `oauth-public-redirect`: the smallest upstreamable listener/redirect
-  change and its tests. The eventual upstream pull request is created from
-  this branch.
+  change and its tests. The upstream pull request (rclone issue #7634,
+  PR #7635) is built from this branch.
 - `rclone-kit/integration-v1`: a release-based integration branch containing
   the tested OAuth commit plus the rclone-kit downstream C bridge
   (`librclone/rclonekit`). This is the branch rclone-kit actually pins and
@@ -169,7 +169,7 @@ Confirm official manylinux compatibility with `auditwheel` itself:
 
 ```bash
 docker exec rclone-kit-linux-build bash -c "
-  auditwheel show /tmp/dist_linux/rclone_kit-1.0.0-py3-none-manylinux2014_x86_64.whl
+  auditwheel show /tmp/dist_linux/rclone_kit-*-py3-none-manylinux2014_x86_64.whl
 "
 ```
 

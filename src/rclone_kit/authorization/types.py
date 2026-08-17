@@ -1,6 +1,6 @@
 """Public value types for `rclone_kit.authorization`
-(`docs/rclone_authorization_design.md`'s "Public API proposal" and "Relay
-design" sections)."""
+(`docs/rclone_authorization_design.md`'s "Public API" and "Relay design"
+sections)."""
 
 from __future__ import annotations
 

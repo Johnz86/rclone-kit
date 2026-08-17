@@ -3,7 +3,7 @@
 JSON into plain Python values.
 
 Wire shapes below were verified empirically against the pinned native
-build (`native/rclone` at `a5866fdbe`), not merely assumed from the RC
+build (the pinned `native/rclone` submodule commit), not merely assumed from the RC
 help text:
 
 - `serve/start` (`type`, `fs`, `addr`, plus flag-derived parameters using

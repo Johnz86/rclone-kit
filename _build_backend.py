@@ -1,13 +1,13 @@
 """PEP 517 in-tree build backend that forces an ABI-independent,
 platform-specific wheel.
 
-`rclone-kit` bundles a prebuilt, platform-specific rclone executable as
-package data (see `scripts/prepare_rclone_artifact.py` and
-`rclone_kit.runtime.rclone_binary`). A stock `setuptools.build_meta` backend
+`rclone-kit` bundles a prebuilt, platform-specific `librclone_kit`
+shared library as package data (see `scripts/build_distribution.py` and
+`rclone_kit.native.library`). A stock `setuptools.build_meta` backend
 classifies a wheel with no compiled extension module as pure Python
-(`py3-none-any`), which would let, for example, a wheel built with the
-Windows rclone binary be installed on Linux. Every public PEP 517 hook below
-is re-exported unchanged from `setuptools.build_meta`; the only behavior
+(`py3-none-any`), which would let, for example, a wheel carrying the
+Windows `librclone_kit` build be installed on Linux. Every public PEP 517
+hook below is re-exported unchanged from `setuptools.build_meta`; the only behavior
 this module adds is:
 
 1. Forcing `Distribution.has_ext_modules()` to report `True`, the smallest,
@@ -17,7 +17,7 @@ this module adds is:
 2. Overriding `bdist_wheel.get_tag()` so the *interpreter* and *ABI*
    components of that platform-tagged wheel stay `py3`/`none` instead of a
    concrete CPython ABI tag such as `cp313-cp313`. `rclone-kit` ships a
-   native executable as data, not a compiled Python extension module, so
+   native shared library as data, not a compiled Python extension module, so
    nothing in the wheel is actually CPython-version-specific;
    `Requires-Python >=3.13` in `pyproject.toml` remains the authoritative
    language-version floor. Step 1 alone would otherwise let `setuptools`
@@ -25,14 +25,14 @@ this module adds is:
    wheel to the exact CPython minor version it was built with.
 3. Rewriting the Linux platform component from the build host's generic
    `sysconfig` tag (`linux_x86_64`) to the manylinux compatibility tag
-   `rclone_kit.runtime.platform.LINUX_AMD64_ARTIFACT` certifies
+   `rclone_kit.runtime.native_platform.LINUX_AMD64_NATIVE_TARGET` certifies
    (`manylinux2014_x86_64`). This module cannot import
-   `rclone_kit.runtime.platform` to read that value directly: at build time
+   `rclone_kit.runtime.native_platform` to read that value directly: at build time
    it runs inside an isolated PEP 517 environment that has only
    `setuptools` installed, never `rclone_kit` or its runtime dependencies
    (see `scripts/build_distribution.py`). The manylinux prefix is
    therefore a small, independently duplicated literal; if it and
-   `LINUX_AMD64_ARTIFACT.wheel_platform_tag` ever drift apart,
+   `LINUX_AMD64_NATIVE_TARGET.wheel_platform_tag` ever drift apart,
    `scripts/verify_distribution.py`'s `check_exact_wheel_tag` — which reads
    the authoritative value — fails the build loudly rather than silently
    accepting a stale tag.

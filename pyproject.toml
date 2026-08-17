@@ -91,78 +91,91 @@ select = [
 ]
 
 # Suppressions below are narrow, documented exceptions to the curated select
-# list above. Each one covers a family of PRE-EXISTING findings across a
-# legacy codebase that predates this Ruff rollout, not new code. They are a
-# starting point for incremental cleanup, not a permanent opt-out: shrink
-# this list as each family gets addressed by a dedicated, reviewable change.
+# list above. Each covers a family of findings broad enough to need its own
+# reviewed pass rather than an incidental fix. This is a starting point for
+# incremental cleanup, not a permanent opt-out: shrink the list as each
+# family gets addressed by a dedicated, reviewable change.
 #
-#   ANN                        - Legacy modules were written before the project
-#                                 required type annotations; completing coverage
-#                                 is a dedicated typing pass, not a formatting
-#                                 change.
+#   ANN                        - Annotation coverage is still incomplete in the
+#                                 older modules (fs/ and the s3 multipart
+#                                 uploaders hold most of it); completing it is
+#                                 a dedicated typing pass that has not been
+#                                 done yet.
 #   TRY                        - Exception-handling findings (message wording,
 #                                 raise-from-within-try, vanilla exception
 #                                 classes) need per-call-site judgment about the
 #                                 right exception type and message; triaged in a
 #                                 follow-up change.
 #   FBT001, FBT002, FBT003     - Positional boolean parameters are concentrated
-#                                 in the public API surface (rclone_impl.py,
-#                                 __init__.py). Replacing them with enums is a
-#                                 breaking API change that needs a deprecation
-#                                 path, not a lint-tooling migration.
+#                                 in the public API surface (client.py, the
+#                                 `operations/` modules, fs/filesystem.py).
+#                                 Replacing them with enums touches nearly
+#                                 every public signature and its call sites at
+#                                 once; that is a broad API-surface change
+#                                 owed its own reviewed pass, and it has not
+#                                 been done yet.
 #   A001, A002                 - Parameter/variable names such as `type`,
-#                                 `range`, `dir` shadow builtins across public
-#                                 signatures. Renaming a keyword-visible
-#                                 parameter is a breaking change; deferred
-#                                 alongside the FBT API cleanup above.
+#                                 `range`, `dir` shadow builtins (http_server.py,
+#                                 operations/walk.py, operations/config_ops.py,
+#                                 s3/multipart/upload_parts_resumable.py).
+#                                 Renaming keyword-visible parameters ripples
+#                                 through every call site and the docs, so it
+#                                 belongs to the same unstarted API-surface
+#                                 pass as the FBT cleanup above.
 #   PLC0415                    - Retained only for explicit lazy boundaries:
-#                                 optional database/S3 dependencies and
-#                                 platform-exclusive file-lock modules
-#                                 (`msvcrt`/`fcntl`). Project-internal cycle
-#                                 workarounds have been removed.
+#                                 optional database/S3 dependencies imported
+#                                 inside a `try` that raises
+#                                 `MissingOptionalDependencyError`
+#                                 (operations/db_ops.py, operations/s3_ops.py),
+#                                 and imports deferred so importing
+#                                 config_discovery.py does not pull in the
+#                                 native runtime modules, and importing
+#                                 operations/copy_file_parts_resumable.py does
+#                                 not require `botocore` (imported at module
+#                                 level by one of the two multipart uploaders
+#                                 it defers).
 #   PLR0911, PLR0912, PLR0913,
 #   PLR0915                    - Function complexity metrics (too many
 #                                 arguments/branches/statements/returns) flag
 #                                 functions that need decomposition. Refactoring
 #                                 signatures and control flow is a design change
-#                                 outside a lint-tooling migration.
+#                                 that has not been done yet.
 #   S101                       - `assert` is used pervasively as an internal
 #                                 invariant check throughout `src`, not only in
-#                                 tests. The subprocess/filesystem-
-#                                 boundary audit replaced the runtime-facing
-#                                 asserts it found in process.py, mount.py, and
-#                                 http_server.py with raised exceptions;
-#                                 completing the remaining, broader assert-to-
-#                                 exception migration across the rest of `src`
-#                                 is separate follow-up work, not a formatting
-#                                 change.
-#   S603                       - Every `subprocess.run`/`Popen` call in `src`
-#                                 uses a `list[str]` argument vector with
-#                                 `shell=False` (verified by the
-#                                 subprocess/filesystem-boundary audit); this
-#                                 rule flags any subprocess invocation for
-#                                 manual review regardless of that mitigation,
-#                                 so it stays a permanent, reviewed acceptance
-#                                 rather than a deferred item.
-#   PTH                        - A full `os.path`-to-`pathlib` migration
-#                                 across all of `src` is a broad, separate
-#                                 cleanup; the subprocess/filesystem-
-#                                 boundary audit converted the call sites it
-#                                 touched (config.py, mount_util.py, util.py,
-#                                 http_server.py) but did not sweep the rest
-#                                 of the codebase.
+#                                 tests; the s3 multipart modules hold most of
+#                                 them. The rule for new code is that anything
+#                                 a caller can trip must raise instead of
+#                                 assert; converting the remaining runtime-
+#                                 facing asserts is separate follow-up work
+#                                 that has not been done yet.
+#   S603                       - The library itself starts no subprocesses:
+#                                 rclone is linked in-process, so `src` has no
+#                                 `subprocess.run`/`Popen` call at all. The
+#                                 calls this rule flags live in the repo-local
+#                                 tooling Ruff also covers (7 in scripts/, 2 in
+#                                 tests/unit/), and each passes a `list[str]`
+#                                 argument vector with `shell=False`. The rule flags any subprocess
+#                                 invocation for manual review regardless of
+#                                 that mitigation, so it stays a permanent,
+#                                 reviewed acceptance rather than a deferred
+#                                 item.
+#   PTH                        - `os.path` call sites remain across `src`,
+#                                 chiefly in the s3 multipart modules and
+#                                 http_server.py. A full `os.path`-to-`pathlib`
+#                                 migration is a broad, separate cleanup that
+#                                 has not been swept through the codebase.
 #   E501                       - Ruff's formatter enforces the line-length
 #                                 budget for all reformattable code; the
-#                                 stragglers are long string literals (error
-#                                 messages, f-strings, URLs) the formatter
-#                                 intentionally leaves alone.
+#                                 stragglers are long string literals
+#                                 (docstrings, argparse help text, error
+#                                 messages) the formatter intentionally leaves
+#                                 alone.
 #   DTZ005                     - The single finding is a naive
 #                                 `datetime.now()` used to stamp a persisted
 #                                 multipart-upload `info.json` resume file.
 #                                 Changing its serialized format is a runtime
 #                                 behavior change for the resumable-upload
-#                                 feature, out of scope for a lint-tooling
-#                                 migration.
+#                                 feature, and has not been done yet.
 ignore = [
     "ANN",
     "TRY",
@@ -192,7 +205,7 @@ ignore = [
 # constants, which is exactly what PLR2004 flags. `src/` has no such
 # exception and must name its magic values.
 #
-# T201 is scoped here rather than ignored globally: the library itself now
+# T201 is scoped here rather than ignored globally: the library itself
 # routes every runtime diagnostic through a `logging` logger, so a bare
 # `print` in `src/rclone_kit/**` is a bug. Tests print for interactive
 # debugging, and the entry points below are terminal programs whose stdout
@@ -237,7 +250,6 @@ exclude = [
     "reference",
 ]
 strict = [
-    "src/rclone_kit/command_flags.py",
     "src/rclone_kit/settings.py",
     "src/rclone_kit/group_files.py",
 ]

@@ -36,7 +36,7 @@ class MainTester(unittest.TestCase):
     """Main tester class."""
 
     def test_json_to_rclone(self) -> None:
-        """Test command line interface (CLI)."""
+        """`Config.from_json` builds a `Config` from a section mapping."""
         rclone_conf = Config.from_json(JSON_DATA)
         self.assertIsInstance(rclone_conf, Config)
 

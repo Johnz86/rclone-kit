@@ -1,7 +1,7 @@
 """Live test file.
 
 Proves `Rclone.authorize()` produces a genuinely usable Google Drive remote,
-matching `docs/rclone_authorization_design.md`'s Phase 4 acceptance
+matching `docs/rclone_authorization_design.md`'s acceptance
 criteria: the resulting remote can list a controlled folder, and its token
 refreshes transparently using its refresh token. Both tests share the one
 `live_rclone` fixture (`conftest.py`) so only one human browser-approval is
