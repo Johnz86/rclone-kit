@@ -192,6 +192,18 @@ jobs:
         if: runner.os == 'Linux'
         run: docker exec rclone-kit-build tar -C /usr/local -xzf /toolchain-cache/go.tar.gz
 
+      - name: Trust the mounted checkout inside the build container
+        if: runner.os == 'Linux'
+        # /work is owned by the runner user on the host but the container
+        # runs as root, so git's dubious-ownership check (protecting
+        # against a different-UID actor's repo) rejects it by default -
+        # `go build -buildvcs=true` shells out to git for VCS stamping and
+        # fails the whole build with "error obtaining VCS status: exit
+        # status 128" as soon as it hits that. Safe here: the container is
+        # ephemeral and /work is this same job's own checkout, not a
+        # different actor's repo. Mirrors ci.yml's identical step.
+        run: docker exec rclone-kit-build git config --global --add safe.directory '*'
+
       - name: Install FUSE runtime packages inside the build container
         if: runner.os == 'Linux'
         # Runtime-only package for the mount-support tests
