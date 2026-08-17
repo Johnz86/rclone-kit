@@ -3,9 +3,8 @@
 
 Both start a `serve/start` instance via `RcServeClient` and wrap the
 result in a `ServeHandle` - `serve_http()` further wraps that `ServeHandle`
-inside an `HttpServer`: `HttpServer` never uses any `Process`-specific
-behavior beyond "is it still alive" and "dispose it", both of which
-`ServeHandle` also provides - see `http_server.py`'s
+inside an `HttpServer`, which needs only "is it still alive" and "dispose
+it" from whatever it is given - see `http_server.py`'s
 `_DisposableServerHandle` protocol.
 
 The actual bound address always comes from `serve/start`'s own response,
@@ -37,8 +36,9 @@ def fetch_serve_http_embedded(
 ) -> HttpServer:
     """Serve a remote or directory via HTTP through `serve/start type=http`.
 
-    Mirrors `launch_http_server`'s exact CLI flag defaults
-    (`vfs-disk-space-total-size 0`, `vfs-read-chunk-size-limit 512M`).
+    Sends `vfs_disk_space_total_size` and `vfs_read_chunk_size_limit` as
+    RC parameters so a served remote reports unlimited space and streams
+    range reads in bounded chunks.
     """
     # `partition`, not `split(":", 1)` - a colonless local path (most
     # commonly a Unix absolute path) has no subpath at all, and unpacking

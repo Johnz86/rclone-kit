@@ -3,7 +3,7 @@
 Python values.
 
 Wire shapes below were verified empirically against the pinned native
-build (`native/rclone` at `6c929caad`), not merely assumed from the Go
+build (the pinned `native/rclone` submodule commit), not merely assumed from the Go
 source:
 
 - `rclonekit/liststream/open` returns exactly `{"streamId": <int>}`;

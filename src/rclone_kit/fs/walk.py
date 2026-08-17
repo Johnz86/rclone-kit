@@ -75,31 +75,18 @@ def fs_walk_parallel(
 
     Ordering. Directories are submitted in discovery order and consumed
     head-first from that same FIFO, so a parent is always yielded before
-    any of its children and siblings keep their `FS.ls()` order. The
-    previous implementation instead rescanned every pending future after
-    each completion and yielded whichever ones happened to be finished,
-    so a fast sibling overtook a slow one: its only real guarantee was
-    "parent before child", and its docstring's claim of submission order
-    was aspirational. Head-first consumption is one of the orders that
-    implementation could already produce, so nothing that worked against
-    it breaks; it is now simply the only one, deterministically. The
-    callers only ever needed the weaker guarantee - `FSPath.rmtree`
-    deletes each directory's files as they arrive, and `FSPath.walk`'s
-    consumers assert set membership - so tightening it costs them
-    nothing.
+    any of its children, and siblings keep their `FS.ls()` order. The
+    order is deterministic: a fast sibling never overtakes a slow one.
 
-    Backlog. Every discovered subdirectory used to be submitted the
-    moment it was seen, so the pending-future map held one entry - and
-    eventually one materialised listing - per directory in the entire
-    tree. `max_workers` bounds concurrency, not the executor's own
-    unbounded work queue, so a wide remote tree grew memory and queued RC
-    listings without limit. Now at most
-    `_FS_WALK_MAX_OUTSTANDING_LISTINGS` listings exist at once;
-    discovered-but-unvisited directories wait in `pending` as bare
-    `FSPath` references, which any walker must remember regardless and
-    which cost a fraction of a materialised listing. Refilling happens
-    before each `yield` so the pool keeps listing while the consumer
-    processes the directory it was just handed.
+    Backlog. At most `_FS_WALK_MAX_OUTSTANDING_LISTINGS` listings exist
+    at once. Discovered-but-unvisited directories wait in `pending` as
+    bare `FSPath` references, which any walker must remember regardless
+    and which cost a fraction of a materialised listing; without that
+    bound a wide tree would grow memory and queued RC listings without
+    limit, because `max_workers` caps concurrency, not the executor's own
+    unbounded work queue. Refilling happens before each `yield` so the
+    pool keeps listing while the consumer processes the directory it was
+    just handed.
 
     Deadlock freedom. `_list_dir` only calls `path.ls()` and returns; no
     worker ever waits on this generator, so every submitted future
@@ -113,9 +100,9 @@ def fs_walk_parallel(
     completion and are then collected, so the executor's atexit hook can
     never be left waiting on a blocked worker.
 
-    Cost. O(1) work per completed listing: no rescan of the pending set,
-    unlike the previous `wait(futures.keys())` plus full-rescan loop that
-    made a walk quadratic in the number of directories.
+    Cost. O(1) work per completed listing: the head of the FIFO is
+    awaited directly, so the pending set is never rescanned and a walk
+    stays linear in the number of directories.
     """
     pending: deque[FSPath] = deque([self])
     in_flight: deque[Future[_Listing | None]] = deque()

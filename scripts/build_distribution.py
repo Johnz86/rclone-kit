@@ -14,9 +14,9 @@ builds a source distribution: a plain `pip wheel` build from an sdist has no
 staging step and would silently produce a wheel without the native library.
 
 Always builds with `--profile production` (mount support via WinFsp/FUSE
-compiled in): `mount()`/`mount_s3()` are public API with no CLI fallback, so
-a wheel shipped without mount support would silently regress that surface
-for every installer.
+compiled in): `mount()`/`mount_s3()` are public API, and a library built
+without those tags has no mount implementation compiled in at all, so such a
+wheel would silently regress that surface for every installer.
 
 Every step after resolving the target runs against an isolated temporary
 copy of the source tree, never the tracked checkout, so a successful or

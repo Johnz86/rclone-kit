@@ -1,20 +1,13 @@
-import contextlib
-import logging
 import random
 from collections.abc import Generator
 from concurrent.futures import ThreadPoolExecutor
 from queue import Queue
-from threading import Thread
 
+from rclone_kit.background_producer import iter_background_producer
 from rclone_kit.dir import Dir
 from rclone_kit.dir_listing import DirListing
 from rclone_kit.operations.walk import walk
 from rclone_kit.types import ListingOption, Order
-
-logger = logging.getLogger(__name__)
-
-_MAX_OUT_QUEUE_SIZE = 50
-_WORKER_JOIN_TIMEOUT_SECONDS = 30.0
 
 
 def _reorder_inplace(data: list, order: Order) -> None:
@@ -28,6 +21,40 @@ def _reorder_inplace(data: list, order: Order) -> None:
         return
     else:
         raise ValueError(f"Invalid order: {order}")
+
+
+def _relative_names(listing: DirListing, root: Dir) -> list[str]:
+    """Names of `listing`'s directories relative to their OWN root.
+
+    That relative path is what gets compared between `src` and `dst`, so
+    each side has to be made relative to its own root: their absolute
+    prefixes differ by definition, and only the tails are comparable.
+    """
+    return [d.relative_to(root) for d in listing.dirs]
+
+
+def _put_missing_subtree(
+    root: Dir, max_depth: int, out_queue: Queue[Dir | None], order: Order
+) -> None:
+    """Put every descendant directory of an already-missing `root` onto
+    `out_queue`.
+
+    No src/dst comparison happens below a missing directory: none of that
+    subtree exists on the `dst` side by definition, so the whole thing is
+    reported by walking `root` alone.
+
+    Goes through `walk()` rather than driving `walk_runner_depth_first`
+    into a local queue, because the runner fills its queue synchronously
+    and returns only once the entire subtree is in it - materialising
+    every listing of the subtree at once. That queue cannot simply be
+    bounded either: a bounded queue would block the runner's own `put()`
+    in this very thread, with no consumer running yet, and deadlock.
+    `walk()` runs the runner on its own thread behind a bounded queue and
+    re-raises the runner's failures to this caller.
+    """
+    for dirlisting in walk(root, breadth_first=False, max_depth=max_depth, order=order):
+        for d in dirlisting.dirs:
+            out_queue.put(d)
 
 
 def _async_diff_dir_walk_task(
@@ -51,35 +78,16 @@ def _async_diff_dir_walk_task(
         src_dir_listing: DirListing = t1.result()
         dst_dir_listing: DirListing = t2.result()
     next_depth = max_depth - ls_depth if max_depth > 0 else max_depth
-    # Each listing's entries must be made relative to their OWN root (not
-    # the other side's) - the relative path is what gets compared between
-    # src and dst below, independent of their differing absolute prefixes.
-    dst_dirs: list[str] = [d.relative_to(dst) for d in dst_dir_listing.dirs]
-    src_dirs: list[str] = [d.relative_to(src) for d in src_dir_listing.dirs]
-    dst_files_set: set[str] = set(dst_dirs)
+    dst_dirs: set[str] = set(_relative_names(dst_dir_listing, dst))
+    src_dirs: list[str] = _relative_names(src_dir_listing, src)
     matching_dirs: list[str] = []
     _reorder_inplace(src_dirs, order)
-    _reorder_inplace(dst_dirs, order)
-    for _i, src_dir in enumerate(src_dirs):
+    for src_dir in src_dirs:
         src_dir_dir = src / src_dir
-        if src_dir not in dst_files_set:
+        if src_dir not in dst_dirs:
             out_queue.put(src_dir_dir)
             if next_depth > 0 or next_depth == -1:
-                # `walk()` rather than `walk_runner_depth_first` into a local
-                # queue: the runner fills its queue synchronously and only
-                # returns once the whole subtree is in it, so that queue held
-                # every listing of a missing subtree in memory at once, and
-                # could not simply be bounded - a bounded queue would block
-                # the runner's own `put()` with no consumer running yet, in
-                # this very thread, and deadlock outright. `walk()` already
-                # solves exactly this by running the runner on its own thread
-                # behind a bounded queue, and re-raises the runner's failures
-                # to this caller just as the direct call did.
-                for dirlisting in walk(
-                    src_dir_dir, breadth_first=False, max_depth=next_depth, order=order
-                ):
-                    for d in dirlisting.dirs:
-                        out_queue.put(d)
+                _put_missing_subtree(src_dir_dir, next_depth, out_queue, order)
         else:
             matching_dirs.append(src_dir)
 
@@ -107,28 +115,6 @@ def async_diff_dir_walk_task(
         out_queue.put(None)
 
 
-def _drain_queue_until_sentinel(out_queue: Queue[Dir | None]) -> None:
-    """Consume `out_queue` until the walk task's sentinel `None` appears.
-
-    Used when a `scan_missing_folders` consumer stops iterating early
-    (`break`, or garbage collection closing the generator) instead of
-    letting the walk run to completion. Without this, the background walk
-    thread would block forever on `out_queue.put()` once nobody drains its
-    bounded queue, leaking a permanently blocked thread.
-
-    `KeyboardInterrupt` is suppressed *here only*, unlike in the consumer
-    loop: this drain is the teardown itself, and abandoning it halfway
-    recreates exactly the blocked thread it exists to prevent. The
-    interrupt that started the teardown keeps propagating once this
-    returns - only a further Ctrl+C landing inside the drain is dropped,
-    and it costs at most the walk's remaining runtime, since the walk is
-    already running and always ends by putting the sentinel.
-    """
-    with contextlib.suppress(KeyboardInterrupt):
-        while out_queue.get() is not None:
-            pass
-
-
 def scan_missing_folders(
     src: Dir,
     dst: Dir,
@@ -136,72 +122,22 @@ def scan_missing_folders(
     order: Order = Order.NORMAL,
 ) -> Generator[Dir]:
     """Yield every directory present under `src` that is missing under the
-    corresponding relative path in `dst`.
+    corresponding relative path in `dst` (`max_depth=-1` for unlimited).
 
-    A folder found missing is yielded once for itself; if it has a
-    subtree, every descendant directory is yielded too (walked via
-    `walk_runner_depth_first`, since a whole missing subtree needs no
-    further src/dst comparison - none of it exists on the `dst` side by
-    definition). Folders present under `src` and `dst` at a given relative
-    path are recursed into, in case they diverge further down.
+    A folder found missing is yielded once for itself, then its whole
+    subtree is walked and every descendant yielded too - see
+    `_put_missing_subtree`. Folders present under both `src` and `dst` at
+    a given relative path are recursed into, in case they diverge further
+    down.
 
-    Args:
-        src: Source directory to walk through
-        dst: Destination directory to walk through
-        max_depth: Maximum depth to traverse (-1 for unlimited)
-
-    Yields:
-        Dir: each directory present under `src` but missing under `dst`
+    The diff runs on a background thread feeding a bounded queue, so
+    directories are yielded as they are found rather than after the whole
+    tree has been compared - see `iter_background_producer`.
     """
 
-    out_queue: Queue[Dir | None] = Queue(maxsize=_MAX_OUT_QUEUE_SIZE)
-    errors: list[BaseException] = []
+    def produce(out_queue: Queue[Dir | None]) -> None:
+        async_diff_dir_walk_task(
+            src=src, dst=dst, max_depth=max_depth, out_queue=out_queue, order=order
+        )
 
-    def task() -> None:
-        """Run the diff walk, capturing any exception into `errors` instead
-        of letting it die as an uncaught background-thread exception.
-        Re-raised from the consumer below rather than signaled via
-        `_thread.interrupt_main()`: that call delivers an async
-        `KeyboardInterrupt` at the main thread's next bytecode boundary,
-        which may already be past this generator (e.g. after it exhausted
-        normally on the sentinel) - surfacing as a misleading
-        `KeyboardInterrupt` in unrelated later code instead of this real
-        failure.
-        """
-        try:
-            async_diff_dir_walk_task(
-                src=src,
-                dst=dst,
-                max_depth=max_depth,
-                out_queue=out_queue,
-                order=order,
-            )
-        except BaseException as exc:
-            errors.append(exc)
-
-    worker = Thread(
-        target=task,
-        daemon=True,
-    )
-    worker.start()
-
-    sentinel_seen = False
-    try:
-        while True:
-            dir = out_queue.get()
-            if dir is None:
-                sentinel_seen = True
-                break
-            yield dir
-    finally:
-        if not sentinel_seen:
-            _drain_queue_until_sentinel(out_queue)
-        worker.join(timeout=_WORKER_JOIN_TIMEOUT_SECONDS)
-        if worker.is_alive():
-            logger.warning(
-                "scan_missing_folders background walk did not finish within "
-                "%ss of generator teardown",
-                _WORKER_JOIN_TIMEOUT_SECONDS,
-            )
-    if errors:
-        raise errors[0]
+    yield from iter_background_producer(produce, description="scan_missing_folders")

@@ -16,7 +16,8 @@ mime_type, mod_time, is_dir)."""
 
 
 class RcloneJsonEntry(TypedDict):
-    """Shape of one `rclone lsjson` entry."""
+    """Shape of one `operations/list`/`operations/stat` item (rclone's
+    lsjson entry schema)."""
 
     Path: str
     Name: str
@@ -27,7 +28,7 @@ class RcloneJsonEntry(TypedDict):
 
 
 class RPath:
-    """One entry of an `rclone lsjson` listing: a remote plus the metadata
+    """One entry of an `operations/list` listing: a remote plus the metadata
     rclone reported for a path under it.
 
     Value semantics are hand-written rather than obtained from
@@ -146,8 +147,8 @@ class RPath:
 
     def __str__(self) -> str:
         if not self.remote.name:
-            # No remote component at all (see `util.split_remote_name_and_
-            # path`'s no-colon case) - omitting the colon here is required
+            # No remote component at all (see `rc/paths.py`'s
+            # `split_remote_and_path` no-colon case) - omitting the colon here is required
             # for round-tripping: a leading/trailing ":" would make
             # `RcPath.parse` re-parse this as an (invalid) remote or inline
             # connection string instead of the original local path.

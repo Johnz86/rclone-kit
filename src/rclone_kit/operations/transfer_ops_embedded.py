@@ -11,12 +11,11 @@ job through the shared
 `operations/cleanup` need no retry loop of their own - then immediately
 wait on the resulting handle.
 This keeps a synchronous RC call from holding the runtime lock for the
-whole operation, and means these functions return a real
-`OperationResult`, never a synthetic `subprocess.CompletedProcess`;
-`Rclone`'s own methods return that `OperationResult` directly, with no
-compatibility wrapper. A failure with `check=True` raises
-`OperationFailedError` (part of the execution-independent `OperationError`
-hierarchy), not a raw `RcCallError`.
+whole operation, and means these functions return an `OperationResult`
+that `Rclone`'s own methods hand back directly. A failure with
+`check=True` raises `OperationFailedError` (part of the
+execution-independent `OperationError` hierarchy), not a raw
+`RcCallError`.
 
 `start_directory_transfer_embedded` is the one function here that hands
 back a `JobHandle` instead of waiting on it: it builds the shared
@@ -484,7 +483,7 @@ def start_copy_files_embedded(
     up front; pacing outstanding jobs is only available through the
     blocking `copy_files()` wrapper.
 
-    The partitions' `--files-from` lists live in a directory created with
+    The partitions' `_filter.FilesFrom` lists live in a directory created with
     `tempfile.mkdtemp` (not a `with TemporaryDirectory()` block, since the
     jobs reading it are still running when this function returns); it is
     removed once `PartitionedJobHandle.wait()` observes every partition

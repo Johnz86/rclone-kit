@@ -2,7 +2,8 @@
 
 Mirrors `rclone_kit.runtime.exceptions`'s pattern of a single base type per
 subsystem, kept separate because these describe the rclone-kit-owned
-`librclone_kit` ABI lifecycle, not the downloaded-executable runtime.
+`librclone_kit` ABI lifecycle, not `rclone_kit.runtime`'s
+platform-selection and artifact-verification faults.
 
 Rooted in `RcloneKitError` so an ABI-level fault - a closed runtime, a
 version mismatch, a missing library - reaches the same documented `except

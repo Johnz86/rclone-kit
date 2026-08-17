@@ -14,11 +14,13 @@ ONCE, nothing is retried at the command level, and their
 
 That gap is not filled in Python on purpose. rclone's retry loop resets
 its accounting group's error state between attempts
-(`librclone/rclonekit/rc/copy.go`), which no out-of-process caller can do
-correctly; a naive Python retry would double-count stats and report
-errors from an abandoned attempt as if they belonged to the successful
-one. Per-file `low_level_retries` still applies to all of them - it is
-enforced inside the operation, not by the command loop.
+(`librclone/rclonekit/rc/copy.go`), which no RC caller can do correctly:
+the only reset reachable over RC, `core/stats-reset`, clears the group's
+whole counter set rather than just its error state. A naive Python retry
+would therefore either throw away the stats of the attempt that
+succeeded, or report errors from an abandoned attempt as if they belonged
+to the successful one. Per-file `low_level_retries` still applies to all
+of them - it is enforced inside the operation, not by the command loop.
 """
 
 from __future__ import annotations
@@ -1136,15 +1138,15 @@ class Rclone:
     ) -> None:
         """Write bytes to a file.
 
-        Raises RcloneCommandError if the underlying rclone command fails.
+        Raises RcloneCommandError if the underlying operation fails.
         """
         write_bytes_via_temp_file(self, data, dst)
 
     def read_bytes(self, src: str) -> bytes:
         """Read bytes from a file.
 
-        Raises RcloneCommandError if the underlying rclone command fails
-        or if rclone reports success without producing an output file.
+        Raises RcloneCommandError if the underlying operation fails or if
+        rclone reports success without producing an output file.
         """
         return read_bytes_via_temp_file(self, src)
 
@@ -1153,10 +1155,11 @@ class Rclone:
         return self.read_bytes(src).decode("utf-8")
 
     def size_file(self, src: str) -> SizeSuffix:
-        """Get the size of a file or directory.
+        """Get the size of the file at `src`.
 
-        Raises FileNotFoundError if no file matches `src`, or ValueError
-        if more than one file matches.
+        Raises `FileNotFoundError` if `src` does not name an existing
+        file - a directory at that path included, since the underlying
+        `operations/stat` call sets `filesOnly`.
         """
         return fetch_size_file_embedded(self._rc_client, self, src)
 
@@ -1172,7 +1175,7 @@ class Rclone:
     ) -> None:
         """Copy a slice of bytes from the src file to outfile.
 
-        Raises RcloneCommandError if the underlying rclone command fails.
+        Raises RcloneCommandError if the underlying operation fails.
         """
         try:
             copy_bytes_embedded(

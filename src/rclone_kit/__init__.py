@@ -27,6 +27,7 @@ from rclone_kit.exceptions import (
     JobExpiredError,
     JobIdentityError,
     JobRuntimeClosedError,
+    MergeStateError,
     OperationCancelledError,
     OperationError,
     OperationFailedError,
@@ -35,6 +36,7 @@ from rclone_kit.exceptions import (
     OperationTimeoutError,
     RcloneCommandError,
     RcloneKitError,
+    S3MergeError,
     S3UploadError,
 )
 from rclone_kit.file import File, FileItem
@@ -64,7 +66,7 @@ from rclone_kit.rpath import RPath
 from rclone_kit.runtime.exceptions import RcloneRuntimeError
 from rclone_kit.s3.types import MultiUploadResult
 from rclone_kit.serve_handle import ServeHandle
-from rclone_kit.settings import LogSettings, rclone_verbose
+from rclone_kit.settings import LogSettings
 from rclone_kit.types import ListingOption, Order, PartInfo, Range, SizeResult, SizeSuffix
 
 logging.getLogger(__name__).addHandler(logging.NullHandler())
@@ -101,6 +103,7 @@ __all__ = [
     "JobStatus",
     "ListingOption",
     "LogSettings",
+    "MergeStateError",
     "MissingOptionalDependencyError",
     "MountHandle",
     "MultiUploadResult",
@@ -132,6 +135,7 @@ __all__ = [
     "Remote",
     "RemoteConflictPolicy",
     "RemoteFS",
+    "S3MergeError",
     "S3UploadError",
     "Secret",
     "Section",
@@ -140,7 +144,6 @@ __all__ = [
     "SizeSuffix",
     "TransferStats",
     "configure_logging",
-    "rclone_verbose",
     "setup_default_logging",
     "shared_runtime",
 ]

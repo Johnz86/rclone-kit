@@ -1,12 +1,11 @@
 """Shared pytest fixtures for `tests/cloud/`.
 
-Most files in this suite used to duplicate their own
-`_generate_rclone_config()` plus a `unittest.TestCase.setUp()` calling
-`skip_if_missing_cloud_env`. `do_spaces_config`/`build_do_spaces_config`
-replace both with one definition: requesting it builds the `Config` and
-skips the test via `pytest.skip` when `DIGITAL_OCEAN_SPACES_ENV_VARS` are
-not set in the environment, so individual test files no longer need to know
-which env vars this provider requires or how its config section is shaped.
+`do_spaces_config`/`build_do_spaces_config` are the single definition of
+this suite's DigitalOcean Spaces credentials: requesting the fixture builds
+the `Config` and skips the test via `pytest.skip` when
+`DIGITAL_OCEAN_SPACES_ENV_VARS` are not set, so no individual test file
+needs to know which env vars this provider requires or how its config
+section is shaped.
 `test_rclone_config.py` uses `do_spaces_config` directly (it only parses the
 config text, never constructs an `Rclone`); every other file constructs a
 client through `cloud_rclone` below instead.

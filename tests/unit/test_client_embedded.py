@@ -5,7 +5,7 @@ Uses a fake `NativeBinding` wrapped in a real `RcloneRuntime`, injected
 through the `runtime=` constructor parameter, so these tests exercise
 `Rclone`'s embedded wiring without a built native library on disk. Real
 `ctypes`/DLL behavior is covered separately by
-`tests/native/test_client_embedded_integration.py`.
+`tests/native/test_start_copy_integration.py`.
 """
 
 import json

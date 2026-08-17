@@ -34,8 +34,9 @@ from rclone_kit import Rclone, Config
 rclone = Rclone(Config("""
 [dst]
 type = s3
-account = ...
-key = ...
+provider = AWS
+access_key_id = ...
+secret_access_key = ...
 """))
 
 listing = rclone.ls("dst:my-bucket/data", glob="*.png")
@@ -51,12 +52,12 @@ Already have an `rclone.conf` on disk? Point `RCLONE_CONFIG` at it and pass
 ## Highlights
 
 - **Aggressive defaults** for copy/sync operations, tuned for large transfers.
-- **Fast streaming diff** between source and destination, find missing files without materializing the whole tree in memory. 
+- **Typed source/destination diff** yielding classified missing/differing/equal records.
 - **Directory walking**, breadth-first or depth-first.
 - **Resumable multi-part S3 uploads** that survive interrupted transfers.
 - **Database export**: dump a remote's file listing straight into SQLite/Postgres/MySQL, one repo path per table. 
 - **Byte-range HTTP serving** for slicing chunks out of very large remote files. 
-- **Scoped mount and HTTP-server objects** with guaranteed cleanup, and platform-specific mount setup/teardown handled for you. 
+- **Scoped mount and HTTP-server objects** with guaranteed cleanup on every exit path.
 - **`FSPath`**: a `pathlib.Path`-like virtual filesystem over any remote, get one via `rclone.cwd("dst:path/to")`.
 
 ## Console scripts

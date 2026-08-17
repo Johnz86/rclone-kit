@@ -17,8 +17,8 @@ assumed from rclone's RC help text:
 - a `job/status`/`job/stop` call for an unknown job ID fails with RC status
   500 and `payload["error"] == "job not found"` - this is surfaced as
   `RcJobNotFoundError`, not left as a bare `RcCallError`, so a higher layer
-  holding cached job state (the future job monitor) can decide whether this
-  means the job's terminal record expired, a stale handle was reused, or
+  holding cached job state (`_JobMonitor` in `job.py`) can decide whether
+  this means the job's terminal record expired, a stale handle was reused, or
   something else - this module alone does not have enough context to know; and
   `job/stop` on an already-finished or unknown job is otherwise a no-op
   success, so `stop()` treats "not found" as already-idempotently-stopped

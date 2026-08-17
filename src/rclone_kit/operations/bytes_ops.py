@@ -59,7 +59,7 @@ def _copy_to_checked(access: BytesAccess, src: str, dst: str) -> None:
 def write_bytes_via_temp_file(access: BytesAccess, data: bytes, dst: str) -> None:
     """Write `data` to `dst`, uploading directly when `dst` is S3.
 
-    Raises `RcloneCommandError` if the underlying rclone command fails.
+    Raises `RcloneCommandError` if the underlying operation fails.
     """
     with TemporaryDirectory() as tmpdir:
         tmpfile = Path(tmpdir) / _TEMP_FILE_NAME
@@ -73,8 +73,8 @@ def write_bytes_via_temp_file(access: BytesAccess, data: bytes, dst: str) -> Non
 def read_bytes_via_temp_file(access: BytesAccess, src: str) -> bytes:
     """Read the whole object at `src` into memory.
 
-    Raises `RcloneCommandError` if the underlying rclone command fails or
-    if rclone reports success without producing an output file.
+    Raises `RcloneCommandError` if the underlying operation fails or if
+    rclone reports success without producing an output file.
     """
     with TemporaryDirectory() as tmpdir:
         tmpfile = Path(tmpdir) / _TEMP_FILE_NAME

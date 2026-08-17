@@ -4,7 +4,7 @@ shapes asserted in `tests/unit/test_rc_jobs.py`.
 
 Skipped automatically when no built native library exists (run
 `scripts/native/build.py` first). Does not need the `rclone.exe`
-executable: this only exercises the RC job boundary, not CLI parity.
+executable: this exercises the RC job boundary only.
 """
 
 from __future__ import annotations

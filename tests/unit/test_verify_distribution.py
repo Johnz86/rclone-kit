@@ -7,10 +7,10 @@ itself is made importable for `helpers.py`.
 Every fake "wheel" and "sdist" here is a small in-memory (or `tmp_path`)
 archive with controlled contents rather than a real build, so these tests
 exercise `verify_distribution`'s file, hash, and metadata-parsing logic
-without depending on a real native library or a real `uv build`. Unlike the
-now-removed rclone-executable model, `resolve_native_target` needs no
-monkeypatching at all: it is a pure lookup over a static, always-available
-platform table, so these tests rely on the real target resolution directly.
+without depending on a real native library or a real `uv build`.
+`resolve_native_target` needs no monkeypatching: it is a pure lookup over a
+static, always-available platform table, so these tests rely on the real
+target resolution directly.
 """
 
 import hashlib

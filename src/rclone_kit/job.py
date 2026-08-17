@@ -12,10 +12,10 @@ thread; progress is pull-based through `JobHandle.status()`/`.stats()`.
 
 One tick of that thread costs one RC round-trip regardless of how many
 jobs it tracks, because it polls them all through `job/batch`
-(`RcBatchStatusClient`). A partitioned copy over a wide file set starts
-one job per partition, so the per-job polling this replaced made the
-effective poll interval - and with it every `watch()`/`on_progress()`
-consumer - degrade linearly with partition count.
+(`RcBatchStatusClient`). That keeps the effective poll interval - and
+with it every `watch()`/`on_progress()` consumer - independent of how
+many jobs are outstanding, which matters because a partitioned copy over
+a wide file set starts one job per partition.
 
 `JobState.CANCELLED`/`JobState.LOST` never come out of `rc/jobs.py`'s
 parser - only this module produces them, since only this module tracks
@@ -443,10 +443,9 @@ class _JobMonitor:
         The realistic causes are structural - a native build predating
         `job/batch`, or a response this client cannot read - so retrying
         every tick would only spend a doomed extra round-trip forever,
-        whereas the per-job path it falls back to is exactly what this
-        monitor did before batching existed and settles jobs just as
-        reliably. Only the monitor thread ever reads or writes
-        `_batch_client`, so this needs no lock.
+        whereas the per-job fallback settles jobs just as reliably, only
+        with one call per job. Only the monitor thread ever reads or
+        writes `_batch_client`, so this needs no lock.
         """
         batch_client = self._batch_client
         if batch_client is None:
@@ -591,12 +590,13 @@ class _JobMonitor:
         """A closed runtime is permanent, not a transient poll failure.
 
         `RcloneRuntime._closed` is a one-way latch, so every subsequent
-        `job/status` call raises `RuntimeClosedError` too. Left in the
-        transient branch, the record would never settle: `wait()` would
-        block forever, `Rclone.close()` would burn its whole shutdown
-        deadline and then raise `OperationShutdownError`, and the monitor
-        thread would log a fresh traceback every poll interval for the
-        remaining life of the process.
+        `job/status` call raises `RuntimeClosedError` too and no amount of
+        retrying can ever observe this job again. Treating it as transient
+        would leave the record unsettled for good: `wait()` would block
+        forever, `Rclone.close()` would burn its whole shutdown deadline
+        and then raise `OperationShutdownError`, and the monitor thread
+        would log a fresh traceback every poll interval for the remaining
+        life of the process.
 
         Reachable whenever a runtime is closed out from under live jobs -
         most plainly through `shared_runtime()`, which `production_usage.md`

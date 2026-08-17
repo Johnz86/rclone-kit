@@ -1,7 +1,10 @@
 """Unit tests for `rclone_kit.scan_missing_folders.scan_missing_folders`'s
-background-thread lifecycle: the walk runs on a daemon `Thread` feeding a
-bounded queue, and a consumer that stops iterating early must not leave that
-thread blocked forever on a full queue nobody drains.
+background-thread lifecycle: the diff walk runs on a daemon `Thread` feeding
+a bounded queue, and a consumer that stops iterating early must not leave
+that thread blocked forever on a full queue nobody drains.
+
+The lifecycle itself lives in `rclone_kit.background_producer`, which is why
+`Thread` is patched there rather than here.
 """
 
 from collections.abc import Callable
@@ -12,14 +15,16 @@ from typing import cast
 import pytest
 
 from rclone_kit import Dir
+from rclone_kit import background_producer as background_producer_module
 from rclone_kit import scan_missing_folders as scan_missing_folders_module
-from rclone_kit.scan_missing_folders import _MAX_OUT_QUEUE_SIZE, scan_missing_folders
+from rclone_kit.background_producer import MAX_OUT_QUEUE_SIZE
+from rclone_kit.scan_missing_folders import scan_missing_folders
 from rclone_kit.types import Order
 
 
 class _TrackingThread(Thread):
-    def __init__(self, *, target: Callable[[], object], daemon: bool) -> None:
-        super().__init__(target=target, daemon=daemon)
+    def __init__(self, *, target: Callable[[], object], name: str, daemon: bool) -> None:
+        super().__init__(target=target, name=name, daemon=daemon)
         _CREATED_THREADS.append(self)
 
 
@@ -30,7 +35,7 @@ def _fake_walk_task_overflowing_queue(
     *, src: object, dst: object, max_depth: int, out_queue: Queue, order: Order
 ) -> None:
     _ = (src, dst, max_depth, order)
-    for i in range(_MAX_OUT_QUEUE_SIZE * 3):
+    for i in range(MAX_OUT_QUEUE_SIZE * 3):
         out_queue.put(f"dir-{i}")
     out_queue.put(None)
 
@@ -38,7 +43,7 @@ def _fake_walk_task_overflowing_queue(
 @pytest.fixture(autouse=True)
 def _track_threads(monkeypatch: pytest.MonkeyPatch) -> None:
     _CREATED_THREADS.clear()
-    monkeypatch.setattr(scan_missing_folders_module, "Thread", _TrackingThread)
+    monkeypatch.setattr(background_producer_module, "Thread", _TrackingThread)
     monkeypatch.setattr(
         scan_missing_folders_module, "async_diff_dir_walk_task", _fake_walk_task_overflowing_queue
     )
@@ -61,7 +66,7 @@ def test_normal_exhaustion_yields_everything_and_joins_worker() -> None:
 
     results = list(generator)
 
-    assert results == [f"dir-{i}" for i in range(_MAX_OUT_QUEUE_SIZE * 3)]
+    assert results == [f"dir-{i}" for i in range(MAX_OUT_QUEUE_SIZE * 3)]
     assert len(_CREATED_THREADS) == 1
     assert not _CREATED_THREADS[0].is_alive()
 
@@ -69,11 +74,10 @@ def test_normal_exhaustion_yields_everything_and_joins_worker() -> None:
 def test_consumer_keyboard_interrupt_propagates_and_still_joins_worker() -> None:
     """A real user-issued Ctrl+C during iteration must reach the caller.
 
-    The generator used to catch `KeyboardInterrupt` because the walk thread
-    signalled failures with `_thread.interrupt_main()`; with failures now
-    collected and re-raised instead, that handler only turned an interrupt
-    into a silently truncated scan. Teardown still has to run, so the
-    blocked walk thread is drained and joined on the way out.
+    Swallowing it would end the generator normally, handing back a
+    silently truncated scan indistinguishable from a complete one.
+    Teardown still has to run, so the blocked walk thread is drained and
+    joined on the way out.
     """
     generator = scan_missing_folders(src=cast(Dir, "src"), dst=cast(Dir, "dst"), order=Order.NORMAL)
     assert next(generator) == "dir-0"
@@ -99,12 +103,14 @@ def _fake_walk_task_raising(
 def test_background_failure_is_reraised_to_the_caller_and_worker_still_joins(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Regression test: a background-thread failure used to be signaled via
-    # _thread.interrupt_main(), an async KeyboardInterrupt that can land
-    # anywhere in the main thread's control flow - including after this
-    # generator already exhausted normally - surfacing as a misleading
-    # KeyboardInterrupt in unrelated code instead of the real failure. It
-    # must now be raised deterministically to this generator's own caller.
+    """A failure in the walk thread must reach this generator's own caller.
+
+    Signalling it with `_thread.interrupt_main()` instead would deliver an
+    async `KeyboardInterrupt` anywhere in the main thread's control flow,
+    including after the generator already exhausted normally - surfacing
+    as a misleading interrupt in unrelated code rather than the real
+    failure.
+    """
     monkeypatch.setattr(
         scan_missing_folders_module, "async_diff_dir_walk_task", _fake_walk_task_raising
     )

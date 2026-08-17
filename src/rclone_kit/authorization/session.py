@@ -1,7 +1,7 @@
 """`AuthorizationSession`: the public handle for one authorization
 attempt, and the private `_SessionRecord`/driver+watcher threads that back
-it (`docs/rclone_authorization_design.md`, "Public API proposal" and
-"Session worker threads").
+it (`docs/rclone_authorization_design.md`, "Public API" and "Session
+routing and concurrency").
 
 Mirrors `job.py`'s `JobHandle`/`_JobMonitor` shape: a mutable record owned
 by the background worker(s), guarded by a `threading.Condition`; the

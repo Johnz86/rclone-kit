@@ -187,7 +187,8 @@ def random_str(length: int) -> str:
 def write_files_from(tmpdir: Path | str, files: list[str]) -> Path:
     """Write `files`, one per line, to `include_files.txt` inside `tmpdir`.
 
-    Returns the path to pass to rclone's `--files-from` flag.
+    Returns the path to put in an RC request's `_filter` parameter as
+    `{"FilesFrom": [<path>]}`.
     """
     include_files_txt = Path(tmpdir) / "include_files.txt"
     include_files_txt.write_text("\n".join(files), encoding="utf-8")

@@ -23,10 +23,10 @@ from rclone_kit.util import random_str
 
 
 class _DisposableServerHandle(Protocol):
-    """Whatever `HttpServer` sits on top of - a CLI `Process` or an
-    embedded `ServeHandle` - `HttpServer` itself only ever needs to know
-    whether it's still alive and how to tear it down, never anything
-    execution-mode-specific."""
+    """The narrow surface `HttpServer` needs from whatever it sits on
+    top of: whether the server is still alive, and how to tear it down.
+    `ServeHandle` satisfies it; nothing here depends on how the server
+    was started."""
 
     def dispose(self) -> None: ...
 
@@ -202,7 +202,7 @@ class HttpServer:
         """
         if not _PUT_WARNING_EMITTED.is_set():
             _PUT_WARNING_EMITTED.set()
-            logger.warning("PUT method not implemented on the rclone binary as of 1.69")
+            logger.warning("PUT is not implemented by rclone's serve http")
         self._ensure_running()
         url = self._get_file_url(path)
         headers = {"Content-Type": "application/octet-stream"}

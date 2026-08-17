@@ -1,10 +1,9 @@
 """Distribution verification for built `rclone-kit` wheels and sdists.
 
-Supersedes the inline PowerShell/Python inspection step in
-`.github/workflows/ci.yml`'s `package` job with a single, generically
-testable check: given a directory containing one or more built `.whl` and
-`.tar.gz` files, verify every release-readiness property a distribution
-must satisfy before publishing.
+Given a directory containing one or more built `.whl` and `.tar.gz` files,
+verify every release-readiness property a distribution must satisfy before
+publishing. Run by `.github/workflows/ci.yml`'s `wheel-windows` and
+`wheel-linux` jobs, and by `scripts/build_distribution.py`.
 
 Usage:
     uv run python scripts/verify_distribution.py dist
@@ -411,7 +410,7 @@ def check_bundled_library_has_mount_support(
     """Fail unless the shipped native library was built with real mount
     support.
 
-    `mount()`/`mount_s3()` are public API with no CLI fallback; a wheel built
+    `mount()`/`mount_s3()` are public API; a wheel whose library was built
     without mount support compiled in would silently regress that surface
     for every installer. What "compiled in" means is platform-specific:
 

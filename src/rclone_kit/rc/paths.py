@@ -191,9 +191,9 @@ class RcPath:
 
         A local path with no directory separator at all (a bare relative
         basename like `"file.txt"`) splits to `fs=<absolute cwd>`,
-        `remote="file.txt"` - the CLI accepts this bare form and resolves
-        its parent as the current directory, so rejecting it here would
-        make this helper stricter than the behavior it replaces. In
+        `remote="file.txt"` - rclone's own local backend accepts this bare
+        form and resolves its parent against the current directory, so
+        rejecting it here would refuse a path rclone itself honours. In
         practice `parse()` already absolutizes any bare local path before
         this method ever sees it, so this branch is a defensive fallback,
         not the normal path. A trailing separator is stripped before

@@ -10,7 +10,7 @@ dependency.
 
 Both functions are generators, so a caller pays for the conversion (and
 sees a `TypeError` for an unsupported `src` type) only once iteration
-actually starts - exactly as when these bodies lived on `Rclone` itself.
+actually starts.
 """
 
 from __future__ import annotations

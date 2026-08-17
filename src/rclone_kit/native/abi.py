@@ -7,9 +7,8 @@ the same shape, for unit tests) and never touches a raw pointer.
 Every `Output`-shaped out-parameter must be declared `c_void_p`, never
 `c_char_p`: a `c_char_p` argument or struct field is auto-converted to a
 Python `bytes` object by `ctypes` on read, and freeing that converted
-*copy's* address (instead of the real allocation) corrupts the heap. This
-was discovered and fixed the hard way while proving the Phase 2 vertical
-slice; `scripts/native/smoke.py` documents and exercises the same rule.
+*copy's* address (instead of the real allocation) corrupts the heap.
+`scripts/native/smoke.py` documents and exercises the same rule.
 """
 
 import ctypes

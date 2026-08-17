@@ -1,11 +1,10 @@
 """Data-driven platform model for the certified native (C ABI) build targets.
 
-Mirrors `rclone_kit.runtime.platform`'s `RcloneArtifact` model, but describes
-the rclone-kit-owned `librclone_kit` shared library and its companion
-diagnostic executable built from `native/rclone`, instead of the downloaded
-upstream executable archive. `scripts/native/build.py` and the future native
-library resolver both import from here instead of repeating filenames or
-build-tag lists.
+Describes the rclone-kit-owned `librclone_kit` shared library and its
+companion diagnostic executable, both built from the pinned `native/rclone`
+submodule. `scripts/native/build.py` and the native library resolver
+(`rclone_kit.native.library`) import from here instead of repeating
+filenames or build-tag lists.
 """
 
 from dataclasses import dataclass
@@ -23,10 +22,10 @@ from rclone_kit.runtime.platform import (
 class NativeTarget:
     """Immutable description of one certified native build target.
 
-    `go_build_tags` is empty for the no-mount development profile; a future
-    production profile adds `cmount`/FUSE tags once the mount toolchain is
-    installed and tested (see `native_c_abi_implementation_plan.md`'s "Mount
-    build variants" section).
+    `go_build_tags` is empty for the no-mount development profile. The
+    production profile adds `cmount` on Windows only, where it selects
+    cgofuse's WinFsp path; Linux mount support (`cmd/mount`) needs no build
+    tag - see `scripts/native/build.py`'s `_build_tags`.
     """
 
     operating_system: OperatingSystem

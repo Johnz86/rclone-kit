@@ -11,14 +11,14 @@ from helpers import CLOUD_TEST_KEY_PREFIX
 from rclone_kit import (
     DirListing,
     File,
+    LogSettings,
     OperationResult,
     Rclone,
-    rclone_verbose,
 )
 from rclone_kit.env_file import load_env_file
 
 load_env_file()
-rclone_verbose(True)
+LogSettings.rclone_verbose(True)
 
 BUCKET_NAME = os.getenv("BUCKET_NAME")
 
